@@ -1,0 +1,19 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:carol/app.bsky.feed.post/ccc333",
+				"author": {"did": "did:plc:carol", "handle": "carol.test", "labels": []},
+				"embed": {
+					"$type": "app.bsky.embed.video#view",
+					"thumbnail": "https://video.test/thumb/v1",
+					"playlist": "https://video.test/playlist/v1",
+					"alt": "動画です",
+					"aspectRatio": {"width": 381, "height": 800}
+				},
+				"labels": []
+			}
+		}
+	],
+	"cursor": "2026-01-03T00:00:00.000Z"
+}

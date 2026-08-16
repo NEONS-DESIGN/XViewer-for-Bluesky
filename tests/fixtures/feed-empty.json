@@ -1,0 +1,11 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:erin/app.bsky.feed.post/eee555",
+				"author": {"did": "did:plc:erin", "handle": "erin.test", "labels": []},
+				"labels": []
+			}
+		}
+	]
+}

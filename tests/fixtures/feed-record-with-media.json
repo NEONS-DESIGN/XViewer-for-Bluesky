@@ -1,0 +1,27 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:dave/app.bsky.feed.post/ddd444",
+				"author": {"did": "did:plc:dave", "handle": "dave.test", "labels": []},
+				"embed": {
+					"$type": "app.bsky.embed.recordWithMedia#view",
+					"record": {"$type": "app.bsky.embed.record#view"},
+					"media": {
+						"$type": "app.bsky.embed.images#view",
+						"images": [
+							{
+								"thumb": "https://cdn.test/thumb/q1",
+								"fullsize": "https://cdn.test/full/q1",
+								"alt": "引用に付いた画像",
+								"aspectRatio": {"width": 500, "height": 500}
+							}
+						]
+					}
+				},
+				"labels": []
+			}
+		}
+	],
+	"cursor": "2026-01-04T00:00:00.000Z"
+}

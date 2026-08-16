@@ -1,0 +1,35 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:bob/app.bsky.feed.post/bbb222",
+				"author": {"did": "did:plc:bob", "handle": "bob.test", "labels": []},
+				"embed": {
+					"$type": "app.bsky.embed.gallery#view",
+					"items": [
+						{
+							"thumbnail": "https://cdn.test/thumb/g1",
+							"fullsize": "https://cdn.test/full/g1",
+							"alt": "ギャラリー1",
+							"aspectRatio": {"width": 600, "height": 400}
+						},
+						{
+							"thumbnail": "https://cdn.test/thumb/g2",
+							"fullsize": "https://cdn.test/full/g2",
+							"alt": "ギャラリー2",
+							"aspectRatio": {"width": 600, "height": 400}
+						},
+						{
+							"thumbnail": "https://cdn.test/thumb/g3",
+							"fullsize": "https://cdn.test/full/g3",
+							"alt": "ギャラリー3",
+							"aspectRatio": {"width": 600, "height": 400}
+						}
+					]
+				},
+				"labels": []
+			}
+		}
+	],
+	"cursor": null
+}

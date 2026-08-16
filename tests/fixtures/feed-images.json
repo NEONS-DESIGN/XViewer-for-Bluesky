@@ -1,0 +1,29 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:alice/app.bsky.feed.post/aaa111",
+				"author": {"did": "did:plc:alice", "handle": "alice.test", "labels": []},
+				"embed": {
+					"$type": "app.bsky.embed.images#view",
+					"images": [
+						{
+							"thumb": "https://cdn.test/thumb/1",
+							"fullsize": "https://cdn.test/full/1",
+							"alt": "一枚目",
+							"aspectRatio": {"width": 1000, "height": 500}
+						},
+						{
+							"thumb": "https://cdn.test/thumb/2",
+							"fullsize": "https://cdn.test/full/2",
+							"alt": "",
+							"aspectRatio": {"width": 800, "height": 800}
+						}
+					]
+				},
+				"labels": []
+			}
+		}
+	],
+	"cursor": "2026-01-02T00:00:00.000Z"
+}

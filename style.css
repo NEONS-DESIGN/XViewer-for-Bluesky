@@ -1,0 +1,122 @@
+/* ナビゲーションボタンとグリッドの見た目。識別子は config.js の EXT_CONFIG と対応する */
+
+.ext-hidden {
+    display: none !important;
+}
+
+#ext-nav-btn-container {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.ext-nav-btn-column {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ext-nav-btn {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 999px;
+    background-color: rgb(16, 131, 254);
+    color: #ffffff;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.ext-nav-btn:hover {
+    opacity: 0.85;
+}
+
+#ext-media-grid {
+    z-index: 9998;
+    flex: none;
+    padding-top: var(--ext-media-gap);
+    /*
+     * postsFeed 自体は画面幅いっぱいで、Bluesky はその内側の要素に
+     * max-width: 600px を当てて中央カラムを作っている (実測。Task 8 修正ラウンド 3)。
+     * グリッドは postsFeed の親に prepend するため、ここで同じ幅に揃えて中央寄せする
+     */
+    max-width: var(--ext-media-max-width);
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.ext-media-list {
+    display: grid;
+    grid-template-columns: repeat(var(--ext-media-columns), 1fr);
+    gap: var(--ext-media-gap);
+}
+
+.ext-media-tile {
+    position: relative;
+    display: block;
+    aspect-ratio: 1;
+    overflow: hidden;
+    background-color: rgba(128, 128, 128, 0.15);
+}
+
+.ext-media-tile img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.ext-media-tile.ext-media-blur img {
+    filter: blur(24px);
+}
+
+.ext-media-blur-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ffffff;
+    font-size: 12px;
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+
+/* 複数枚アイコン (SVG)。旧 X の複数枚アイコンは現存しないため、重なった 2 枚の四角形で近似している */
+.ext-media-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    fill: #ffffff;
+    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+    pointer-events: none;
+}
+
+.ext-media-video-badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background-color: rgba(0, 0, 0, 0.6);
+    color: #ffffff;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+#ext-media-status {
+    padding: 12px 0;
+    text-align: center;
+    font-size: 13px;
+    opacity: 0.7;
+}
+
+/* Bluesky 本来のフィードを隠す。display: none で本体は暴走しない (設計文書 2.3) */
+.ext-feed-hidden {
+    display: none !important;
+}

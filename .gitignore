@@ -1,0 +1,9 @@
+# OS が作る一時ファイル
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# エディタ・IDE
+.vscode/
+.idea/
+*.swp
