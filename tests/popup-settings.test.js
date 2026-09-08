@@ -62,6 +62,12 @@ test('配色の切り替えアイコンは ICON_SHAPES に存在し、ラベル�
 test('アイコンの図形データは Material Symbols の viewBox とパスを持つ', () => {
     Object.entries(ICON_SHAPES).forEach(([name, shape]) => {
         assert.strictEqual(shape.viewBox, '0 -960 960 960', `${name} の viewBox が違う`);
-        assert.ok(shape.path.startsWith('M'), `${name} のパスが空か形式違い`);
+        /*
+         * Material Symbols の原本には M で始まるものと m で始まるものの両方が
+         * 実在する。SVG 仕様では、小文字の m で始まるパスの最初の moveto は
+         * 絶対座標として扱われるため、両方とも有効。M に揃えると、直後の
+         * 暗黙 lineto が相対から絶対に変わり、図形が壊れる恐れがある
+         */
+        assert.ok(/^[Mm]/.test(shape.path), `${name} のパスが空か形式違い`);
     });
 });
