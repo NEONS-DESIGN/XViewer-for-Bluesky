@@ -147,3 +147,185 @@
 .ext-feed-hidden {
     display: none !important;
 }
+
+/*
+ * ライトボックスの投稿情報パネル。識別子は config.js の
+ * EXT_CONFIG.lightboxPanel と対応する。
+ * 幅と z-index は JS が要素の style に直接渡す (config 由来の値のため)。
+ *
+ * 配色は Bluesky 本体のテーマに CSS だけで追随する。本体は html 要素に
+ * theme--light / theme--dark / theme--dim のいずれかを付ける (2026-09-09 実測)。
+ * 既定はダークに倒し、ライトのときだけ同じ 5 つを差し替える。
+ * **片方のテーマにしか定義の無い色を作らないこと**
+ */
+#ext-lightbox-panel {
+    --ext-lb-bg: #1d212b;
+    --ext-lb-text: #eff0f4;
+    --ext-lb-muted: #9aa0b4;
+    --ext-lb-border: #262b38;
+    --ext-lb-accent: #4ea3d6;
+
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    background: var(--ext-lb-bg);
+    color: var(--ext-lb-text);
+    border-left: 1px solid var(--ext-lb-border);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+:root.theme--light #ext-lightbox-panel {
+    --ext-lb-bg: #ffffff;
+    --ext-lb-text: #1c1e26;
+    --ext-lb-muted: #5c6275;
+    --ext-lb-border: #d6d9e0;
+    --ext-lb-accent: #1f7fb8;
+}
+
+/*
+ * 畳んだ状態。パネル本体を隠し、開くボタンだけを残す。
+ * 幅は JS が渡した値を打ち消して内容なりにする
+ */
+#ext-lightbox-panel.ext-lb-collapsed {
+    width: auto !important;
+    background: transparent;
+    border-left: none;
+    overflow: visible;
+}
+
+#ext-lightbox-panel.ext-lb-collapsed .ext-lb-body {
+    display: none;
+}
+
+.ext-lb-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px;
+}
+
+.ext-lb-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    color: var(--ext-lb-text);
+    background: var(--ext-lb-bg);
+    border: 1px solid var(--ext-lb-border);
+    border-radius: 16px;
+}
+
+/* 置換要素は固有サイズを持たない。受け皿で必ず大きさを決める */
+.ext-lb-toggle svg {
+    width: 20px;
+    height: 20px;
+}
+
+.ext-lb-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0 16px 16px;
+}
+
+.ext-lb-author {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ext-lb-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    object-fit: cover;
+}
+
+.ext-lb-name {
+    display: block;
+    font-weight: 600;
+}
+
+.ext-lb-handle {
+    display: block;
+    color: var(--ext-lb-muted);
+    font-size: 13px;
+}
+
+.ext-lb-text {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.ext-lb-date {
+    color: var(--ext-lb-muted);
+    font-size: 13px;
+}
+
+.ext-lb-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--ext-lb-border);
+    color: var(--ext-lb-muted);
+    font-size: 13px;
+}
+
+.ext-lb-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ext-lb-count-icon {
+    width: 16px;
+    height: 16px;
+}
+
+.ext-lb-link {
+    padding: 0;
+    color: var(--ext-lb-accent);
+    background: none;
+    border: none;
+    font: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.ext-lb-link:hover {
+    text-decoration: underline;
+}
+
+.ext-lb-open-post {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    color: var(--ext-lb-text);
+    background: none;
+    border: 1px solid var(--ext-lb-border);
+    border-radius: 8px;
+    font: inherit;
+}
+
+.ext-lb-open-post svg {
+    width: 18px;
+    height: 18px;
+}
+
+.ext-lb-status {
+    margin: 0;
+    color: var(--ext-lb-muted);
+}

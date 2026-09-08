@@ -273,6 +273,536 @@ function shouldShowPanel(state, config) {
     return width >= config.minWindowWidthPx;
 }
 
+/**
+ * ライトボックスの右側に投稿情報を出す。
+ *
+ * **本体 DOM への介入は、ダイアログの固定親に当てるインラインの right
+ * 1 プロパティだけ。** 当てた要素そのものを覚えておき、撤去時はその参照に
+ * 対して空文字を書く。セレクタで引き直さない (閉じた後は引けない)。
+ * 要素が既に消えていれば何もしない (設計文書 8 節)
+ */
+class LightboxPanel {
+    /**
+     * @param {Object} config EXT_CONFIG.lightboxPanel
+     */
+    constructor(config) {
+        this.config = config;
+        this.enabled = config.defaultEnabled;
+        this.collapsed = config.defaultCollapsed;
+        /** @type {HTMLElement|null} 生成したパネル */
+        this.panelEl = null;
+        /** @type {HTMLElement|null} right を当てた本体の要素。撤去時に戻す相手 */
+        this.shrunkEl = null;
+        /** @type {Map<string, PanelPost>} postUri をキーにした取得済みの投稿 */
+        this.cache = new Map();
+        /**
+         * 取得の世代。応答待ちの間にライトボックスが閉じたり別の投稿に
+         * 変わったりしたら、その応答は丸ごと捨てる (MediaFetcher.generation と同じ考え方)
+         */
+        this.generation = 0;
+    }
+
+    /**
+     * 設定を読み、ライトボックスの開閉を購読する。
+     * @returns {Promise<void>}
+     */
+    async init() {
+        const config = this.config;
+        try {
+            const stored = await chrome.storage.sync.get([
+                config.storageKey,
+                config.collapsedStorageKey
+            ]);
+            this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
+            this.collapsed = stored[config.collapsedStorageKey] ?? config.defaultCollapsed;
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの設定の読み込みに失敗しました', error);
+        }
+        try {
+            chrome.storage.onChanged.addListener((changes, area) => {
+                if (area !== 'sync' || !changes[config.storageKey]) {
+                    return;
+                }
+                this.setEnabled(
+                    changes[config.storageKey].newValue ?? config.defaultEnabled
+                );
+            });
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの設定の購読に失敗しました', error);
+        }
+        try {
+            subscribeLightboxVisibility((visible) => {
+                if (visible) {
+                    this.open();
+                } else {
+                    this.teardown();
+                }
+            });
+            // タブを閉じる・遷移で離れるときにも本体の変更を必ず戻す
+            window.addEventListener('pagehide', () => this.teardown());
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの起動に失敗しました', error);
+        }
+    }
+
+    /**
+     * ポップアップのトグルを反映する。OFF にした瞬間に撤去する。
+     * @param {boolean} enabled
+     * @returns {void}
+     */
+    setEnabled(enabled) {
+        this.enabled = enabled === true;
+        ExtDebug.log('パネルの設定が変わった', {有効: this.enabled});
+        if (!this.enabled) {
+            this.teardown();
+            return;
+        }
+        // ライトボックスが開いたままなら、その場で出す
+        if (isLightboxVisible()) {
+            this.open();
+        }
+    }
+
+    /**
+     * パネルを出す。開いているのが画像ライトボックスでなければ何もしない。
+     * @returns {Promise<void>}
+     */
+    async open() {
+        try {
+            if (this.panelEl) {
+                return;
+            }
+            if (!shouldShowPanel(
+                {enabled: this.enabled, innerWidth: window.innerWidth},
+                this.config
+            )) {
+                return;
+            }
+            const generation = this.generation;
+            const result = await callBridge(
+                EXT_CONFIG.mediaGrid.bridge.actions.getLightbox, {}
+            );
+            if (generation !== this.generation) {
+                return;
+            }
+            if (!result || !result.ok || !result.open || !result.postUri) {
+                ExtDebug.log('パネルを出さない', {
+                    理由: result && result.ok
+                        ? (result.open ? 'postUri が無い' : '画像ライトボックスではない')
+                        : (result && result.reason) || '応答なし'
+                });
+                return;
+            }
+            // 応答を待つ間に閉じられている可能性がある
+            if (!isLightboxVisible()) {
+                return;
+            }
+
+            const postUri = result.postUri;
+            this.mountPanel();
+            this.applyShrink();
+
+            const cached = this.cache.get(postUri);
+            if (cached) {
+                this.renderPost(cached);
+                return;
+            }
+            this.renderStatus(this.config.text.loading);
+            ExtDebug.log('パネルの取得を開始', {postUri});
+            const post = await this.fetchPost(postUri);
+            if (generation !== this.generation || !this.panelEl) {
+                return;
+            }
+            if (!post) {
+                this.renderStatus(this.config.text.error);
+                return;
+            }
+            this.remember(postUri, post);
+            this.renderPost(post);
+            ExtDebug.log('パネルの取得が終了', {postUri, 本文の長さ: post.text.length});
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの表示に失敗しました', error);
+        }
+    }
+
+    /**
+     * パネルを撤去し、本体に当てた変更を戻す。
+     * **どの閉じ方をされても必ずここを通る。**
+     * @returns {void}
+     */
+    teardown() {
+        // 飛行中の取得の応答を捨てる
+        this.generation += 1;
+        this.releaseShrink();
+        this.unmountPanel();
+    }
+
+    /**
+     * 取得済みの投稿を覚える。上限を超えたら古いものから捨てる。
+     * @param {string} postUri
+     * @param {PanelPost} post
+     * @returns {void}
+     */
+    remember(postUri, post) {
+        this.cache.set(postUri, post);
+        while (this.cache.size > this.config.cacheLimit) {
+            const oldest = this.cache.keys().next();
+            if (oldest.done) {
+                break;
+            }
+            this.cache.delete(oldest.value);
+        }
+    }
+
+    /**
+     * 公開 API から投稿を 1 件引く。
+     * @param {string} postUri
+     * @returns {Promise<PanelPost|null>} 読めなければ null
+     */
+    async fetchPost(postUri) {
+        const api = this.config.api;
+        const url = `${api.origin}${api.postsPath}?uris=${encodeURIComponent(postUri)}`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), api.timeoutMs);
+        try {
+            const response = await fetch(url, {signal: controller.signal});
+            if (!response.ok) {
+                console.error('[Bluesky拡張] 投稿の取得に失敗しました', response.status);
+                return null;
+            }
+            return parsePostForPanel(await response.json(), this.config);
+        } catch (error) {
+            console.error('[Bluesky拡張] 投稿の取得に失敗しました', error);
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /**
+     * 本体のダイアログの固定親を狭める。
+     * **見つからなければ何もしない** (パネルは重なる表示に落ちる)。
+     * @returns {void}
+     */
+    applyShrink() {
+        try {
+            if (this.collapsed || this.shrunkEl) {
+                return;
+            }
+            const dialog = document.querySelector(this.config.dialogSelector);
+            const parent = dialog && dialog.parentElement;
+            if (!parent) {
+                return;
+            }
+            this.shrunkEl = parent;
+            parent.style.right = `${this.config.widthPx}px`;
+        } catch (error) {
+            console.error('[Bluesky拡張] ライトボックスの幅の調整に失敗しました', error);
+        }
+    }
+
+    /**
+     * 本体に当てた right を戻す。**保持している参照に対して書く。**
+     * @returns {void}
+     */
+    releaseShrink() {
+        try {
+            if (this.shrunkEl) {
+                this.shrunkEl.style.right = '';
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] ライトボックスの幅の復帰に失敗しました', error);
+        } finally {
+            this.shrunkEl = null;
+        }
+    }
+
+    /**
+     * パネルの外枠を作って body 直下に置く。**既存のものは必ず消してから足す。**
+     * @returns {void}
+     */
+    mountPanel() {
+        const config = this.config;
+        this.unmountPanel();
+        const panel = document.createElement('aside');
+        panel.id = config.panelId;
+        panel.style.width = `${config.widthPx}px`;
+        panel.style.zIndex = String(config.zIndex);
+        if (this.collapsed) {
+            panel.classList.add(config.collapsedClass);
+        }
+
+        const header = document.createElement('div');
+        header.className = config.headerClass;
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = config.toggleClass;
+        toggle.addEventListener('click', () => this.setCollapsed(!this.collapsed));
+        header.appendChild(toggle);
+        panel.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = config.bodyClass;
+        panel.appendChild(body);
+
+        document.body.appendChild(panel);
+        this.panelEl = panel;
+        this.toggleEl = toggle;
+        this.bodyEl = body;
+        this.updateToggle();
+        ExtDebug.log('パネルを生成', {畳んでいる: this.collapsed});
+    }
+
+    /** パネルを DOM から外す。 */
+    unmountPanel() {
+        try {
+            const existing = document.getElementById(this.config.panelId);
+            if (existing) {
+                existing.remove();
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの撤去に失敗しました', error);
+        } finally {
+            this.panelEl = null;
+            this.toggleEl = null;
+            this.bodyEl = null;
+        }
+    }
+
+    /**
+     * 畳む / 開くを切り替える。状態は保存する。
+     * @param {boolean} collapsed
+     * @returns {void}
+     */
+    setCollapsed(collapsed) {
+        this.collapsed = collapsed === true;
+        try {
+            if (this.panelEl) {
+                this.panelEl.classList.toggle(
+                    this.config.collapsedClass, this.collapsed
+                );
+            }
+            this.updateToggle();
+            if (this.collapsed) {
+                this.releaseShrink();
+            } else {
+                this.applyShrink();
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの折り畳みに失敗しました', error);
+        }
+        try {
+            chrome.storage.sync.set({
+                [this.config.collapsedStorageKey]: this.collapsed
+            });
+        } catch (error) {
+            console.error('[Bluesky拡張] 折り畳み状態の保存に失敗しました', error);
+        }
+    }
+
+    /** 畳む / 開くボタンのアイコンとラベルを今の状態に合わせる。 */
+    updateToggle() {
+        if (!this.toggleEl) {
+            return;
+        }
+        const text = this.config.text;
+        const label = this.collapsed ? text.expand : text.collapse;
+        this.toggleEl.textContent = '';
+        this.toggleEl.setAttribute('aria-label', label);
+        this.toggleEl.title = label;
+        this.toggleEl.appendChild(createIcon(
+            document, this.collapsed ? 'chevronLeft' : 'chevronRight'
+        ));
+    }
+
+    /**
+     * 本文の代わりに 1 行の文言を出す (読み込み中・失敗)。
+     * @param {string} message
+     * @returns {void}
+     */
+    renderStatus(message) {
+        if (!this.bodyEl) {
+            return;
+        }
+        this.bodyEl.textContent = '';
+        const status = document.createElement('p');
+        status.className = this.config.statusClass;
+        status.textContent = message;
+        this.bodyEl.appendChild(status);
+    }
+
+    /**
+     * 投稿をパネルに描く。
+     * @param {PanelPost} post
+     * @returns {void}
+     */
+    renderPost(post) {
+        try {
+            if (!this.bodyEl) {
+                return;
+            }
+            const config = this.config;
+            this.bodyEl.textContent = '';
+            this.bodyEl.appendChild(this.buildAuthor(post));
+
+            const text = document.createElement('p');
+            text.className = config.textClass;
+            for (const segment of post.segments) {
+                text.appendChild(this.buildSegment(segment));
+            }
+            this.bodyEl.appendChild(text);
+
+            const formatted = formatPostDate(post.createdAt, config);
+            if (formatted) {
+                const date = document.createElement('time');
+                date.className = config.dateClass;
+                date.setAttribute('datetime', post.createdAt);
+                date.textContent = formatted;
+                this.bodyEl.appendChild(date);
+            }
+
+            this.bodyEl.appendChild(this.buildCounts(post));
+            this.bodyEl.appendChild(this.buildOpenPost(post));
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルの描画に失敗しました', error);
+            this.renderStatus(this.config.text.error);
+        }
+    }
+
+    /**
+     * 作者の行を作る。
+     * @param {PanelPost} post
+     * @returns {HTMLElement}
+     */
+    buildAuthor(post) {
+        const config = this.config;
+        const author = document.createElement('div');
+        author.className = config.authorClass;
+        if (post.avatarUrl) {
+            const avatar = document.createElement('img');
+            avatar.className = config.avatarClass;
+            avatar.src = post.avatarUrl;
+            // 名前は隣に文字で出ているので、画像は装飾として扱う
+            avatar.alt = '';
+            author.appendChild(avatar);
+        }
+        const names = document.createElement('div');
+        const name = document.createElement('span');
+        name.className = config.nameClass;
+        name.textContent = post.displayName;
+        const handle = document.createElement('span');
+        handle.className = config.handleClass;
+        handle.textContent = `@${post.handle}`;
+        names.appendChild(name);
+        names.appendChild(handle);
+        author.appendChild(names);
+        return author;
+    }
+
+    /**
+     * 本文の断片 1 つを要素にする。
+     * リンクだけは a の既定動作 (新しいタブ) に任せる。外部サイトへの遷移は
+     * 本体のルーターの管轄外のため、SPA 遷移にする必要が無い。
+     * @param {PanelSegment} segment
+     * @returns {Node}
+     */
+    buildSegment(segment) {
+        const config = this.config;
+        const routes = EXT_CONFIG.mediaGrid.bridge.routes;
+        if (segment.kind === 'link') {
+            const link = document.createElement('a');
+            link.className = config.linkClass;
+            link.href = segment.value;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = segment.text;
+            return link;
+        }
+        if (segment.kind === 'mention' || segment.kind === 'tag') {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = config.linkClass;
+            button.textContent = segment.text;
+            const params = segment.kind === 'mention'
+                ? {route: routes.profile, params: {name: segment.value}}
+                : {route: routes.hashtag, params: {tag: segment.value}};
+            button.addEventListener('click', () => this.leaveTo(params));
+            return button;
+        }
+        return document.createTextNode(segment.text);
+    }
+
+    /**
+     * 反応数の行を作る。0 の項目も出す (欠けると横並びの位置がずれて読みにくい)。
+     * @param {PanelPost} post
+     * @returns {HTMLElement}
+     */
+    buildCounts(post) {
+        const config = this.config;
+        const row = document.createElement('div');
+        row.className = config.countsClass;
+        const items = [
+            {icon: 'chatBubble', label: config.text.replyCount, value: post.counts.reply},
+            {icon: 'repeat', label: config.text.repostCount, value: post.counts.repost},
+            {icon: 'favorite', label: config.text.likeCount, value: post.counts.like},
+            {icon: 'formatQuote', label: config.text.quoteCount, value: post.counts.quote}
+        ];
+        for (const item of items) {
+            const cell = document.createElement('span');
+            cell.className = config.countClass;
+            cell.setAttribute('aria-label', item.label);
+            cell.title = item.label;
+            const icon = createIcon(document, item.icon);
+            icon.classList.add(config.countIconClass);
+            cell.appendChild(icon);
+            const number = document.createElement('span');
+            number.textContent = formatCount(item.value, config);
+            cell.appendChild(number);
+            row.appendChild(cell);
+        }
+        return row;
+    }
+
+    /**
+     * 「投稿を開く」ボタンを作る。
+     * @param {PanelPost} post
+     * @returns {HTMLElement}
+     */
+    buildOpenPost(post) {
+        const config = this.config;
+        const routes = EXT_CONFIG.mediaGrid.bridge.routes;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = config.openPostClass;
+        button.appendChild(createIcon(document, 'openInNew'));
+        const label = document.createElement('span');
+        label.textContent = config.text.openPost;
+        button.appendChild(label);
+        button.addEventListener('click', () => this.leaveTo({
+            route: routes.post,
+            params: {name: post.handle, rkey: post.rkey}
+        }));
+        return button;
+    }
+
+    /**
+     * ライトボックスを閉じてから SPA 遷移する。
+     * 閉じるのに失敗しても遷移は試みる (本体が遷移で畳むため)。
+     * @param {{route: string, params: Object}} target
+     * @returns {Promise<void>}
+     */
+    async leaveTo(target) {
+        const actions = EXT_CONFIG.mediaGrid.bridge.actions;
+        try {
+            await callBridge(actions.closeLightbox, {});
+            this.teardown();
+            await callBridge(actions.navigate, target);
+        } catch (error) {
+            console.error('[Bluesky拡張] パネルからの遷移に失敗しました', error);
+        }
+    }
+}
+
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -283,4 +813,14 @@ if (typeof module !== 'undefined' && module.exports) {
         formatCount,
         shouldShowPanel
     };
+}
+
+// content script としての起動。Node のテストからは document が無いため実行されない
+if (typeof document !== 'undefined') {
+    try {
+        const lightboxPanel = new LightboxPanel(EXT_CONFIG.lightboxPanel);
+        lightboxPanel.init();
+    } catch (error) {
+        console.error('[Bluesky拡張] パネルの初期化に失敗しました', error);
+    }
 }
