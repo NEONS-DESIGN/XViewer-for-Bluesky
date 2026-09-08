@@ -243,9 +243,115 @@ const EXT_CONFIG = {
             actions: {
                 openLightbox: 'open-lightbox',
                 switchTab: 'switch-tab',
-                navigate: 'navigate'
+                navigate: 'navigate',
+                /** 開いているライトボックスの postUri を読む (lightbox-panel.js) */
+                getLightbox: 'get-lightbox',
+                /** 遷移の前にライトボックスを確実に閉じる (lightbox-panel.js) */
+                closeLightbox: 'close-lightbox'
             },
+            /**
+             * navigate で行ける先の白名簿。**分離ワールドから任意のルートを
+             * 叩けるようにしない。** 2026-09-09 に実機で push() の成功を確認した
+             * 3 つだけを載せる。page-bridge.js の EXT_BRIDGE.routes と同じ値を
+             * 書いてあるので、片方を変えたら必ず両方直すこと
+             */
+            routes: {
+                post: 'PostThread',       // {name: <handle>, rkey}
+                profile: 'Profile',       // {name: <handle または did>}
+                hashtag: 'Hashtag'        // {tag}
+            },
+            /**
+             * openLightbox に添える metricsContext の layout。
+             * 本体がフィードの単独画像を開くときと同じ値 (2026-09-09 実測)
+             */
+            lightboxLayout: 'single',
             timeoutMs: 15000
+        }
+    },
+
+    /**
+     * ライトボックスに重ねる投稿情報パネル (lightbox-panel.js)。
+     * 画像を開いたとき、右側に本文・投稿日時・作者・反応数を並べる。
+     * **メディアグリッド由来かどうかを問わない。** 開いているライトボックスの
+     * activeLightbox.metricsContext.postUri を橋渡しで読み、公開 API の
+     * getPosts で投稿を引く (設計文書 3 節)
+     */
+    lightboxPanel: {
+        storageKey: 'lightboxPanelEnabled',
+        /** 既定は有効。利用者の要望で入れた機能のため */
+        defaultEnabled: true,
+        collapsedStorageKey: 'lightboxPanelCollapsed',
+        /** 既定は展開。畳んだ状態は利用者が選んだときだけ保つ */
+        defaultCollapsed: false,
+        panelId: 'ext-lightbox-panel',
+        collapsedClass: 'ext-lb-collapsed',
+        bodyClass: 'ext-lb-body',
+        headerClass: 'ext-lb-header',
+        toggleClass: 'ext-lb-toggle',
+        authorClass: 'ext-lb-author',
+        avatarClass: 'ext-lb-avatar',
+        nameClass: 'ext-lb-name',
+        handleClass: 'ext-lb-handle',
+        textClass: 'ext-lb-text',
+        dateClass: 'ext-lb-date',
+        countsClass: 'ext-lb-counts',
+        countClass: 'ext-lb-count',
+        countIconClass: 'ext-lb-count-icon',
+        openPostClass: 'ext-lb-open-post',
+        statusClass: 'ext-lb-status',
+        linkClass: 'ext-lb-link',
+        /**
+         * パネルの幅 (px)。本体のダイアログの固定親に right としてそのまま当てる。
+         * 2026-09-09 の実測で、この 1 プロパティだけで画像が縦横比を保ったまま
+         * 再レイアウトされることを確認済み (設計文書 2 節)
+         */
+        widthPx: 360,
+        /**
+         * パネルを出す最小のウィンドウ幅 (px)。これ未満では画像が潰れるため出さない。
+         * SITE_SPEC.md 8.2 の gtMobile (minWidth: 800) に揃えてある。
+         * **本体が「モバイル幅」と見なす境界と一致させるため、独自の数値を置かない**
+         */
+        minWindowWidthPx: 800,
+        /** #ext-media-grid (9998) < #ext-nav-btn-container (9999) より上に置く */
+        zIndex: 10000,
+        /**
+         * 画像ライトボックスのダイアログを指すセレクタ。
+         * EXT_CONFIG.lightbox.selector は投稿作成などの別モーダルにも当たる
+         * 緩いものだが、こちらは right を当てる相手 (その parentElement) を
+         * 決めるため厳密に指定する。要素タイプは書かない
+         */
+        dialogSelector: '[role="dialog"][aria-modal="true"]',
+        /** 日時と数値の表記に使うロケール */
+        locale: 'ja-JP',
+        /**
+         * 取得済みの投稿を保持する上限。超えたら古いものから捨てる。
+         * ページを離れれば消える (メモリのみ)
+         */
+        cacheLimit: 200,
+        /**
+         * record.facets の feature の $type と、パネル側での扱いの対応表。
+         * ここに無い $type は普通の文字列として扱う (押せないだけで本文は読める)
+         */
+        facets: {
+            'app.bsky.richtext.facet#link': {kind: 'link', valueKey: 'uri'},
+            'app.bsky.richtext.facet#mention': {kind: 'mention', valueKey: 'did'},
+            'app.bsky.richtext.facet#tag': {kind: 'tag', valueKey: 'tag'}
+        },
+        text: {
+            loading: '読み込み中...',
+            error: '投稿を読み込めませんでした',
+            collapse: 'パネルを畳む',
+            expand: 'パネルを開く',
+            openPost: '投稿を開く',
+            replyCount: '返信',
+            repostCount: 'リポスト',
+            likeCount: 'いいね',
+            quoteCount: '引用'
+        },
+        api: {
+            origin: 'https://public.api.bsky.app',
+            postsPath: '/xrpc/app.bsky.feed.getPosts',
+            timeoutMs: 12000
         }
     }
 };

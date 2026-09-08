@@ -73,7 +73,49 @@ test('保存キーは互いに衝突しない', () => {
         EXT_CONFIG.mediaGrid.storageKey,
         EXT_CONFIG.mediaGrid.unblur.storageKey,
         EXT_CONFIG.debug.storageKey,
-        EXT_CONFIG.popup.themeStorageKey
+        EXT_CONFIG.popup.themeStorageKey,
+        EXT_CONFIG.lightboxPanel.storageKey,
+        EXT_CONFIG.lightboxPanel.collapsedStorageKey
     ];
     assert.strictEqual(new Set(keys).size, keys.length);
+});
+
+test('ライトボックスのパネルは既定で有効', () => {
+    const panel = EXT_CONFIG.lightboxPanel;
+    assert.equal(typeof panel, 'object');
+    assert.equal(panel.defaultEnabled, true);
+    assert.equal(panel.defaultCollapsed, false);
+});
+
+test('ライトボックスのパネルは寸法と識別子を持つ', () => {
+    const panel = EXT_CONFIG.lightboxPanel;
+    assert.equal(panel.widthPx, 360);
+    // SITE_SPEC.md 8.2 の gtMobile (minWidth: 800) に揃える
+    assert.equal(panel.minWindowWidthPx, 800);
+    // #ext-media-grid (9998) < #ext-nav-btn-container (9999) < パネル
+    assert.ok(panel.zIndex > 9999);
+    assert.equal(typeof panel.panelId, 'string');
+    assert.equal(typeof panel.dialogSelector, 'string');
+});
+
+test('ライトボックスのパネルは facets の対応表を持つ', () => {
+    const facets = EXT_CONFIG.lightboxPanel.facets;
+    assert.equal(facets['app.bsky.richtext.facet#link'].kind, 'link');
+    assert.equal(facets['app.bsky.richtext.facet#link'].valueKey, 'uri');
+    assert.equal(facets['app.bsky.richtext.facet#mention'].kind, 'mention');
+    assert.equal(facets['app.bsky.richtext.facet#mention'].valueKey, 'did');
+    assert.equal(facets['app.bsky.richtext.facet#tag'].kind, 'tag');
+    assert.equal(facets['app.bsky.richtext.facet#tag'].valueKey, 'tag');
+});
+
+test('橋渡しはライトボックスの読み取りと閉じる操作を持つ', () => {
+    const actions = EXT_CONFIG.mediaGrid.bridge.actions;
+    assert.equal(actions.getLightbox, 'get-lightbox');
+    assert.equal(actions.closeLightbox, 'close-lightbox');
+});
+
+test('橋渡しの遷移先は白名簿になっている', () => {
+    const routes = EXT_CONFIG.mediaGrid.bridge.routes;
+    // 2026-09-09 に実機で push() が成功することを確認した 3 つだけ
+    assert.deepEqual(Object.values(routes).sort(), ['Hashtag', 'PostThread', 'Profile']);
 });
