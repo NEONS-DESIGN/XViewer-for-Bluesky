@@ -108,6 +108,11 @@ test('ライトボックスのパネルは facets の対応表を持つ', () => 
     assert.equal(facets['app.bsky.richtext.facet#tag'].valueKey, 'tag');
 });
 
+test('本文中のリンクは http と https だけを押せるようにする', () => {
+    // facets の uri は投稿者が自由に決められる値のため、scheme を絞る
+    assert.deepEqual(EXT_CONFIG.lightboxPanel.allowedLinkProtocols, ['http:', 'https:']);
+});
+
 test('橋渡しはライトボックスの読み取りと閉じる操作を持つ', () => {
     const actions = EXT_CONFIG.mediaGrid.bridge.actions;
     assert.equal(actions.getLightbox, 'get-lightbox');

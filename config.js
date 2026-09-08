@@ -329,6 +329,14 @@ const EXT_CONFIG = {
          */
         cacheLimit: 200,
         /**
+         * 本文中のリンクとして押せるようにする URL の scheme。
+         * **facets の uri は投稿者が自由に決められる値**であり、javascript: や
+         * data: をそのまま a の href に入れると、押した利用者の bsky.app 上で
+         * スクリプトが動く (XSS)。ここに無い scheme のリンクは押せる要素にせず、
+         * ただの文字列として出す
+         */
+        allowedLinkProtocols: ['http:', 'https:'],
+        /**
          * record.facets の feature の $type と、パネル側での扱いの対応表。
          * ここに無い $type は普通の文字列として扱う (押せないだけで本文は読める)
          */

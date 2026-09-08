@@ -15,7 +15,8 @@ const {
     parsePostForPanel,
     formatPostDate,
     formatCount,
-    shouldShowPanel
+    shouldShowPanel,
+    toSafeLinkHref
 } = require('../lightbox-panel.js');
 
 const config = EXT_CONFIG.lightboxPanel;
@@ -170,4 +171,28 @@ test('shouldShowPanel は設定とウィンドウ幅の両方を見る', () => {
     assert.equal(shouldShowPanel({enabled: true, innerWidth: 799}, config), false);
     assert.equal(shouldShowPanel({enabled: false, innerWidth: 1920}, config), false);
     assert.equal(shouldShowPanel(null, config), false);
+});
+
+test('toSafeLinkHref は http と https だけを通す', () => {
+    assert.equal(
+        toSafeLinkHref('https://example.com/a', config),
+        'https://example.com/a'
+    );
+    assert.equal(toSafeLinkHref('http://example.com/', config), 'http://example.com/');
+});
+
+test('toSafeLinkHref は押させてはいけない URL を null にする', () => {
+    // facets の uri は投稿者が自由に決められるため、ここを通すと XSS になる
+    assert.equal(toSafeLinkHref('javascript:alert(1)', config), null);
+    assert.equal(toSafeLinkHref('JavaScript:alert(1)', config), null);
+    assert.equal(toSafeLinkHref('data:text/html,<script>alert(1)</script>', config), null);
+    assert.equal(toSafeLinkHref('vbscript:msgbox(1)', config), null);
+    assert.equal(toSafeLinkHref('file:///etc/passwd', config), null);
+});
+
+test('toSafeLinkHref は相対 URL と壊れた入力を null にする', () => {
+    assert.equal(toSafeLinkHref('/relative/path', config), null);
+    assert.equal(toSafeLinkHref('example.com', config), null);
+    assert.equal(toSafeLinkHref('', config), null);
+    assert.equal(toSafeLinkHref(null, config), null);
 });

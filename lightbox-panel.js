@@ -274,6 +274,30 @@ function shouldShowPanel(state, config) {
 }
 
 /**
+ * 本文中のリンクを a の href に入れてよいかを判定する。
+ * **facets の uri は投稿者が自由に決められる値**のため、許可した scheme
+ * (config.allowedLinkProtocols) 以外は押せる要素にしない。
+ * @param {string} uri facets の feature が持つ URL
+ * @param {Object} config EXT_CONFIG.lightboxPanel
+ * @returns {string|null} 安全な絶対 URL。押させてはいけないものは null
+ */
+function toSafeLinkHref(uri, config) {
+    try {
+        if (typeof uri !== 'string' || !uri) {
+            return null;
+        }
+        const parsed = new URL(uri);
+        if (config.allowedLinkProtocols.indexOf(parsed.protocol) === -1) {
+            return null;
+        }
+        return parsed.href;
+    } catch (error) {
+        // 相対 URL や壊れた文字列は URL の解析で例外になる。押させない
+        return null;
+    }
+}
+
+/**
  * ライトボックスの右側に投稿情報を出す。
  *
  * **本体 DOM への介入は、ダイアログの固定親に当てるインラインの right
@@ -710,9 +734,14 @@ class LightboxPanel {
         const config = this.config;
         const routes = EXT_CONFIG.mediaGrid.bridge.routes;
         if (segment.kind === 'link') {
+            const href = toSafeLinkHref(segment.value, config);
+            // 許可した scheme でなければ押せる要素にしない。本文は文字列として残す
+            if (!href) {
+                return document.createTextNode(segment.text);
+            }
             const link = document.createElement('a');
             link.className = config.linkClass;
-            link.href = segment.value;
+            link.href = href;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = segment.text;
@@ -811,7 +840,8 @@ if (typeof module !== 'undefined' && module.exports) {
         parsePostForPanel,
         formatPostDate,
         formatCount,
-        shouldShowPanel
+        shouldShowPanel,
+        toSafeLinkHref
     };
 }
 
