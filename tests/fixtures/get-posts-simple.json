@@ -1,0 +1,23 @@
+{
+	"posts": [
+		{
+			"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mupeo3so622k",
+			"author": {
+				"did": "did:plc:z72i7hdynmk6r22z27h6tvur",
+				"handle": "bsky.app",
+				"displayName": "Bluesky",
+				"avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:z72i7hdynmk6r22z27h6tvur/bafkrei@jpeg"
+			},
+			"record": {
+				"$type": "app.bsky.feed.post",
+				"createdAt": "2026-09-04T16:21:11.628Z",
+				"text": "v1.132 is live!",
+				"langs": ["en"]
+			},
+			"replyCount": 60,
+			"repostCount": 255,
+			"likeCount": 1377,
+			"quoteCount": 47
+		}
+	]
+}

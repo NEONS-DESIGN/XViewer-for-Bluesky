@@ -1,0 +1,36 @@
+{
+	"posts": [
+		{
+			"uri": "at://did:plc:aaaa/app.bsky.feed.post/3abcdefghijkl",
+			"author": {
+				"did": "did:plc:aaaa",
+				"handle": "neko.bsky.social",
+				"displayName": "ねこ",
+				"avatar": null
+			},
+			"record": {
+				"$type": "app.bsky.feed.post",
+				"createdAt": "2026-09-01T00:00:00.000Z",
+				"text": "猫🐈 https://example.com/a を見て @alice.bsky.social #ねこ",
+				"facets": [
+					{
+						"index": {"byteStart": 8, "byteEnd": 29},
+						"features": [{"$type": "app.bsky.richtext.facet#link", "uri": "https://example.com/a"}]
+					},
+					{
+						"index": {"byteStart": 40, "byteEnd": 58},
+						"features": [{"$type": "app.bsky.richtext.facet#mention", "did": "did:plc:bbbb"}]
+					},
+					{
+						"index": {"byteStart": 59, "byteEnd": 66},
+						"features": [{"$type": "app.bsky.richtext.facet#tag", "tag": "ねこ"}]
+					}
+				]
+			},
+			"replyCount": 0,
+			"repostCount": 0,
+			"likeCount": 0,
+			"quoteCount": 0
+		}
+	]
+}
