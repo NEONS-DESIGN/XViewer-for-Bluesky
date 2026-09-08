@@ -139,7 +139,7 @@ test('maxMediaPerPost を超える添付は 1 件のエントリに畳んだ上�
     const feedItem = {
         post: {
             uri: 'at://did:plc:many/app.bsky.feed.post/many001',
-            author: {handle: 'many.test', labels: []},
+            author: {handle: 'many.test', did: 'did:plc:many', labels: []},
             embed: {$type: 'app.bsky.embed.images#view', images},
             labels: []
         }
@@ -158,7 +158,7 @@ test('1 件の壊れた投稿があっても他の投稿は残る', () => {
             {
                 post: {
                     uri: 'at://did:plc:z/app.bsky.feed.post/zzz999',
-                    author: {handle: 'zoe.test', labels: []},
+                    author: {handle: 'zoe.test', did: 'did:plc:z', labels: []},
                     embed: {
                         $type: 'app.bsky.embed.images#view',
                         images: [{thumb: 'https://cdn.test/t', fullsize: 'https://cdn.test/f', alt: ''}]
@@ -198,4 +198,15 @@ test('先頭側に thumbUrl 無しの要素が混じった場合も有効な画�
     assert.strictEqual(media.length, config.maxMediaPerPost);
     assert.strictEqual(media[0].thumbUrl, 'https://cdn.test/t-valid-0');
     assert.strictEqual(media[9].thumbUrl, 'https://cdn.test/t-valid-9');
+});
+
+test('MediaEntry は postUri と authorDid を持つ', () => {
+    const json = load('feed-images');
+    const {entries} = parseAuthorFeed(json, config);
+    const entry = entries[0];
+    // ライトボックスに metricsContext を添えるために要る (設計文書 3 節)
+    assert.equal(entry.postUri, json.feed[0].post.uri);
+    assert.equal(entry.authorDid, json.feed[0].post.author.did);
+    // postUri は postId (rkey) と整合していること
+    assert.ok(entry.postUri.endsWith(`/${entry.postId}`));
 });

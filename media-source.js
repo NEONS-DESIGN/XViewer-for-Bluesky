@@ -5,6 +5,8 @@
  * @typedef {Object} MediaEntry
  * @property {string} key            重複排除キー (postId そのもの)
  * @property {string} postId         投稿の rkey
+ * @property {string} postUri        投稿の AT URI (ライトボックスの metricsContext に渡す)
+ * @property {string} authorDid      投稿者の DID (同上)
  * @property {string} postHref       /profile/<handle>/post/<rkey>
  * @property {string} authorHandle   投稿者のハンドル (SPA 遷移の bridge に渡す。postHref からの再抽出はしない)
  * @property {'image'|'video'} type  先頭メディアの種別
@@ -137,7 +139,8 @@ function toMediaEntries(feedItem, config) {
         }
         const postId = extractRkey(post.uri);
         const handle = post.author && post.author.handle;
-        if (!postId || !handle) {
+        const authorDid = post.author && post.author.did;
+        if (!postId || !handle || !authorDid) {
             return [];
         }
         const media = extractMediaFromEmbed(post.embed, config);
@@ -158,6 +161,8 @@ function toMediaEntries(feedItem, config) {
         return [{
             key: postId,
             postId,
+            postUri: post.uri,
+            authorDid,
             postHref: `/profile/${handle}/post/${postId}`,
             authorHandle: handle,
             type: head.type,

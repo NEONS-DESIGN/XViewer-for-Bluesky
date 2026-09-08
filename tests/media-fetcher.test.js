@@ -33,7 +33,7 @@ const feedBody = (entries, cursor) => ({
     feed: entries.map((rkey) => ({
         post: {
             uri: `at://did:plc:x/app.bsky.feed.post/${rkey}`,
-            author: {handle: 'x.test', labels: []},
+            author: {did: 'did:plc:x', handle: 'x.test', labels: []},
             embed: {
                 $type: 'app.bsky.embed.images#view',
                 images: [{thumb: 't', fullsize: 'f', alt: ''}]

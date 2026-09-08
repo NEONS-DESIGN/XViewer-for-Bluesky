@@ -300,7 +300,18 @@ class MediaGrid {
             callBridge(config.bridge.actions.openLightbox, {
                 images: entry.siblings,
                 // 1 投稿 1 タイルのため、開くのは常に先頭画像から
-                index: 0
+                index: 0,
+                /*
+                 * 本体が自分でライトボックスを開くときと同じ形の metricsContext を
+                 * 添える。これが入っていると投稿情報パネル (lightbox-panel.js) が
+                 * postUri を読めるようになり、パネル側は「グリッド由来かどうか」を
+                 * 知らずに済む (設計文書 3 節)
+                 */
+                metricsContext: {
+                    postUri: entry.postUri,
+                    postAuthorDid: entry.authorDid,
+                    layout: config.bridge.lightboxLayout
+                }
             }).then((result) => {
                 if (!result || !result.ok) {
                     // ライトボックスが開けなければ SPA 遷移を試し、それも駄目なら通常遷移に落ちる

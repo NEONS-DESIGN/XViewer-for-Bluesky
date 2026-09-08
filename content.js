@@ -145,6 +145,47 @@ function isLightboxVisible() {
 }
 
 /**
+ * ライトボックスの表示状態が変わったときに呼ぶ購読者。
+ * **新しい document.body 全体の監視を足さないための仕組み。**
+ * NavButtonManager.update() は既に毎回 isLightboxVisible() を計算しており、
+ * その値が前回と変わったときだけここから知らせる。追加コストは真偽値 1 個の
+ * 比較だけで済む (設計文書 7 節)
+ */
+let lastLightboxVisible = null;
+const lightboxVisibilitySubscribers = [];
+
+/**
+ * ライトボックスの表示状態の変化を購読する。
+ * @param {(visible: boolean) => void} callback 表示状態が変わったときに呼ばれる
+ * @returns {void}
+ */
+function subscribeLightboxVisibility(callback) {
+    if (typeof callback === 'function') {
+        lightboxVisibilitySubscribers.push(callback);
+    }
+}
+
+/**
+ * 表示状態を購読者へ伝える。**前回と同じ値なら何もしない。**
+ * 極めて高頻度で呼ばれるため、ここに重い処理を足さないこと。
+ * @param {boolean} visible
+ * @returns {void}
+ */
+function notifyLightboxVisibility(visible) {
+    if (visible === lastLightboxVisible) {
+        return;
+    }
+    lastLightboxVisible = visible;
+    for (const callback of lightboxVisibilitySubscribers) {
+        try {
+            callback(visible);
+        } catch (error) {
+            console.error('[Bluesky拡張] ライトボックス通知の購読者で失敗しました', error);
+        }
+    }
+}
+
+/**
  * タブ列を確定してよいだけ DOM が描画されているかを判定する。
  * 実機で観測された Critical (Task 7 修正ラウンド 3): ページ遷移直後は
  * プロフィールのタブバー・左ナビがまだ描画されておらず、この状態で
@@ -551,7 +592,9 @@ class NavButtonManager {
             if (!this.container) {
                 return;
             }
-            if (isLightboxVisible()) {
+            const lightboxVisible = isLightboxVisible();
+            notifyLightboxVisibility(lightboxVisible);
+            if (lightboxVisible) {
                 this.container.classList.add(EXT_CONFIG.styles.hiddenClass);
                 this.startLightboxWatch();
                 return;
