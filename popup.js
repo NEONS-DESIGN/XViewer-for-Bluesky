@@ -78,6 +78,15 @@ const SETTING_ITEMS = Object.freeze([
             + '内部状態を html 要素の属性に書き出します。不具合を報告するときに使います。',
         storageKey: EXT_CONFIG.debug.storageKey,
         defaultValue: EXT_CONFIG.debug.defaultEnabled
+    }),
+    Object.freeze({
+        role: 'lightbox-panel',
+        icon: 'viewSidebar',
+        label: 'ライトボックスに投稿情報を表示',
+        description: '画像を開いたとき、右側に本文・投稿日時・反応数を並べます。'
+            + 'メディアグリッド以外の画像でも動きます。',
+        storageKey: EXT_CONFIG.lightboxPanel.storageKey,
+        defaultValue: EXT_CONFIG.lightboxPanel.defaultEnabled
     })
 ]);
 

@@ -11,10 +11,10 @@ global.EXT_CONFIG = EXT_CONFIG;
 const {ICON_SHAPES} = require('../icon-shapes.js');
 const {POPUP_THEMES, POPUP_THEME_TOGGLE, SETTING_ITEMS} = require('../popup.js');
 
-test('設定項目は 3 件で、表示順が定義順どおり', () => {
+test('設定項目は 4 件で、表示順が定義順どおり', () => {
     assert.deepStrictEqual(
         SETTING_ITEMS.map((item) => item.role),
-        ['media-grid', 'nsfw-unblur', 'debug']
+        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel']
     );
 });
 
@@ -29,6 +29,9 @@ test('設定項目の保存キーと既定値は EXT_CONFIG と一致する (二
 
     assert.strictEqual(byRole.debug.storageKey, EXT_CONFIG.debug.storageKey);
     assert.strictEqual(byRole.debug.defaultValue, EXT_CONFIG.debug.defaultEnabled);
+
+    assert.strictEqual(byRole['lightbox-panel'].storageKey, EXT_CONFIG.lightboxPanel.storageKey);
+    assert.strictEqual(byRole['lightbox-panel'].defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
 });
 
 test('設定項目にはすべて 1 行の説明が付いている', () => {
@@ -70,4 +73,19 @@ test('アイコンの図形データは Material Symbols の viewBox とパス�
          */
         assert.ok(/^[Mm]/.test(shape.path), `${name} のパスが空か形式違い`);
     });
+});
+
+test('設定項目は 4 件あり、4 件目がライトボックスのパネル', () => {
+    assert.equal(SETTING_ITEMS.length, 4);
+    const item = SETTING_ITEMS[3];
+    assert.equal(item.role, 'lightbox-panel');
+    assert.equal(item.icon, 'viewSidebar');
+    assert.equal(item.storageKey, EXT_CONFIG.lightboxPanel.storageKey);
+    assert.equal(item.defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
+});
+
+test('設定項目のアイコンはすべて ICON_SHAPES に存在する', () => {
+    for (const item of SETTING_ITEMS) {
+        assert.ok(ICON_SHAPES[item.icon], `未知のアイコン: ${item.icon}`);
+    }
 });
