@@ -21,8 +21,22 @@
     gap: 8px;
 }
 
+/*
+ * ボタンの幅は最長ラベルに合わせて固定する。
+ * 「ページ先頭へ」はスクロール量で出入りするため、幅を内容任せにすると
+ * 表示・非表示のたびに列 (.ext-nav-btn-column の stretch) の幅が変わり、
+ * 残りのボタンの大きさがガタつく。
+ * 最長ラベルの文字数は content.js が --ext-nav-btn-label-chars で渡す。
+ * ラベルはすべて全角の日本語のため 1 文字 = 1em として見積もる。
+ * 変数が渡らなかったときは 0 になり、従来どおり内容なりの幅に戻る
+ */
 .ext-nav-btn {
-    padding: 8px 14px;
+    box-sizing: border-box;
+    --ext-nav-btn-padding-x: 14px;
+    min-width: calc(var(--ext-nav-btn-label-chars, 0) * 1em + var(--ext-nav-btn-padding-x) * 2);
+    padding: 8px var(--ext-nav-btn-padding-x);
+    text-align: center;
+    white-space: nowrap;
     border: none;
     border-radius: 999px;
     background-color: rgb(16, 131, 254);
@@ -72,6 +86,19 @@
 
 .ext-media-tile.ext-media-blur img {
     filter: blur(24px);
+}
+
+/*
+ * NSFW のぼかし解除 (ポップアップのトグル)。
+ * タイル側の .ext-media-blur とラベル要素はそのまま残し、ここで打ち消すだけにする。
+ * 描画済みのタイルを作り直さずに切り替えられ、OFF に戻せば即座にぼかしが戻る
+ */
+#ext-media-grid.ext-media-unblur .ext-media-tile.ext-media-blur img {
+    filter: none;
+}
+
+#ext-media-grid.ext-media-unblur .ext-media-blur-label {
+    display: none;
 }
 
 .ext-media-blur-label {

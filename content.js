@@ -101,11 +101,14 @@ function hasSession() {
  * history.pushState で {lightbox: true} を積む。pushState は popstate を
  * 発火しないため、NavigationObserver の高頻度コールバックではこの値の
  * 変化を「開閉があったかもしれない」合図として使う。
- * ただしこの値は表示判定の根拠にはしない (Task 7 修正ラウンド 5):
- * 分離ワールド (content script) から見た history.state は、本体側
- * (MAIN ワールド) の履歴操作を取りこぼして古い値のまま残ることがあり、
- * 実機ではブラウザバックでライトボックスを閉じた後もフラグが true のまま
- * 残る挙動が疑われた。合図としてだけ使い、真偽は DOM で確かめる
+ * **この値を表示判定・起動判定の根拠にしてはいけない。** 分離ワールド
+ * (content script) から見た history.state は、本体側 (MAIN ワールド) の
+ * 履歴操作を取りこぼして古い値のまま残る。2.3.0 で実機確認した不具合が
+ * まさにこれで、メディアグリッドの起動判定 (MediaGridController.sync) が
+ * この値を論理和に含めていたため、投稿欄で画像を開いた後は
+ * 「ライトボックスが開いたまま」と誤認し続け、メディアタブへ移っても
+ * グリッドが二度と起動しなくなっていた (リロードでしか直らない)。
+ * 合図としてだけ使い、真偽は必ず DOM (isLightboxVisible) で確かめる
  * @returns {boolean}
  */
 function isLightboxStatePushed() {
@@ -139,20 +142,6 @@ function isLightboxVisible() {
         console.error('[Bluesky拡張] ライトボックスの表示判定に失敗しました', error);
         return false;
     }
-}
-
-/**
- * Bluesky 本体の画像ライトボックスが開いているかどうかを、
- * DOM の実体と履歴フラグの両方で保守的に (どちらかが立っていれば開いている、と)
- * 判定する。グリッドをライトボックス表示中に畳まないための保護
- * (media-grid.js の MediaGridController.sync) が使う。
- * 保護の取りこぼし (畳んでしまう) より、余分に守るほうが安全なため両者の論理和にする。
- * ナビボタンの表示判定はこの関数ではなく isLightboxVisible() を使う
- * (履歴フラグが古いまま残るとボタンが復帰できなくなるため。Task 7 修正ラウンド 5)
- * @returns {boolean}
- */
-function isLightboxOpen() {
-    return isLightboxVisible() || isLightboxStatePushed();
 }
 
 /**
@@ -287,6 +276,7 @@ async function resolveTabs(actor) {
         // DOM 未準備のうちは getProfile を叩かない (同じ actor に何度も
         // フェッチを投げないため。準備できたかどうかだけを見る軽い判定)
         if (!isDomReadyForTabResolution()) {
+            ExtDebug.log('タブ列の解決を保留', {理由: 'DOM が未準備', actor});
             return null;
         }
 
@@ -389,6 +379,7 @@ async function ensureTabsResolved() {
         currentTabs = tabs;
         tabsResolved = true;
         cancelTabsResolveRetry();
+        ExtDebug.log('タブ列を確定', {actor, tabs: tabs.map((tab) => tab.name)});
         if (navButtonManager) {
             navButtonManager.update();
         }
@@ -426,6 +417,13 @@ class NavButtonManager {
             const ui = EXT_CONFIG.ui;
             const container = document.createElement('div');
             container.id = ui.containerId;
+
+            // 全ボタンの幅を最長ラベルに揃えるための文字数。
+            // 「ページ先頭へ」はスクロール量で出入りするため、幅を内容任せにすると
+            // 表示・非表示のたびに列の幅が変わってボタンの大きさがガタつく (style.css)
+            const labels = [...ui.navButtons.map((def) => def.text), ui.scrollTopButton.text];
+            const maxLabelChars = labels.reduce((max, text) => Math.max(max, text.length), 0);
+            container.style.setProperty('--ext-nav-btn-label-chars', String(maxLabelChars));
 
             const column = document.createElement('div');
             column.className = ui.columnClass;
@@ -834,6 +832,7 @@ class TabObserver {
  * 宣言されていない場合に参照エラーにならないようにするため
  */
 function handleTabChange() {
+    ExtDebug.log('タブ変化', {タブ: getSelectedTabIndex()});
     if (navButtonManager) {
         navButtonManager.update();
     }
@@ -855,6 +854,13 @@ function handleTabChange() {
 async function onNavigate() {
     try {
         const info = getPageInfo();
+        ExtDebug.log('遷移を検知', {
+            url: location.pathname,
+            対象: (info && info.actor) || null,
+            画面: (info && info.view) || null,
+            ライトボックス実体: isLightboxVisible(),
+            ライトボックス履歴フラグ: isLightboxStatePushed()
+        });
         if (!info) {
             currentTabs = [];
             currentActor = null;

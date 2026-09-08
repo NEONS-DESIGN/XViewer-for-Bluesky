@@ -29,6 +29,15 @@ test('EXT_CONFIG はぼかし対象ラベルを持つ', () => {
     );
 });
 
+test('ぼかし解除の設定は既定で無効 (従来どおりぼかす)', () => {
+    const unblur = EXT_CONFIG.mediaGrid.unblur;
+    assert.strictEqual(unblur.storageKey, 'nsfwUnblurEnabled');
+    assert.strictEqual(unblur.defaultEnabled, false);
+    assert.strictEqual(unblur.containerClass, 'ext-media-unblur');
+    // グリッド表示の保存キーと衝突しないこと (別々に保存・監視するため)
+    assert.notStrictEqual(unblur.storageKey, EXT_CONFIG.mediaGrid.storageKey);
+});
+
 test('橋渡しのイベント名と操作名が定義されている', () => {
     const bridge = EXT_CONFIG.mediaGrid.bridge;
     assert.strictEqual(bridge.requestEvent, 'ext:bridge-request');
@@ -44,4 +53,27 @@ test('profileTabs は Bluesky 本体と同じ順序で定義されている', ()
         'labels', 'listsForLabeler', 'posts', 'replies', 'media',
         'videos', 'likes', 'feeds', 'starterPacks', 'lists'
     ]);
+});
+
+test('デバッグモードは既定で無効', () => {
+    const debug = EXT_CONFIG.debug;
+    assert.strictEqual(debug.storageKey, 'debugEnabled');
+    assert.strictEqual(debug.defaultEnabled, false);
+    assert.strictEqual(debug.prefix, '[Bluesky拡張][debug]');
+    assert.strictEqual(debug.stateAttribute, 'data-bsky-ext-state');
+});
+
+test('ポップアップの配色は既定でダーク', () => {
+    assert.strictEqual(EXT_CONFIG.popup.themeStorageKey, 'popupTheme');
+    assert.strictEqual(EXT_CONFIG.popup.defaultTheme, 'dark');
+});
+
+test('保存キーは互いに衝突しない', () => {
+    const keys = [
+        EXT_CONFIG.mediaGrid.storageKey,
+        EXT_CONFIG.mediaGrid.unblur.storageKey,
+        EXT_CONFIG.debug.storageKey,
+        EXT_CONFIG.popup.themeStorageKey
+    ];
+    assert.strictEqual(new Set(keys).size, keys.length);
 });

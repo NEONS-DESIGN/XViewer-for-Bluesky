@@ -84,6 +84,40 @@ const EXT_CONFIG = {
     },
 
     /**
+     * ポップアップの保存値 (popup.js)。
+     * 要素 ID・文言・設定項目の並びといったポップアップ固有の値は popup.js の
+     * 定数側に置き、**保存キーと既定値だけ** をここに集約する
+     * (保存キーは content script 側と共有する可能性があるため)。
+     */
+    popup: {
+        /** 配色の選択。UI_DESIGN_KIT 2 節に合わせ、既定はダーク */
+        themeStorageKey: 'popupTheme',
+        defaultTheme: 'dark'
+    },
+
+    /**
+     * デバッグモード (debug.js)。ポップアップの 3 つ目のトグルで切り替える。
+     * 既定は OFF で、OFF のあいだ ExtDebug は何もしない
+     * (sync() のような極めて高頻度のコールバックから呼ばれるため、
+     * 無効時に文字列の組み立てや JSON 化を走らせない)。
+     * 出力先は 2 つある:
+     * 1. コンソール (prefix 付き)。時系列で「何が起きたか」を追う用
+     * 2. html 要素の data 属性 (stateAttribute)。「今どうなっているか」を
+     *    DevTools の Elements や MAIN ワールドから一目で読む用。
+     *    content script は分離ワールドで動くため、内部状態を外から覗く
+     *    手段がこれしかない
+     */
+    debug: {
+        storageKey: 'debugEnabled',
+        /** 既定は無効。利用者が明示的に有効にしたときだけ動く */
+        defaultEnabled: false,
+        /** コンソール出力の接頭辞。通常のエラーログと見分けるため [debug] を足す */
+        prefix: '[Bluesky拡張][debug]',
+        /** 内部状態を書き出す html 要素の属性名 */
+        stateAttribute: 'data-bsky-ext-state'
+    },
+
+    /**
      * タブバー (pager) の出現待ちと、タブ列の確定リトライの設定 (content.js)。
      * 待ち方を 2 段構えにする: まず body の一時監視で描画され次第すぐ気づき、
      * 一定時間で一時監視を畳んだ後は低頻度のポーリングだけで待ち続ける。
@@ -143,7 +177,28 @@ const EXT_CONFIG = {
          */
         maxWidthPx: 600,
         maxMediaPerPost: 10,
+        /**
+         * 動画をグリッドから除外するか。
+         * Bluesky にはメディアタブとは別にビデオタブがあり、動画はそちらで
+         * 一覧できるため、メディアグリッドには画像だけを並べる。
+         * false にすると従来どおり動画タイル (再生バッジ付き・押下で投稿ページへ遷移)
+         * も並ぶ。除外は取得後の解析段階で行う: public API の filter には
+         * 「画像だけ」に相当する値が無いため、posts_with_media のまま取得して落とす
+         */
+        excludeVideos: true,
         blurLabels: ['porn', 'sexual', 'nudity', 'graphic-media'],
+        /**
+         * NSFW ラベルによるぼかしと警告文の解除 (ポップアップの 2 つ目のトグル)。
+         * 解除してもラベルの判定 (shouldBlur) とタイルの blurClass はそのまま残し、
+         * グリッドのルート要素に containerClass を付けて CSS で打ち消すだけにする。
+         * 描画済みのタイルを作り直さずに切り替えられ、OFF に戻せば即座にぼかしが戻るため
+         */
+        unblur: {
+            storageKey: 'nsfwUnblurEnabled',
+            /** 既定は解除しない (従来どおりぼかす) */
+            defaultEnabled: false,
+            containerClass: 'ext-media-unblur'
+        },
         /**
          * ぼかしタイルに重ねるラベルの日本語表示名。
          * ラベラーは自由にラベル値を追加できるため、ここに無い値は

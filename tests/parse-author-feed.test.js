@@ -4,6 +4,8 @@ const {EXT_CONFIG} = require('../config.js');
 const {parseAuthorFeed, extractMediaFromEmbed, toMediaEntries} = require('../media-source.js');
 
 const config = EXT_CONFIG.mediaGrid;
+/** 動画除外を切ったときの挙動 (旧仕様) を確かめるための設定 */
+const configWithVideos = {...EXT_CONFIG.mediaGrid, excludeVideos: false};
 const load = (name) => require(`./fixtures/${name}.json`);
 
 test('images#view の複数画像投稿は 1 件にまとめる', () => {
@@ -56,8 +58,23 @@ test('gallery#view の複数画像投稿も 1 件にまとめ、サムネイル�
     assert.strictEqual(entry.key, 'bbb222');
 });
 
-test('video#view は type=video、fullsizeUrl は null', () => {
+test('既定 (excludeVideos: true) では video#view の投稿はグリッドに出ない', () => {
+    // ビデオタブが別にあるため、メディアグリッドは画像だけを並べる
     const result = parseAuthorFeed(load('feed-video'), config);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.entries.length, 0);
+    // 終端扱いにならないよう cursor は取れたままであること
+    assert.strictEqual(result.cursor, '2026-01-03T00:00:00.000Z');
+});
+
+test('既定では recordWithMedia の中の動画も除外する', () => {
+    const result = parseAuthorFeed(load('feed-record-with-video'), config);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.entries.length, 0);
+});
+
+test('excludeVideos: false なら video#view は type=video、fullsizeUrl は null', () => {
+    const result = parseAuthorFeed(load('feed-video'), configWithVideos);
     assert.strictEqual(result.entries.length, 1);
     const entry = result.entries[0];
     assert.strictEqual(entry.type, 'video');

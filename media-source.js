@@ -19,11 +19,29 @@
 
 /**
  * embed から 0 件以上のメディアを取り出す。未知の形式は空配列。
+ * config.excludeVideos が真なら動画を落とす。動画だけの投稿はこれで 0 件になり、
+ * toMediaEntries がその投稿ごとグリッドから外す。
  * @param {Object|null} embed
  * @param {Object} config EXT_CONFIG.mediaGrid
  * @returns {Object[]} {type, thumbUrl, fullsizeUrl, alt, dimensions} の配列
  */
 function extractMediaFromEmbed(embed, config) {
+    const media = extractAllMediaFromEmbed(embed, config);
+    if (!config || !config.excludeVideos) {
+        return media;
+    }
+    // 種別での絞り込みは 1 箇所に集約する。embed の形式が増えても漏れないようにするため
+    return media.filter((item) => item.type !== 'video');
+}
+
+/**
+ * embed から 0 件以上のメディアを、種別で絞り込まずに取り出す。
+ * 呼び出し側は extractMediaFromEmbed を使うこと。
+ * @param {Object|null} embed
+ * @param {Object} config EXT_CONFIG.mediaGrid
+ * @returns {Object[]} {type, thumbUrl, fullsizeUrl, alt, dimensions} の配列
+ */
+function extractAllMediaFromEmbed(embed, config) {
     try {
         if (!embed || typeof embed !== 'object') {
             return [];
@@ -66,8 +84,9 @@ function extractMediaFromEmbed(embed, config) {
         }
 
         // 引用 + メディア。中の media を同じ手順で処理する
+        // (絞り込みは呼び出し元の extractMediaFromEmbed が一括で行う)
         if (embed.$type === types.recordWithMedia) {
-            return extractMediaFromEmbed(embed.media, config);
+            return extractAllMediaFromEmbed(embed.media, config);
         }
 
         return [];

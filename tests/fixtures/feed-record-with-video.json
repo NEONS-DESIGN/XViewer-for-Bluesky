@@ -1,0 +1,23 @@
+{
+	"feed": [
+		{
+			"post": {
+				"uri": "at://did:plc:erin/app.bsky.feed.post/eee555",
+				"author": {"did": "did:plc:erin", "handle": "erin.test", "labels": []},
+				"embed": {
+					"$type": "app.bsky.embed.recordWithMedia#view",
+					"record": {"$type": "app.bsky.embed.record#view"},
+					"media": {
+						"$type": "app.bsky.embed.video#view",
+						"thumbnail": "https://video.test/thumb/v2",
+						"playlist": "https://video.test/playlist/v2",
+						"alt": "引用に付いた動画",
+						"aspectRatio": {"width": 720, "height": 1280}
+					}
+				},
+				"labels": []
+			}
+		}
+	],
+	"cursor": "2026-01-05T00:00:00.000Z"
+}

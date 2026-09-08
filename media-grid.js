@@ -70,6 +70,8 @@ class MediaGrid {
         this.lastScrollTop = 0;
         /** 末尾に近づいたときに Controller が差し込むコールバック */
         this.onNearEnd = null;
+        /** NSFW のぼかしを解除するか。Controller が設定を読んで setUnblur() で渡す */
+        this.unblurEnabled = EXT_CONFIG.mediaGrid.unblur.defaultEnabled;
         /** removeEventListener で使い回すための束縛済みハンドラ */
         this.boundHandleScroll = () => this.handleScroll();
     }
@@ -109,6 +111,8 @@ class MediaGrid {
             this.statusEl = statusEl;
             this.renderedCount = 0;
             this.lastScrollTop = window.scrollY;
+            // 要素を作り直したので、現在のぼかし解除設定を入れ直す
+            this.applyUnblur();
 
             window.addEventListener('scroll', this.boundHandleScroll, {passive: true});
             return true;
@@ -132,6 +136,37 @@ class MediaGrid {
             this.listEl = null;
             this.statusEl = null;
             this.renderedCount = 0;
+        }
+    }
+
+    /**
+     * NSFW のぼかし解除を切り替える。
+     * タイル側の blurClass とラベル判定はそのまま残し、ルート要素のクラスだけで
+     * 見せ方を変える。描画済みのタイルを作り直さずに済み、OFF に戻せば元に戻る。
+     * @param {boolean} enabled
+     * @returns {void}
+     */
+    setUnblur(enabled) {
+        this.unblurEnabled = !!enabled;
+        this.applyUnblur();
+    }
+
+    /**
+     * 現在のぼかし解除設定をルート要素のクラスに反映する。
+     * まだマウントしていなければ何もしない (mount() 側で入れ直す)。
+     * @returns {void}
+     */
+    applyUnblur() {
+        try {
+            if (!this.containerEl) {
+                return;
+            }
+            this.containerEl.classList.toggle(
+                EXT_CONFIG.mediaGrid.unblur.containerClass,
+                this.unblurEnabled
+            );
+        } catch (error) {
+            console.error('[Bluesky拡張] ぼかし解除の反映に失敗しました', error);
         }
     }
 
@@ -249,7 +284,8 @@ class MediaGrid {
     handleTileClick(event, entry, tile) {
         try {
             const config = EXT_CONFIG.mediaGrid;
-            if (tile.classList.contains(config.blurClass)) {
+            // 解除が有効なときは二段階を挟まず、1 回目の押下でそのまま開く
+            if (!this.unblurEnabled && tile.classList.contains(config.blurClass)) {
                 event.preventDefault();
                 tile.classList.remove(config.blurClass);
                 return;
@@ -432,15 +468,25 @@ class MediaGridController {
     async init() {
         const cfg = this.config;
         try {
-            const stored = await chrome.storage.sync.get(cfg.storageKey);
+            const stored = await chrome.storage.sync.get([cfg.storageKey, cfg.unblur.storageKey]);
             this.enabled = stored[cfg.storageKey] ?? cfg.defaultEnabled;
+            this.grid.setUnblur(stored[cfg.unblur.storageKey] ?? cfg.unblur.defaultEnabled);
         } catch (error) {
             console.error('[Bluesky拡張] 設定の読み込みに失敗しました', error);
         }
         try {
             // ポップアップでの変更をリロードなしで反映する
             chrome.storage.onChanged.addListener((changes, area) => {
-                if (area !== 'sync' || !changes[cfg.storageKey]) {
+                if (area !== 'sync') {
+                    return;
+                }
+                // ぼかし解除はクラスの付け外しだけで済み、グリッドの組み直しは要らない
+                if (changes[cfg.unblur.storageKey]) {
+                    this.grid.setUnblur(
+                        changes[cfg.unblur.storageKey].newValue ?? cfg.unblur.defaultEnabled
+                    );
+                }
+                if (!changes[cfg.storageKey]) {
                     return;
                 }
                 this.enabled = changes[cfg.storageKey].newValue ?? cfg.defaultEnabled;
@@ -477,15 +523,27 @@ class MediaGridController {
             return;
         }
         try {
+            // 起動中のグリッドをライトボックス表示中に畳むと、グリッドも
+            // スクロール位置も失われ、閉じても戻ってこない。
+            // 守るものが無い (active でない) ときは保護そのものが不要で、
+            // むしろ起動を阻むだけなので条件に this.active を入れる。
+            // 判定は必ず DOM の実体 (isLightboxVisible) で行う。履歴フラグは
+            // 分離ワールドで古い値のまま残り、いったん立つと二度と下りない
+            // (2.3.0 で実機確認した Critical。content.js の
+            // isLightboxStatePushed のコメントを参照)
+            if (this.active && isLightboxVisible()) {
+                // last* を記録せずに抜ける。ここで記録すると「判定済み」として
+                // 早期 return の対象になり、ライトボックスを閉じた後も
+                // URL とタブ index が変わらない限り二度と再評価されない。
+                // Bluesky のプロフィールはタブを切り替えても URL が変わらないため
+                // (実測)、記録してしまうと復帰の機会が丸ごと失われる
+                ExtDebug.log('sync 中断', {理由: 'ライトボックス表示中', tabIndex});
+                return;
+            }
+
             this.lastUrl = location.href;
             this.lastEnabled = this.enabled;
             this.lastTabIndex = tabIndex;
-
-            // ライトボックス表示中に畳むと、グリッドもスクロール位置も失われ、
-            // 閉じても戻ってこない
-            if (isLightboxOpen()) {
-                return;
-            }
 
             const pageInfo = getPageInfo();
             // ページ情報が取れない場所 (プロフィール以外) では蓄積を捨てない。
@@ -505,6 +563,7 @@ class MediaGridController {
                 if (this.active) {
                     this.disable();
                 }
+                this.publishDebugState('対象外', pageInfo, tabIndex);
                 return;
             }
 
@@ -527,6 +586,7 @@ class MediaGridController {
                 this.pendingScrollTop = 0;
             }
             this.pendingEnable = !this.active;
+            this.publishDebugState(this.active ? '起動中' : 'マウント先待ち', pageInfo, tabIndex);
         } catch (error) {
             console.error('[Bluesky拡張] グリッドの状態同期に失敗しました', error);
             this.pendingEnable = false;
@@ -540,6 +600,34 @@ class MediaGridController {
     }
 
     /**
+     * デバッグモードのときだけ、現在の内部状態を書き出す。
+     * sync() から高頻度で呼ばれるため、無効時に値を組み立てないよう
+     * 先頭で打ち切る (ExtDebug 側にも同じ判定はあるが、ここで抜けないと
+     * 引数のオブジェクトを毎回作ることになる)。
+     * @param {string} reason この回の sync() がどう判断したか
+     * @param {PageInfo|null} pageInfo 現在のページ情報
+     * @param {number} tabIndex 選択中タブの index
+     * @returns {void}
+     */
+    publishDebugState(reason, pageInfo, tabIndex) {
+        if (!ExtDebug.enabled) {
+            return;
+        }
+        ExtDebug.publishState({
+            判断: reason,
+            起動中: this.active,
+            設定: this.enabled,
+            起動待ち: this.pendingEnable,
+            タブ: tabIndex,
+            画面: (pageInfo && pageInfo.view) || null,
+            対象: (pageInfo && pageInfo.actor) || null,
+            蓄積: this.store.size,
+            ライトボックス実体: isLightboxVisible(),
+            ライトボックス履歴フラグ: isLightboxStatePushed()
+        });
+    }
+
+    /**
      * グリッドを起動する。
      * @param {boolean} isRemount 組み直しか (総量の歯止め (bootstrapCount / finished) を引き継ぐ)
      * @returns {void}
@@ -548,6 +636,7 @@ class MediaGridController {
         const parts = findFeedParts();
         if (!parts) {
             // マウント先がまだ描画されていない。次の sync() で再試行される
+            ExtDebug.log('起動見送り', {理由: 'マウント先が未描画'});
             return;
         }
         this.feedContainer = parts.container;
@@ -569,6 +658,7 @@ class MediaGridController {
             this.finished = false;
         }
         this.active = true;
+        ExtDebug.log('起動', {組み直し: isRemount === true, 蓄積: this.store.size});
         this.grid.render(this.store.getAll());
         this.updateStatus();
         // 初期状態ではグリッドがスクロールできず scroll が発生しないため、ここで 1 回キックする
@@ -581,6 +671,7 @@ class MediaGridController {
      * @returns {void}
      */
     disable(restoreScroll = true) {
+        ExtDebug.log('撤去', {スクロール位置を捨てる: restoreScroll});
         this.grid.unmount();
         // 参照が差し替わっていても取りこぼさないよう総ざらいする
         document.querySelectorAll('.' + this.config.hiddenFeedClass).forEach((element) => {
@@ -665,6 +756,12 @@ class MediaGridController {
      * @returns {void}
      */
     handleBatchEnd() {
+        ExtDebug.log('取得の 1 回が終了', {
+            蓄積: this.store.size,
+            打ち切り: this.fetcher.exhausted,
+            失敗: this.fetcher.failed,
+            自前で読み進めた回数: this.bootstrapCount
+        });
         this.updateStatus();
         if (this.fetcher.exhausted || this.fetcher.failed || this.finished) {
             return;
