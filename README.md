@@ -65,6 +65,20 @@ node --test tests/*.test.js
 対象は解析・整形・判定の純関数だけで、DOM 操作・本体レイアウトへの介入・
 橋渡しは実機の bsky.app で確認する。
 
+## アイコン
+
+`icons/` の PNG 4 枚 (16 / 32 / 48 / 128) がツールバーと拡張機能の管理画面に出る。
+**画像編集ソフトで直接触らず、`tools/generate-icons.mjs` の `GEOMETRY` を直して
+生成しなおすこと。**
+
+```
+node tools/generate-icons.mjs
+```
+
+生成器は依存関係を持たず、Node の組み込みモジュールだけで PNG を書き出す。
+原本の `icons/icon.svg` も同じ定義から作られる (MV3 のアイコンは PNG のみのため、
+SVG は資料であって `manifest.json` からは参照しない)。
+
 ## 文書
 
 - `開発メモ` — 作業規約と、実機で確認済み / 未確認の項目の一覧
