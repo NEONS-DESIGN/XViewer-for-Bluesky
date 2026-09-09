@@ -196,3 +196,31 @@ test('toSafeLinkHref は相対 URL と壊れた入力を null にする', () => 
     assert.equal(toSafeLinkHref('', config), null);
     assert.equal(toSafeLinkHref(null, config), null);
 });
+
+test('parsePostForPanel: cid と viewer をそのまま持ち帰る', () => {
+    const post = parsePostForPanel({
+        posts: [{
+            uri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+            cid: 'bafyreiexamplecid',
+            author: {handle: 'alice.bsky.social'},
+            record: {text: 'こんにちは', createdAt: '2026-09-09T00:00:00.000Z'},
+            likeCount: 5,
+            viewer: {like: 'at://did:plc:me/app.bsky.feed.like/1', bookmarked: true}
+        }]
+    }, EXT_CONFIG.lightboxPanel);
+    assert.strictEqual(post.cid, 'bafyreiexamplecid');
+    assert.strictEqual(post.viewer.like, 'at://did:plc:me/app.bsky.feed.like/1');
+    assert.strictEqual(post.viewer.bookmarked, true);
+});
+
+test('parsePostForPanel: viewer が無ければ null、cid が無ければ空文字', () => {
+    const post = parsePostForPanel({
+        posts: [{
+            uri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+            author: {handle: 'alice.bsky.social'},
+            record: {text: '', createdAt: '2026-09-09T00:00:00.000Z'}
+        }]
+    }, EXT_CONFIG.lightboxPanel);
+    assert.strictEqual(post.viewer, null);
+    assert.strictEqual(post.cid, '');
+});

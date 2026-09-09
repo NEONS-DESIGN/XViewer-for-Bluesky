@@ -4,12 +4,15 @@
  *
  * **メディアグリッド由来かどうかを知らない。** 開いているライトボックスの
  * activeLightbox.metricsContext.postUri を橋渡し (get-lightbox) で読み、
- * 公開 API の getPosts で投稿を引くだけ。グリッド側は openLightbox に
+ * getPosts で投稿を引くだけ。グリッド側は openLightbox に
  * 本体と同じ metricsContext を添えるため、経路が 1 本で済む。
+ * **取得はまず橋渡し経由の認証付き getPosts を試し、失敗したときだけ
+ * 公開 API に落ちる** (viewer は認証付きでしか返らないため)。
  *
  * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) /
  *       bridge-client.js (callBridge) / icons.js (createIcon) /
- *       content.js (subscribeLightboxVisibility, isLightboxVisible)
+ *       content.js (subscribeLightboxVisibility, isLightboxVisible) /
+ *       post-actions.js (PostActions)
  */
 
 /**
@@ -24,6 +27,9 @@
  * パネルに描くための投稿。
  * @typedef {Object} PanelPost
  * @property {string} postUri AT URI
+ * @property {string} cid 投稿の CID。いいね・リポスト・ブックマークに要る
+ * @property {Object|null} viewer getPosts の viewer をそのまま。
+ *   **未認証の取得では付かない。** 解釈は post-actions.js の readViewerState() が行う
  * @property {string} handle 作者のハンドル
  * @property {string} displayName 表示名 (無ければハンドル)
  * @property {string|null} avatarUrl
@@ -190,6 +196,8 @@ function parsePostForPanel(json, config) {
         const text = typeof record.text === 'string' ? record.text : '';
         return {
             postUri: post.uri,
+            cid: typeof post.cid === 'string' ? post.cid : '',
+            viewer: (post.viewer && typeof post.viewer === 'object') ? post.viewer : null,
             handle,
             displayName: (typeof author.displayName === 'string' && author.displayName)
                 ? author.displayName
@@ -331,6 +339,11 @@ class LightboxPanel {
          * 変わったりしたら、その応答は丸ごと捨てる (MediaFetcher.generation と同じ考え方)
          */
         this.generation = 0;
+        /**
+         * 投稿操作の呼び出し層。**取得を認証付きにするためにも使う**
+         * (viewer は認証付きの getPosts でしか返らない)
+         */
+        this.actions = new PostActions(EXT_CONFIG.postActions);
     }
 
     /**
@@ -486,11 +499,31 @@ class LightboxPanel {
     }
 
     /**
-     * 公開 API から投稿を 1 件引く。
+     * 投稿を 1 件引く。
+     *
+     * **まず橋渡し経由の認証付き getPosts を試す。** viewer (いいね済みか等) は
+     * 認証付きでしか返らないため。橋渡しが使えない・未ログインのときは
+     * 公開 API に落ちる。その場合 viewer が無く、操作ボタンは出ない
      * @param {string} postUri
      * @returns {Promise<PanelPost|null>} 読めなければ null
      */
     async fetchPost(postUri) {
+        const authed = await this.actions.fetchPost(postUri);
+        if (authed) {
+            const post = parsePostForPanel(authed, this.config);
+            if (post) {
+                return post;
+            }
+        }
+        return this.fetchPostPublic(postUri);
+    }
+
+    /**
+     * 公開 API から投稿を 1 件引く。**未認証のため viewer は付かない。**
+     * @param {string} postUri
+     * @returns {Promise<PanelPost|null>} 読めなければ null
+     */
+    async fetchPostPublic(postUri) {
         const api = this.config.api;
         const url = `${api.origin}${api.postsPath}?uris=${encodeURIComponent(postUri)}`;
         const controller = new AbortController();
