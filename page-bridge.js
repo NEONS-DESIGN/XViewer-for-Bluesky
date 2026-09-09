@@ -43,8 +43,13 @@
          */
         xrpc: {
             'app.bsky.feed.getPosts': {target: 'appview', method: 'GET'},
-            'com.atproto.repo.createRecord': {target: 'pds', method: 'POST'},
-            'com.atproto.repo.deleteRecord': {target: 'pds', method: 'POST'},
+            /**
+             * recordWrite: true は checkXrpcRequest() が collection / repo の
+             * 検査を課す目印。**文字列リテラルで別置きしない (修正ラウンド 1 C1/I2)。**
+             * ここに新しく repo 書き込み系の NSID を足すときは必ず付けること
+             */
+            'com.atproto.repo.createRecord': {target: 'pds', method: 'POST', recordWrite: true},
+            'com.atproto.repo.deleteRecord': {target: 'pds', method: 'POST', recordWrite: true},
             'app.bsky.bookmark.createBookmark': {target: 'appview', method: 'POST'},
             'app.bsky.bookmark.deleteBookmark': {target: 'appview', method: 'POST'}
         },
@@ -64,7 +69,6 @@
 
     let lightboxControls = null;
     let navigationControls = null;
-    let composerControls = null;
 
     /**
      * React の fiber ツリーを深さ優先で辿り、述語に合う Context の value を返す。
@@ -338,14 +342,22 @@
         if (!payload || typeof payload !== 'object') {
             return {ok: false, reason: 'invalid-payload'};
         }
+        if (typeof payload.nsid !== 'string') {
+            // hasOwnProperty はプロパティキーの ToString 変換で照合するため、
+            // 配列 (["com.atproto.repo.createRecord"] 等) を渡すと白名簿には
+            // hit しつつ、下の rule.recordWrite が undefined になり
+            // collection / repo の検査を素通りしてしまう (修正ラウンド 1 C1)
+            return {ok: false, reason: 'invalid-nsid'};
+        }
         const rule = Object.prototype.hasOwnProperty.call(EXT_BRIDGE.xrpc, payload.nsid)
             ? EXT_BRIDGE.xrpc[payload.nsid]
             : null;
         if (!rule) {
             return {ok: false, reason: 'nsid-not-allowed'};
         }
-        const isRecordWrite = payload.nsid === 'com.atproto.repo.createRecord'
-            || payload.nsid === 'com.atproto.repo.deleteRecord';
+        // 白名簿 (rule.recordWrite) から導く。文字列リテラルを別置きすると
+        // 白名簿に NSID を足しても検査が追随しない事故が起きる (修正ラウンド 1 I2)
+        const isRecordWrite = rule.recordWrite === true;
         if (!isRecordWrite) {
             return {ok: true, rule};
         }
@@ -442,6 +454,13 @@
 
     /**
      * 本体の投稿作成モーダルを返信・引用モードで開く。
+     *
+     * **findComposerControls() の結果をキャッシュしない。** findClients() と
+     * 同じ理由 (React が状態が変わるたび Context の value を作り直すこと) に加え、
+     * アンマウント済みのツリー由来の openComposer は例外を投げずに何もしない
+     * ことがあり、キャッシュを取り直すきっかけ (throw) が来ないまま
+     * 「押しても何も起きないのに成功扱い」になる事故を防ぐ (修正ラウンド 1 I4)。
+     * 押下時にしか走らないため、毎回歩くコストは findClients() と同様に許容する
      * @param {{mode: string, post: Object}} payload
      * @returns {{ok: boolean, reason: string|null}}
      */
@@ -455,24 +474,18 @@
             || typeof post.uri !== 'string' || typeof post.cid !== 'string') {
             return {ok: false, reason: 'invalid-payload'};
         }
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            if (!composerControls) {
-                composerControls = findComposerControls();
-            }
-            if (!composerControls) {
-                return {ok: false, reason: 'no-composer'};
-            }
-            try {
-                composerControls.openComposer(
-                    mode === 'reply' ? {replyTo: post} : {quote: post}
-                );
-                return {ok: true, reason: null};
-            } catch (error) {
-                // 制御が古くなっている可能性があるので 1 度だけ取り直して再試行する
-                composerControls = null;
-            }
+        const controls = findComposerControls();
+        if (!controls) {
+            return {ok: false, reason: 'no-composer'};
         }
-        return {ok: false, reason: 'open-failed'};
+        try {
+            controls.openComposer(
+                mode === 'reply' ? {replyTo: post} : {quote: post}
+            );
+            return {ok: true, reason: null};
+        } catch (error) {
+            return {ok: false, reason: 'open-failed'};
+        }
     }
 
     /**
@@ -542,9 +555,12 @@
         reply(detail.id, {ok: false, reason: 'unknown-action'});
     }
 
-    // tests から require するためだけの分岐。MAIN ワールドでは module が
-    // 未定義のため何もしない
-    if (typeof module !== 'undefined' && module.exports) {
+    // tests から require するためだけの分岐。**typeof window === 'undefined' を
+    // 必ず先に見る。** page-bridge.js は MAIN ワールドの document_end で動くため、
+    // これが無いと先に window.module を仕込んだページ側コードに白名簿を含む
+    // EXT_BRIDGE への参照を渡してしまう (修正ラウンド 1 I3)。Node には window が
+    // 存在しないため、この条件は Node からの require でしか成立しない
+    if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exports) {
         module.exports = {EXT_BRIDGE, checkXrpcRequest, buildQuery};
     }
 
