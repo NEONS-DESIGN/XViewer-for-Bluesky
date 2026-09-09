@@ -99,8 +99,8 @@ function hasSession() {
  * ライトボックスの履歴フラグが積まれているかどうかを返す (安価な判定)。
  * 実機確認済み (Task 7 修正ラウンド 1): ライトボックスを開くとき
  * history.pushState で {lightbox: true} を積む。pushState は popstate を
- * 発火しないため、NavigationObserver の高頻度コールバックではこの値の
- * 変化を「開閉があったかもしれない」合図として使う。
+ * 発火しないため、かつては NavigationObserver の高頻度コールバックで
+ * この値の変化を「開閉があったかもしれない」合図として使っていた。
  * **この値を表示判定・起動判定の根拠にしてはいけない。** 分離ワールド
  * (content script) から見た history.state は、本体側 (MAIN ワールド) の
  * 履歴操作を取りこぼして古い値のまま残る。2.3.0 で実機確認した不具合が
@@ -108,7 +108,12 @@ function hasSession() {
  * この値を論理和に含めていたため、投稿欄で画像を開いた後は
  * 「ライトボックスが開いたまま」と誤認し続け、メディアタブへ移っても
  * グリッドが二度と起動しなくなっていた (リロードでしか直らない)。
- * 合図としてだけ使い、真偽は必ず DOM (isLightboxVisible) で確かめる
+ * **2026-09-08 以降、Bluesky はこのフラグを立てなくなり常に false を返す**
+ * (SITE_SPEC.md 2.3)。そのため NavigationObserver.checkNavigation() の
+ * 合図としてもこの値は使っていない (2026-09-09 修正、body 直下の要素数に
+ * 置き換えた)。この関数は判断にも合図にも使われておらず、デバッグモードの
+ * 状態出力 (data-bsky-ext-state の「ライトボックス履歴フラグ」) にだけ
+ * 残している
  * @returns {boolean}
  */
 function isLightboxStatePushed() {
@@ -625,10 +630,21 @@ class NavButtonManager {
  * SPA 内遷移を検知し、ページ更新のトリガーになる。
  * X (旧 Twitter) 版拡張と同じ方式: body の変化を MutationObserver で監視しつつ、
  * popstate も購読する。MutationObserver 側のコールバックは location.href と
- * ライトボックスの履歴フラグ (history.state?.lightbox) の比較のみ行い、
- * 重い処理は requestAnimationFrame 側にまとめる。ライトボックスを開くときは
- * pushState が使われ popstate を発火しないため、href の比較だけでは
- * 検知できない (Task 7 修正ラウンド 1)
+ * body 直下の要素数の比較のみ行い、重い処理は requestAnimationFrame 側に
+ * まとめる。ライトボックスを開くときは pushState が使われ popstate を
+ * 発火しないため、href の比較だけでは検知できない (Task 7 修正ラウンド 1)。
+ *
+ * **かつては合図に history.state.lightbox の変化を使っていたが、Bluesky は
+ * 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**
+ * (SITE_SPEC.md 2.3)。ライトボックスを開いても URL は変わらないため、
+ * このままでは門番が二度と開かず onNavigate が呼ばれなくなる
+ * (ライトボックス表示中もナビボタンが隠れない既知の不具合の原因。
+ * 2026-09-09 に投稿情報パネルが出ないという形で再発して特定した)。
+ * 代わりに body 直下の要素数を見る。モーダルが開くと本体がフォーカス
+ * トラップの番兵として空の span を 2 つ body 直下に足し、閉じると消す
+ * (2026-09-09 実測。6 → 8 → 6)。**これは合図であって真偽ではない。**
+ * 開いているかどうかの判断は従来どおり update() の isLightboxVisible()
+ * (DOM の実体) が持つ
  */
 class NavigationObserver {
     /**
@@ -637,7 +653,7 @@ class NavigationObserver {
     constructor(onNavigate) {
         this.onNavigate = onNavigate;
         this.lastHref = location.href;
-        this.lastLightboxOpen = isLightboxStatePushed();
+        this.lastBodyChildren = document.body.childElementCount;
         this.isNavigating = false;
         this.observer = null;
     }
@@ -657,13 +673,13 @@ class NavigationObserver {
      * 戻る/進む操作を受け取る。popstate はユーザー操作でしか発火しない
      * 低頻度のイベントなので、差分を見ずに必ず onNavigate を予約する。
      * ブラウザバックでライトボックスを閉じたときのように、
-     * href も履歴フラグも「変わっていない」ように見えるのに画面の実体だけが
-     * 変わるケースを取りこぼさないため (Task 7 修正ラウンド 5)
+     * href も body 直下の要素数も「変わっていない」ように見えるのに画面の
+     * 実体だけが変わるケースを取りこぼさないため (Task 7 修正ラウンド 5)
      */
     handlePopState() {
         try {
             this.lastHref = location.href;
-            this.lastLightboxOpen = isLightboxStatePushed();
+            this.lastBodyChildren = document.body.childElementCount;
             this.scheduleNavigate();
         } catch (error) {
             console.error('[Bluesky拡張] 戻る/進むの処理に失敗しました', error);
@@ -671,19 +687,34 @@ class NavigationObserver {
     }
 
     /**
-     * location.href またはライトボックスの履歴フラグが前回と変わっていれば、
+     * location.href か body の直下の要素数が前回と変わっていれば、
      * 1 回だけ onNavigate をスケジュールする。
+     *
+     * **かつては history.state.lightbox の変化を合図にしていたが、
+     * Bluesky は 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**
+     * (SITE_SPEC.md 2.3)。ライトボックスを開いても URL は変わらないため、
+     * 門番が二度と開かず onNavigate が走らない状態になっていた
+     * (ライトボックス表示中もナビボタンが隠れない既知の不具合の原因。
+     * 2026-09-09 に投稿情報パネルが出ないという形で再発して特定した)。
+     *
+     * 代わりに body の直下の要素数を見る。モーダルが開くと本体が
+     * フォーカストラップの番兵として空の span を 2 つ body 直下に足し、
+     * 閉じると消す (2026-09-09 実測。6 → 8 → 6)。
+     * **これは合図であって真偽ではない。** 開いているかどうかの判断は
+     * 従来どおり update() の isLightboxVisible() (DOM の実体) が持つ。
+     *
      * body 全体の mutation で極めて高頻度に呼ばれるため、
-     * ここには文字列比較と history.state の参照より重い処理を置かない
+     * ここには文字列比較とプロパティ 1 個の読み取りより重い処理を置かない
+     * (childElementCount はレイアウトを起こさない)
      */
     checkNavigation() {
         try {
-            const lightboxOpen = isLightboxStatePushed();
-            if (location.href === this.lastHref && lightboxOpen === this.lastLightboxOpen) {
+            const bodyChildren = document.body.childElementCount;
+            if (location.href === this.lastHref && bodyChildren === this.lastBodyChildren) {
                 return;
             }
             this.lastHref = location.href;
-            this.lastLightboxOpen = lightboxOpen;
+            this.lastBodyChildren = bodyChildren;
             this.scheduleNavigate();
         } catch (error) {
             console.error('[Bluesky拡張] ナビゲーション検知に失敗しました', error);
