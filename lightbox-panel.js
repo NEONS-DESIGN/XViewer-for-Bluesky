@@ -317,7 +317,12 @@ function toSafeLinkHref(uri, config) {
  * 消してしまう (2026-09-09 実機の手前で見つかった Important。
  * `CHANGELOG.md` `[2.6.3]` 参照)。
  * 書き戻す先は自前で作った `PanelPost` (キャッシュに入っているものと
- * 同じ参照) で、本体 DOM にも本体のキャッシュにも触れない
+ * 同じ参照) で、本体 DOM にも本体のキャッシュにも触れない。
+ * **`post.raw` (本体の openComposer にそのまま渡す生の PostView) にも
+ * 同じ書き戻しを行う。** トップレベルの `viewer` / `counts` とは別に
+ * 持っているデータのため、書き込み口を 1 つに保つにはここで両方を
+ * 更新する必要がある (書き戻しを 2 か所に分けると、片方だけ更新される
+ * 事故を繰り返す。過去 4 回この機能を壊した原因と同じパターン)
  * @param {PanelPost} post 書き戻す先
  * @param {'like'|'repost'|'bookmark'} kind
  * @param {ActionState} state 反映する状態。kind に対応するフィールドだけを読む
@@ -338,6 +343,23 @@ function syncPostViewer(post, kind, state) {
         }
         post.viewer = viewer;
         post.counts = counts;
+
+        // raw (getPosts の post そのもの) にも、その種別のフィールドだけを書く。
+        // raw が無い・raw.viewer が無い場合は何もしない (落とすより後回しにする)
+        if (post.raw && typeof post.raw === 'object' && post.raw.viewer
+            && typeof post.raw.viewer === 'object') {
+            const rawViewer = Object.assign({}, post.raw.viewer);
+            if (kind === 'like') {
+                rawViewer.like = state.likeUri;
+                post.raw.likeCount = state.counts.like;
+            } else if (kind === 'repost') {
+                rawViewer.repost = state.repostUri;
+                post.raw.repostCount = state.counts.repost;
+            } else if (kind === 'bookmark') {
+                rawViewer.bookmarked = state.bookmarked;
+            }
+            post.raw.viewer = rawViewer;
+        }
     } catch (error) {
         console.error('[Bluesky拡張] 投稿の状態の書き戻しに失敗しました', error);
     }

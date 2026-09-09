@@ -271,6 +271,56 @@ test('syncPostViewer: like を書き戻すと viewer.like / counts.like だけ�
     assert.strictEqual(post.counts.quote, 4);
 });
 
+// 回帰テスト: raw (openComposer にそのまま渡す生の PostView) はトップレベルの
+// viewer / counts とは別に持っているため、syncPostViewer() が書き戻しを
+// 忘れると、パネルでいいねを付けた直後に同じ投稿を引用したとき composer に
+// 渡る raw が反映前の状態のままになる (2026-09-09 実機で発見。CHANGELOG.md [2.6.9])
+test('syncPostViewer: like を書き戻すと raw.viewer.like / raw.likeCount も更新され、raw.viewer.bookmarked は変わらない', () => {
+    const post = {
+        postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+        cid: 'bafyreiexamplecid',
+        viewer: {like: null, repost: null, bookmarked: true},
+        counts: {reply: 0, repost: 0, like: 3, quote: 0},
+        raw: {
+            uri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+            viewer: {like: null, repost: null, bookmarked: true},
+            likeCount: 3,
+            repostCount: 0
+        }
+    };
+    const state = {
+        likeUri: 'at://did:plc:me/app.bsky.feed.like/def',
+        repostUri: null,
+        bookmarked: false,
+        counts: {reply: 0, repost: 0, like: 4, quote: 0}
+    };
+    syncPostViewer(post, 'like', state);
+    assert.strictEqual(post.raw.viewer.like, 'at://did:plc:me/app.bsky.feed.like/def');
+    assert.strictEqual(post.raw.likeCount, 4);
+    // bookmark は触れられていない
+    assert.strictEqual(post.raw.viewer.bookmarked, true);
+    assert.strictEqual(post.raw.repostCount, 0);
+});
+
+test('syncPostViewer: raw が無くても例外を投げず、トップレベルの viewer / counts は書き戻される', () => {
+    const post = {
+        postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+        cid: 'bafyreiexamplecid',
+        viewer: {like: null, repost: null, bookmarked: false},
+        counts: {reply: 0, repost: 0, like: 0, quote: 0}
+    };
+    const state = {
+        likeUri: 'at://did:plc:me/app.bsky.feed.like/def',
+        repostUri: null,
+        bookmarked: false,
+        counts: {reply: 0, repost: 0, like: 1, quote: 0}
+    };
+    assert.doesNotThrow(() => syncPostViewer(post, 'like', state));
+    assert.strictEqual(post.viewer.like, 'at://did:plc:me/app.bsky.feed.like/def');
+    assert.strictEqual(post.counts.like, 1);
+    assert.strictEqual(post.raw, undefined);
+});
+
 test('syncPostViewer: bookmark を書き戻すと viewer.bookmarked だけが変わり、viewer.like や counts には触れない', () => {
     const post = {
         postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
