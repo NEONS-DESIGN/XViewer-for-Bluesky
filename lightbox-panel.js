@@ -1026,7 +1026,25 @@ class LightboxPanel {
 
             const result = await this.callAction(kind, post, previous, next);
             this.pending.delete(kind);
-            // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、その結果は捨てる
+            if (result.ok) {
+                // createRecord の応答の URI を取り込む。取り込まないと取り消せない
+                if (kind === 'like' && next.liked) {
+                    next.likeUri = result.recordUri;
+                }
+                if (kind === 'repost' && next.reposted) {
+                    next.repostUri = result.recordUri;
+                }
+                // 覚えている投稿にも反映する。**破棄ガードより前で無条件に行う。**
+                // post はこの呼び出しがローカルに掴んでいるキャッシュ内のオブジェクト
+                // なので、応答待ちの間に閉じられていても書き戻して構わない。
+                // ガードの後ろに置くと、応答が返る前に閉じた場合だけ成功した書き込みが
+                // キャッシュへ反映されず、開き直すと「未いいね」から描かれて
+                // レコードが二重にできる
+                syncPostViewer(post, next);
+            }
+            // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、
+            // 画面への反映は捨てる (書き戻しは上で完了しているので、次に開いたときは
+            // 正しい状態から描かれる)
             if (this.post !== post || generation !== this.generation) {
                 return;
             }
@@ -1036,16 +1054,7 @@ class LightboxPanel {
                 this.showActionError();
                 return;
             }
-            // createRecord の応答の URI を取り込む。取り込まないと取り消せない
-            if (kind === 'like' && next.liked) {
-                this.state.likeUri = result.recordUri;
-            }
-            if (kind === 'repost' && next.reposted) {
-                this.state.repostUri = result.recordUri;
-            }
-            // 覚えている投稿にも反映する。書き戻さないと、開き直したときや
-            // トグルの切り替えで操作前の状態から描き直され、レコードが二重にできる
-            syncPostViewer(post, this.state);
+            this.state = next;
             this.renderActions();
         } catch (error) {
             console.error('[Bluesky拡張] 投稿操作に失敗しました', error);

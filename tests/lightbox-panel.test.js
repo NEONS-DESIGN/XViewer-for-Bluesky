@@ -19,7 +19,7 @@ const {
     toSafeLinkHref,
     syncPostViewer
 } = require('../lightbox-panel.js');
-const {readViewerState} = require('../post-actions.js');
+const {readViewerState, toggleActionState} = require('../post-actions.js');
 
 const config = EXT_CONFIG.lightboxPanel;
 
@@ -273,4 +273,34 @@ test('syncPostViewer: 壊れた post を渡しても例外を投げない', () =
         likeUri: null, repostUri: null, bookmarked: false,
         counts: {reply: 0, repost: 0, like: 0, quote: 0}
     }));
+});
+
+/*
+ * 回帰テスト (修正ラウンド 2): runAction() は createRecord の応答の URI を
+ * this.state ではなく next (toggleActionState() が返す、押した後の状態) へ
+ * 取り込み、syncPostViewer(post, next) を「別の投稿へ移った・閉じて開き直された」
+ * 破棄ガードより前で無条件に呼ぶ。応答が返る前にライトボックスを閉じても、
+ * 成功した書き込みだけはキャッシュ (PanelPost) へ確実に反映されることを保証する
+ * ための並び順で、runAction() のクラス構造を変えずには async の実行順序その
+ * ものは単体テストできない。ここでは runAction() の成功経路が組み立てる値
+ * (toggleActionState() の戻り値に createRecord の応答の URI を足したもの) を
+ * syncPostViewer() に通し、その値がそのまま投稿へ書き戻ることを検証する
+ */
+test('syncPostViewer: recordUri を取り込んだ next を渡すと、いいねの URI ごと書き戻る', () => {
+    const post = {
+        postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+        cid: 'bafyreiexamplecid',
+        viewer: null,
+        counts: {reply: 0, repost: 0, like: 2, quote: 0}
+    };
+    const previous = readViewerState(null, post.counts);
+    // runAction() が押した瞬間に作る楽観的な状態
+    const next = toggleActionState(previous, 'like');
+    assert.strictEqual(next.likeUri, null, '取り込み前は URI がまだ無い');
+    // createRecord の応答が返った直後、runAction() は this.state ではなく
+    // next 自身に recordUri を取り込む
+    next.likeUri = 'at://did:plc:me/app.bsky.feed.like/xyz';
+    // 破棄ガードの成否によらず、書き戻しは post に対して行われる
+    syncPostViewer(post, next);
+    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), next);
 });
