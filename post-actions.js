@@ -53,7 +53,7 @@ function parseRecordUri(uri) {
  * getPosts の viewer から反応の状態を読む。
  * **viewer は未認証の取得では付かない。** 無い場合はすべて未反応として扱う。
  * @param {Object|null|undefined} viewer post.viewer
- * @param {{reply: number, repost: number, like: number, quote: number}} counts
+ * @param {{reply: number, repost: number, like: number, quote: number}|null|undefined} counts
  * @returns {ActionState}
  */
 function readViewerState(viewer, counts) {
@@ -63,6 +63,7 @@ function readViewerState(viewer, counts) {
     const repostUri = (viewer && typeof viewer.repost === 'string' && viewer.repost)
         ? viewer.repost
         : null;
+    const normalizedCounts = counts || {};
     return {
         liked: likeUri !== null,
         likeUri,
@@ -70,10 +71,10 @@ function readViewerState(viewer, counts) {
         repostUri,
         bookmarked: !!(viewer && viewer.bookmarked === true),
         counts: {
-            reply: counts.reply,
-            repost: counts.repost,
-            like: counts.like,
-            quote: counts.quote
+            reply: typeof normalizedCounts.reply === 'number' ? normalizedCounts.reply : 0,
+            repost: typeof normalizedCounts.repost === 'number' ? normalizedCounts.repost : 0,
+            like: typeof normalizedCounts.like === 'number' ? normalizedCounts.like : 0,
+            quote: typeof normalizedCounts.quote === 'number' ? normalizedCounts.quote : 0
         }
     };
 }

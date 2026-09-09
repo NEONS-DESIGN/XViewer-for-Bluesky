@@ -131,3 +131,34 @@ test('toggleActionState: 知らない種別は状態を変えない', () => {
     const after = toggleActionState(before, 'follow');
     assert.deepStrictEqual(after, before);
 });
+
+test('readViewerState: counts が null でも落ちず、すべて 0 になる', () => {
+    const state = readViewerState({}, null);
+    assert.strictEqual(state.counts.reply, 0);
+    assert.strictEqual(state.counts.repost, 0);
+    assert.strictEqual(state.counts.like, 0);
+    assert.strictEqual(state.counts.quote, 0);
+});
+
+test('readViewerState: counts の一部のキーが欠けていても、欠けたものだけ 0 になる', () => {
+    const state = readViewerState({}, {reply: 3, like: 100});
+    assert.strictEqual(state.counts.reply, 3);
+    assert.strictEqual(state.counts.repost, 0);
+    assert.strictEqual(state.counts.like, 100);
+    assert.strictEqual(state.counts.quote, 0);
+});
+
+test('toggleActionState: リポストを外すと数が 1 減る', () => {
+    const before = readViewerState({repost: 'at://did:plc:me/app.bsky.feed.repost/2'}, makeCounts());
+    const after = toggleActionState(before, 'repost');
+    assert.strictEqual(after.reposted, false);
+    assert.strictEqual(after.counts.repost, 9);
+    assert.strictEqual(after.repostUri, null);
+});
+
+test('toggleActionState: ブックマークを外すと bookmarked が false になる', () => {
+    const before = readViewerState({bookmarked: true}, makeCounts());
+    const after = toggleActionState(before, 'bookmark');
+    assert.strictEqual(after.bookmarked, false);
+    assert.deepStrictEqual(after.counts, makeCounts());
+});
