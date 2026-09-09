@@ -105,6 +105,32 @@ function shouldBlockLightboxClick(point, drawnRect, isInteractive) {
 }
 
 /**
+ * `closest()` のヒットを「押せる要素」とみなしてよいかを決める。
+ *
+ * **固定親そのものは押せる要素ではない。** Bluesky は固定親に
+ * `tabindex="0"` を付けており (2026-09-09 実測。`SITE_SPEC.md` 7.5)、
+ * `interactiveSelector` の `[tabindex]:not([tabindex="-1"])` に必ずヒットする。
+ * これを除外しないと**すべてのクリックが素通しになり、機能そのものが働かない**
+ * (実機で実際に踏んだ。閉じるのを止められなかった)。
+ *
+ * @param {Element|null} hit closest() の結果
+ * @param {Element|null} container 固定親 (この内側にあるものだけ数える)
+ * @returns {boolean}
+ */
+function isInteractiveHit(hit, container) {
+    try {
+        if (!hit || !container || hit === container) {
+            return false;
+        }
+        return container.contains(hit) === true;
+    } catch (error) {
+        console.error('[Bluesky拡張] 押せる要素の判定に失敗しました', error);
+        // 判定できないときは素通しに倒す (押せなくなるより閉じるほうがまし)
+        return true;
+    }
+}
+
+/**
  * ライトボックスが開いている間だけ、固定親に目印と click リスナーを付ける。
  *
  * 開閉の検知は content.js の subscribeLightboxVisibility() を購読するだけで、
@@ -280,11 +306,12 @@ class LightboxGuard {
                 return;
             }
             const target = event.target;
-            const interactive = !!(
-                target
-                && typeof target.closest === 'function'
-                && target.closest(this.config.interactiveSelector)
-            );
+            const hit = (target && typeof target.closest === 'function')
+                ? target.closest(this.config.interactiveSelector)
+                : null;
+            // **固定親自身は数えない** (実測で tabindex="0" を持つため、
+            // 除外しないと全てのクリックが素通しになる)
+            const interactive = isInteractiveHit(hit, this.attachedEl);
             const image = this.resolveImage(target);
             const rect = image && image.getBoundingClientRect();
             const drawn = image ? computeContainRect(
@@ -311,7 +338,7 @@ class LightboxGuard {
 
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {computeContainRect, shouldBlockLightboxClick};
+    module.exports = {computeContainRect, shouldBlockLightboxClick, isInteractiveHit};
 }
 
 // content script としての起動。Node のテストからは document が無いため実行されない

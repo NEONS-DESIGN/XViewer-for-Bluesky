@@ -9,8 +9,19 @@ const assert = require('node:assert');
 const {EXT_CONFIG} = require('../config.js');
 const {
     computeContainRect,
-    shouldBlockLightboxClick
+    shouldBlockLightboxClick,
+    isInteractiveHit
 } = require('../lightbox-guard.js');
+
+/**
+ * closest() の結果を受け取る側の検査に使う最小のダミー。
+ * @param {Array<Object>} descendants contains() が true を返す相手
+ */
+function makeContainer(descendants) {
+    const container = {};
+    container.contains = (el) => el === container || descendants.includes(el);
+    return container;
+}
 
 /**
  * 実測値 (2026-09-09、bsky.app)。
@@ -108,6 +119,30 @@ test('shouldBlockLightboxClick は描画矩形の縁を内側として扱う', (
         shouldBlockLightboxClick({x: drawn.x - 0.1, y: drawn.y}, drawn, false),
         false
     );
+});
+
+test('isInteractiveHit は固定親の中の押せる要素で true を返す', () => {
+    const button = {};
+    const container = makeContainer([button]);
+    assert.equal(isInteractiveHit(button, container), true);
+});
+
+test('isInteractiveHit は固定親そのものを押せる要素とみなさない', () => {
+    // **固定親は実測で tabindex="0" を持つ** (2026-09-09)。closest() は必ず
+    // ここにヒットするため、除外しないと全てのクリックが素通しになる
+    const container = makeContainer([]);
+    assert.equal(isInteractiveHit(container, container), false);
+});
+
+test('isInteractiveHit は固定親の外の要素を押せる要素とみなさない', () => {
+    const outside = {};
+    const container = makeContainer([]);
+    assert.equal(isInteractiveHit(outside, container), false);
+});
+
+test('isInteractiveHit はヒットが無ければ false を返す', () => {
+    assert.equal(isInteractiveHit(null, makeContainer([])), false);
+    assert.equal(isInteractiveHit({}, null), false);
 });
 
 test('EXT_CONFIG.lightboxGuard は必要な設定を持つ', () => {

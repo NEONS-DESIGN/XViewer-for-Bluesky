@@ -374,7 +374,13 @@
  * 本体のスタイルシートには触らず、目印を外せば完全に元へ戻る
  */
 [data-bsky-ext-lightbox] {
-    cursor: default;
+    /*
+     * !important が要る。**content script の CSS はページ側のスタイルシート
+     * より弱い扱いで、同じ詳細度ではページ側が勝つ** (2026-09-09 実機で確認。
+     * 拡張機能のルールは document.styleSheets にも現れない)。本体の
+     * .r-1loqt21 は詳細度 (0,1,0) で、この属性セレクタと同点になる
+     */
+    cursor: default !important;
 }
 
 /*
@@ -385,5 +391,6 @@
 [data-bsky-ext-lightbox] button,
 [data-bsky-ext-lightbox] [role="button"],
 [data-bsky-ext-lightbox] [tabindex]:not([tabindex="-1"]) {
-    cursor: pointer;
+    /* 上の !important に負けないよう、こちらも !important にする */
+    cursor: pointer !important;
 }
