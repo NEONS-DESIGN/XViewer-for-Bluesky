@@ -1091,9 +1091,14 @@ class LightboxPanel {
         const config = EXT_CONFIG.postActions;
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = item.active
-            ? `${config.actionClass} ${config.activeClass}`
-            : config.actionClass;
+        // 種別のクラスは色を決めるためだけのもの (2.8.0)。
+        // 未知の種別でも落とさず、色の無い既定の見た目にする
+        const kindClass = config.kindClass[item.kind] ?? '';
+        button.className = [
+            config.actionClass,
+            kindClass,
+            item.active ? config.activeClass : ''
+        ].filter(Boolean).join(' ');
         // アイコンだけでは意味が伝わらないので、読み上げ用と マウス用の両方を付ける
         button.setAttribute('aria-label', item.label);
         button.title = item.label;

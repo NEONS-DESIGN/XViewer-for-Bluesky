@@ -183,6 +183,16 @@
     --ext-lb-muted: color-mix(in srgb, var(--ext-lb-text) 59%, var(--ext-lb-border));
     /* リンク色。ダークテーマの実測値。ライト / ディムは未実測のため共通で使う */
     --ext-lb-accent: #4291ff;
+    /*
+     * 操作ボタンの種別ごとの色 (2.8.0)。利用者の指定で
+     * リポスト = 緑・いいね = マゼンタ・ブックマーク = 黄。
+     * 暗い地色 (ダーク / ディム) に載る前提の明るい側の値で、
+     * 白地のライトテーマでは下の theme--light でまとめて暗い側へ差し替える。
+     * **3 つとも両方のテーマに定義を置くこと** (片方にしか無い色を作らない)
+     */
+    --ext-lb-repost: #00ba7c;
+    --ext-lb-like: #f91880;
+    --ext-lb-bookmark: #ffd400;
 
     position: fixed;
     top: 0;
@@ -203,6 +213,13 @@
     --ext-lb-bg: var(--background, #ffffff);
     --ext-lb-text: var(--text, #000000);
     --ext-lb-border: var(--backgroundLight, #dce2ea);
+    /*
+     * 白地では明るい側の 3 色が読めない (13px の文字が乗るため、
+     * 白に対して 4.5:1 を満たす暗い側へ振る)。色相はダークと揃えてある
+     */
+    --ext-lb-repost: #00875a;
+    --ext-lb-like: #d81b7a;
+    --ext-lb-bookmark: #a16207;
 }
 
 :root.theme--dim #ext-lightbox-panel {
@@ -338,6 +355,12 @@
 }
 
 .ext-lb-action {
+    /*
+     * 種別の色 (2.8.0)。既定は文字色そのもので、色を持たない返信は
+     * この既定のまま「明るくなるだけ」のホバーになる
+     */
+    --ext-lb-action-color: var(--ext-lb-text);
+
     display: inline-flex;
     gap: 6px;
     align-items: center;
@@ -352,8 +375,27 @@
     border-radius: 16px;
 }
 
-.ext-lb-action:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--ext-lb-text) 10%, transparent);
+.ext-lb-action-repost {
+    --ext-lb-action-color: var(--ext-lb-repost);
+}
+
+.ext-lb-action-like {
+    --ext-lb-action-color: var(--ext-lb-like);
+}
+
+.ext-lb-action-bookmark {
+    --ext-lb-action-color: var(--ext-lb-bookmark);
+}
+
+/*
+ * X と同じく、押す前のホバーで種別の色に変わる (2.8.0)。
+ * アイコンの svg は fill="currentColor" のため、色は文字と一緒に変わる。
+ * キーボード操作でも同じ手応えを出すため :focus-visible を並べる
+ */
+.ext-lb-action:hover:not(:disabled),
+.ext-lb-action:focus-visible:not(:disabled) {
+    color: var(--ext-lb-action-color);
+    background: color-mix(in srgb, var(--ext-lb-action-color) 14%, transparent);
 }
 
 /* 押せない間 (通信中) は形だけ残して手応えを止める */
@@ -362,9 +404,9 @@
     opacity: 0.5;
 }
 
-/* 反応済み。色だけで示し、図形は差し替えない */
+/* 反応済み。色だけで示し、図形は差し替えない (2.8.0 で種別ごとの色にした) */
 .ext-lb-action.ext-lb-action-on {
-    color: var(--ext-lb-accent);
+    color: var(--ext-lb-action-color);
 }
 
 .ext-lb-action-icon {

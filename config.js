@@ -464,6 +464,20 @@ const EXT_CONFIG = {
         actionClass: 'ext-lb-action',
         activeClass: 'ext-lb-action-on',
         actionIconClass: 'ext-lb-action-icon',
+        /**
+         * 種別ごとのクラス。**色を種別で変えるためだけに使う** (2.8.0)。
+         * 反応済み (activeClass) とホバーのどちらでも同じ色を出す。
+         * 色そのものは style.css の --ext-lb-action-color が持ち、
+         * 返信は既定の文字色のままにしてある (色を持つのは
+         * リポスト・いいね・ブックマークの 3 つという利用者の指定)。
+         * **キーは buildActions() の item.kind と同じ 4 語。片方を増やしたら両方直す**
+         */
+        kindClass: {
+            reply: 'ext-lb-action-reply',
+            repost: 'ext-lb-action-repost',
+            like: 'ext-lb-action-like',
+            bookmark: 'ext-lb-action-bookmark'
+        },
         menuClass: 'ext-lb-menu',
         menuItemClass: 'ext-lb-menu-item',
         errorClass: 'ext-lb-action-error',

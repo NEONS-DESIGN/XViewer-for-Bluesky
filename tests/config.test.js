@@ -134,3 +134,34 @@ test('橋渡しの遷移先は白名簿になっている', () => {
     // 2026-09-09 に実機で push() が成功することを確認した 3 つだけ
     assert.deepEqual(Object.values(routes).sort(), ['Hashtag', 'PostThread', 'Profile']);
 });
+
+test('操作ボタンは 4 種別ぶんのクラスを持つ', () => {
+    const kindClass = EXT_CONFIG.postActions.kindClass;
+    // buildActions() が並べる item.kind と同じ 4 語。片方を増やしたら両方直す
+    assert.deepEqual(Object.keys(kindClass).sort(), ['bookmark', 'like', 'reply', 'repost']);
+    const values = Object.values(kindClass);
+    // 種別のクラスは基本クラスと別物で、互いにも重ならないこと
+    assert.equal(new Set(values).size, values.length);
+    assert.ok(!values.includes(EXT_CONFIG.postActions.actionClass));
+    assert.ok(!values.includes(EXT_CONFIG.postActions.activeClass));
+});
+
+test('操作ボタンの色は style.css に種別ぶん書いてある', () => {
+    // CSS 側の識別子との対応 (SPEC.md 2 節)。片方を変えたら必ず両方を直す
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const css = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
+    // 色を持つのはリポスト・いいね・ブックマークの 3 つ (返信は既定の文字色のまま)
+    const colored = ['repost', 'like', 'bookmark'];
+    for (const kind of colored) {
+        const cls = EXT_CONFIG.postActions.kindClass[kind];
+        assert.ok(css.includes(`.${cls} {`), `${cls} のセレクタが style.css に無い`);
+        assert.ok(css.includes(`--ext-lb-${kind}:`), `--ext-lb-${kind} が style.css に無い`);
+    }
+    // ライトテーマにも 3 色そろっていること (片方のテーマにしか無い色を作らない)
+    const light = css.slice(css.indexOf(':root.theme--light #ext-lightbox-panel {'));
+    const lightBlock = light.slice(0, light.indexOf('}'));
+    for (const kind of colored) {
+        assert.ok(lightBlock.includes(`--ext-lb-${kind}:`), `ライトに --ext-lb-${kind} が無い`);
+    }
+});
