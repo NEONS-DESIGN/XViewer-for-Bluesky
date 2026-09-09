@@ -16,8 +16,10 @@ const {
     formatPostDate,
     formatCount,
     shouldShowPanel,
-    toSafeLinkHref
+    toSafeLinkHref,
+    syncPostViewer
 } = require('../lightbox-panel.js');
+const {readViewerState} = require('../post-actions.js');
 
 const config = EXT_CONFIG.lightboxPanel;
 
@@ -223,4 +225,52 @@ test('parsePostForPanel: viewer が無ければ null、cid が無ければ空文
     }, EXT_CONFIG.lightboxPanel);
     assert.strictEqual(post.viewer, null);
     assert.strictEqual(post.cid, '');
+});
+
+test('syncPostViewer: 書き戻した投稿に readViewerState を通すと、同じ状態が復元される', () => {
+    const post = {
+        postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+        cid: 'bafyreiexamplecid',
+        viewer: null,
+        counts: {reply: 0, repost: 0, like: 3, quote: 0}
+    };
+    const state = {
+        liked: true,
+        likeUri: 'at://did:plc:me/app.bsky.feed.like/def',
+        reposted: false,
+        repostUri: null,
+        bookmarked: true,
+        counts: {reply: 0, repost: 0, like: 4, quote: 0}
+    };
+    syncPostViewer(post, state);
+    // post.counts / post.viewer が更新された投稿を、開き直したときと同じ経路
+    // (readViewerState) に通す。操作前の状態へ巻き戻らないことを確かめる
+    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), state);
+});
+
+test('syncPostViewer: 取り消した後は liked / reposted が false に戻る', () => {
+    const post = {
+        postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
+        cid: 'bafyreiexamplecid',
+        viewer: {like: 'at://did:plc:me/app.bsky.feed.like/abc', repost: null, bookmarked: false},
+        counts: {reply: 0, repost: 0, like: 4, quote: 0}
+    };
+    const state = {
+        liked: false,
+        likeUri: null,
+        reposted: false,
+        repostUri: null,
+        bookmarked: false,
+        counts: {reply: 0, repost: 0, like: 3, quote: 0}
+    };
+    syncPostViewer(post, state);
+    assert.strictEqual(post.viewer.like, null);
+    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), state);
+});
+
+test('syncPostViewer: 壊れた post を渡しても例外を投げない', () => {
+    assert.doesNotThrow(() => syncPostViewer(null, {
+        likeUri: null, repostUri: null, bookmarked: false,
+        counts: {reply: 0, repost: 0, like: 0, quote: 0}
+    }));
 });

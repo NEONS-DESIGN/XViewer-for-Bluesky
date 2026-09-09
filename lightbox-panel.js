@@ -303,6 +303,30 @@ function toSafeLinkHref(uri, config) {
 }
 
 /**
+ * 成功した操作の結果を、覚えている投稿へ書き戻す。
+ * **書き戻さないと、開き直したときやトグルの切り替えで操作前の状態から
+ * 描き直され、いいね・リポストのレコードが二重にできる**
+ * (`renderPost()` は毎回 `post.viewer` から状態を作り直すため)。
+ * 書き戻す先は自前で作った `PanelPost` (キャッシュに入っているものと
+ * 同じ参照) で、本体 DOM にも本体のキャッシュにも触れない
+ * @param {PanelPost} post 書き戻す先
+ * @param {ActionState} state 反映する状態
+ * @returns {void}
+ */
+function syncPostViewer(post, state) {
+    try {
+        const viewer = Object.assign({}, post.viewer);
+        viewer.like = state.likeUri;
+        viewer.repost = state.repostUri;
+        viewer.bookmarked = state.bookmarked;
+        post.viewer = viewer;
+        post.counts = Object.assign({}, post.counts, state.counts);
+    } catch (error) {
+        console.error('[Bluesky拡張] 投稿の状態の書き戻しに失敗しました', error);
+    }
+}
+
+/**
  * ライトボックスの右側に投稿情報を出す。
  *
  * **本体 DOM への介入は、ダイアログの固定親に当てるインラインの right
@@ -983,12 +1007,18 @@ class LightboxPanel {
      * @returns {Promise<void>}
      */
     async runAction(kind) {
+        // catch でも巻き戻せるよう、try の外のスコープに出しておく
+        let previous = null;
         try {
             if (!this.post || !this.state || this.pending.has(kind)) {
                 return;
             }
             const post = this.post;
-            const previous = this.state;
+            // teardown() で必ず加算される世代。**this.post だけでは
+            // 「閉じて同じ投稿を開き直した」を検知できない**
+            // (this.cache が同じ PanelPost 参照を返すため)
+            const generation = this.generation;
+            previous = this.state;
             const next = toggleActionState(previous, kind);
             this.pending.add(kind);
             this.state = next;
@@ -996,8 +1026,8 @@ class LightboxPanel {
 
             const result = await this.callAction(kind, post, previous, next);
             this.pending.delete(kind);
-            // 応答を待つ間に別の投稿へ移っていたら、その結果は捨てる
-            if (this.post !== post) {
+            // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、その結果は捨てる
+            if (this.post !== post || generation !== this.generation) {
                 return;
             }
             if (!result.ok) {
@@ -1013,10 +1043,19 @@ class LightboxPanel {
             if (kind === 'repost' && next.reposted) {
                 this.state.repostUri = result.recordUri;
             }
+            // 覚えている投稿にも反映する。書き戻さないと、開き直したときや
+            // トグルの切り替えで操作前の状態から描き直され、レコードが二重にできる
+            syncPostViewer(post, this.state);
             this.renderActions();
         } catch (error) {
             console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
             this.pending.delete(kind);
+            // 通信していないのに見た目だけ変わったままにしない
+            if (previous) {
+                this.state = previous;
+                this.renderActions();
+                this.showActionError();
+            }
         }
     }
 
@@ -1156,7 +1195,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatPostDate,
         formatCount,
         shouldShowPanel,
-        toSafeLinkHref
+        toSafeLinkHref,
+        syncPostViewer
     };
 }
 
