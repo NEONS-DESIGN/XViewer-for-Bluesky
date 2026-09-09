@@ -28,6 +28,7 @@
  * @typedef {Object} PanelPost
  * @property {string} postUri AT URI
  * @property {string} cid 投稿の CID。いいね・リポスト・ブックマークに要る
+ * @property {string} authorDid 作者の DID。投稿作成モーダルに渡す
  * @property {Object|null} viewer getPosts の viewer をそのまま。
  *   **未認証の取得では付かない。** 解釈は post-actions.js の readViewerState() が行う
  * @property {string} handle 作者のハンドル
@@ -197,6 +198,7 @@ function parsePostForPanel(json, config) {
         return {
             postUri: post.uri,
             cid: typeof post.cid === 'string' ? post.cid : '',
+            authorDid: typeof author.did === 'string' ? author.did : '',
             viewer: (post.viewer && typeof post.viewer === 'object') ? post.viewer : null,
             handle,
             displayName: (typeof author.displayName === 'string' && author.displayName)
@@ -415,6 +417,10 @@ class LightboxPanel {
         this.pending = new Set();
         /** 投稿操作を出すか。ポップアップのトグル */
         this.actionsEnabled = EXT_CONFIG.postActions.defaultEnabled;
+        /** @type {HTMLElement|null} 開いているリポストのメニュー */
+        this.menuEl = null;
+        /** @type {Function|null} メニューの外側の押下を受けるリスナー。外すのに要る */
+        this.onOutsideClick = null;
     }
 
     /**
@@ -560,6 +566,7 @@ class LightboxPanel {
      * @returns {void}
      */
     teardown() {
+        this.closeRepostMenu();
         // 飛行中の取得の応答を捨てる
         this.generation += 1;
         this.releaseShrink();
@@ -982,6 +989,20 @@ class LightboxPanel {
         row.className = config.actionsClass;
         const items = [
             {
+                kind: 'reply',
+                icon: 'chatBubble',
+                label: config.text.reply,
+                active: false,
+                count: state.counts.reply
+            },
+            {
+                kind: 'repost',
+                icon: 'repeat',
+                label: config.text.repost,
+                active: state.reposted,
+                count: state.counts.repost
+            },
+            {
                 kind: 'like',
                 icon: 'favorite',
                 label: state.liked ? config.text.likeUndo : config.text.like,
@@ -1027,7 +1048,17 @@ class LightboxPanel {
             number.textContent = formatCount(item.count, this.config);
             button.appendChild(number);
         }
-        button.addEventListener('click', () => this.runAction(item.kind));
+        button.addEventListener('click', () => {
+            if (item.kind === 'reply') {
+                this.openComposerFor(EXT_CONFIG.postActions.composerModes.reply);
+                return;
+            }
+            if (item.kind === 'repost') {
+                this.toggleRepostMenu(button);
+                return;
+            }
+            this.runAction(item.kind);
+        });
         return button;
     }
 
@@ -1157,6 +1188,7 @@ class LightboxPanel {
             if (!this.bodyEl || !this.state) {
                 return;
             }
+            this.closeRepostMenu();
             const current = this.bodyEl.querySelector(
                 `.${EXT_CONFIG.postActions.actionsClass}`
             );
@@ -1170,6 +1202,120 @@ class LightboxPanel {
             }
         } catch (error) {
             console.error('[Bluesky拡張] 操作行の描き直しに失敗しました', error);
+        }
+    }
+
+    /**
+     * 本体の投稿作成モーダルを開く。**ライトボックスは閉じない**
+     * (2026-09-09 実測で同時に開けることを確認済み。CSS で前面に出している)。
+     * @param {'reply'|'quote'} mode
+     * @returns {Promise<void>}
+     */
+    async openComposerFor(mode) {
+        try {
+            if (!this.post) {
+                return;
+            }
+            this.closeRepostMenu();
+            const result = await this.actions.openComposer(mode, {
+                uri: this.post.postUri,
+                cid: this.post.cid,
+                text: this.post.text,
+                author: {
+                    did: this.post.authorDid,
+                    handle: this.post.handle,
+                    displayName: this.post.displayName,
+                    avatar: this.post.avatarUrl
+                }
+            });
+            if (!result.ok) {
+                this.showActionError();
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] 投稿作成モーダルを開けませんでした', error);
+        }
+    }
+
+    /**
+     * リポストのメニューを開閉する。
+     * **本体のリポストボタンと同じく「リポスト / 引用」の 2 つを出す。**
+     * 外を押したら閉じる。Escape はライトボックスを閉じるため受けない
+     * (メニューだけ閉じる挙動にすると、閉じたつもりが閉じない誤解を生む)
+     * @param {HTMLElement} anchor 押されたボタン
+     * @returns {void}
+     */
+    toggleRepostMenu(anchor) {
+        try {
+            if (this.menuEl) {
+                this.closeRepostMenu();
+                return;
+            }
+            if (!this.state) {
+                return;
+            }
+            const config = EXT_CONFIG.postActions;
+            const menu = document.createElement('div');
+            menu.className = config.menuClass;
+            menu.setAttribute('role', 'menu');
+            const items = [
+                {
+                    label: this.state.reposted ? config.text.repostUndo : config.text.repostDo,
+                    run: () => this.runAction('repost')
+                },
+                {
+                    label: config.text.quote,
+                    run: () => this.openComposerFor(config.composerModes.quote)
+                }
+            ];
+            for (const item of items) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = config.menuItemClass;
+                button.setAttribute('role', 'menuitem');
+                button.textContent = item.label;
+                button.addEventListener('click', () => {
+                    this.closeRepostMenu();
+                    item.run();
+                });
+                menu.appendChild(button);
+            }
+            // ボタンの真上に出す。行の左端からの位置で置く
+            menu.style.left = `${anchor.offsetLeft}px`;
+            menu.style.bottom = `${anchor.offsetHeight + 4}px`;
+            anchor.parentElement.appendChild(menu);
+            this.menuEl = menu;
+            // 開いた押下自体で閉じないよう、次の周回から外側の押下を受ける
+            this.onOutsideClick = (event) => {
+                if (!this.menuEl || this.menuEl.contains(event.target)) {
+                    return;
+                }
+                this.closeRepostMenu();
+            };
+            setTimeout(() => {
+                document.addEventListener('click', this.onOutsideClick, true);
+            }, 0);
+        } catch (error) {
+            console.error('[Bluesky拡張] リポストのメニューを開けませんでした', error);
+        }
+    }
+
+    /**
+     * リポストのメニューを閉じる。**登録と同じ関数参照でリスナーを外す。**
+     * 既に閉じていれば何もしない
+     * @returns {void}
+     */
+    closeRepostMenu() {
+        try {
+            if (this.onOutsideClick) {
+                document.removeEventListener('click', this.onOutsideClick, true);
+                this.onOutsideClick = null;
+            }
+            if (this.menuEl) {
+                this.menuEl.remove();
+                this.menuEl = null;
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] リポストのメニューを閉じられませんでした', error);
         }
     }
 

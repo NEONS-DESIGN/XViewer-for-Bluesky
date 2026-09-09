@@ -325,6 +325,7 @@
 
 /* パネルの操作行。反応数の行 (.ext-lb-counts) と入れ替わりで出る */
 .ext-lb-actions {
+    position: relative;
     display: flex;
     gap: 4px;
     align-items: center;
@@ -367,6 +368,35 @@
     width: 18px;
     height: 18px;
     flex: none;
+}
+
+/* リポストのメニュー。ボタンの真上に出す */
+.ext-lb-menu {
+    position: absolute;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    padding: 4px;
+    background: var(--ext-lb-bg);
+    border: 1px solid var(--ext-lb-border);
+    border-radius: 8px;
+}
+
+.ext-lb-menu-item {
+    padding: 8px 12px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--ext-lb-text);
+    text-align: left;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+}
+
+.ext-lb-menu-item:hover {
+    background: color-mix(in srgb, var(--ext-lb-text) 10%, transparent);
 }
 
 .ext-lb-action-error {
@@ -445,4 +475,21 @@
 [data-bsky-ext-lightbox] [tabindex]:not([tabindex="-1"]) {
     /* 上の !important に負けないよう、こちらも !important にする */
     cursor: pointer !important;
+}
+
+/*
+ * 投稿作成モーダルを画像ライトボックスの上に出す。
+ *
+ * 2026-09-09 の実測: 両者は同じスタッキングコンテキストの兄弟で、
+ * ライトボックスの包みが z-index: 10、投稿作成モーダルは z-index: auto。
+ * そのため DOM 順で先に来る投稿作成モーダルが後ろに描かれ、
+ * 画像を開いたまま返信しようとすると入力欄が見えなかった。
+ *
+ * **本体 DOM には触らない。** 目印は本体が付けている data-testid を使う
+ * (aria-label はロケール依存のため使わない)。
+ * ライトボックスの外で投稿作成モーダルを開いたときは兄弟にライトボックスが
+ * 無く、この指定は何にも影響しない
+ */
+[role="dialog"][aria-modal="true"]:has([data-testid="composePostView"]) {
+    z-index: 20 !important;
 }

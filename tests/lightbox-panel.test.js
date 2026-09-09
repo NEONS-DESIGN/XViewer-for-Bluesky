@@ -223,6 +223,16 @@ test('parsePostForPanel: cid と viewer をそのまま持ち帰る', () => {
     assert.strictEqual(post.viewer.bookmarked, true);
 });
 
+test('parsePostForPanel: 作者の DID を持ち帰り、無ければ空文字にする', () => {
+    const json = loadFixture('get-posts-simple.json');
+    const withDid = parsePostForPanel(json, config);
+    assert.strictEqual(withDid.authorDid, 'did:plc:z72i7hdynmk6r22z27h6tvur');
+
+    delete json.posts[0].author.did;
+    const withoutDid = parsePostForPanel(json, config);
+    assert.strictEqual(withoutDid.authorDid, '');
+});
+
 test('parsePostForPanel: viewer が無ければ null、cid が無ければ空文字', () => {
     const post = parsePostForPanel({
         posts: [{
