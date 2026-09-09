@@ -307,7 +307,7 @@ function toSafeLinkHref(uri, config) {
 /**
  * 成功した操作の結果を、覚えている投稿へ書き戻す。
  * **その種別 (kind) に対応するフィールドだけを書き、他の種別には触れない。**
- * `this.pending` は種別ごとにしか操作を弾かないため、別種の操作
+ * `this.pending` は投稿と種別の組でしか操作を弾かないため、別種の操作
  * (例: いいねとブックマーク) が同時に飛行中になり得る。全フィールドを
  * まるごと書き戻すと、後から書き戻った側が先に書き戻した側の結果を
  * 消してしまう (2026-09-09 実機の手前で見つかった Important。
@@ -363,6 +363,26 @@ function revertActionState(state, kind, previous) {
 }
 
 /**
+ * 飛行中の操作を覚えるキーを作る。
+ *
+ * **投稿と種別の両方で弾く。** 種別だけをキーにすると、応答を待つ間に
+ * ライトボックスを閉じて同じ画像を開き直したときに、キャッシュの `PanelPost`
+ * がまだ更新前 (`viewer.like === null`) のためボタンが押せる状態で描かれ、
+ * 2 本目の `createRecord` が飛ぶ。`viewer.like` は 1 本しか指せないため
+ * 1 本目のレコードは孤児になり、パネルからも本体 UI からも取り消せなくなる
+ * (2026-09-09 の最終レビューで見つかった Critical。`CHANGELOG.md` `[2.6.6]`)。
+ * 逆に投稿をキーへ含めておけば、**別の**投稿を開いたときのボタンが
+ * 巻き添えで `disabled` のまま残ることもない
+ * @param {string} postUri 対象の投稿の AT URI
+ * @param {'like'|'repost'|'bookmark'} kind
+ * @param {Object} config EXT_CONFIG.postActions
+ * @returns {string} 飛行中の印のキー
+ */
+function buildPendingKey(postUri, kind, config) {
+    return `${postUri}${config.pendingKeySeparator}${kind}`;
+}
+
+/**
  * ライトボックスの右側に投稿情報を出す。
  *
  * **本体 DOM への介入は、ダイアログの固定親に当てるインラインの right
@@ -409,9 +429,11 @@ class LightboxPanel {
         /** @type {PanelPost|null} 描画中の投稿 */
         this.post = null;
         /**
-         * 飛行中の操作の種別。**連打を弾くために要る。**
+         * 飛行中の操作。**連打を弾くために要る。**
          * createRecord が 2 本飛ぶと、いいねレコードが 2 つできて
-         * 片方が取り消せなくなる
+         * 片方が取り消せなくなる。
+         * **キーは buildPendingKey() が作る「投稿 + 種別」** で、
+         * ライトボックスを閉じて開き直しても消さない (teardown() 参照)
          * @type {Set<string>}
          */
         this.pending = new Set();
@@ -577,7 +599,11 @@ class LightboxPanel {
         this.releaseShrink();
         this.post = null;
         this.state = null;
-        this.pending.clear();
+        // **this.pending は消さない。** 飛行中の createRecord の印まで消すと、
+        // 同じ画像をすぐ開き直したときにボタンが押せる状態に戻り、2 本目の
+        // レコードができて片方が取り消せなくなる (2.6.6 で塞いだ Critical)。
+        // runAction() は成功・失敗・例外のいずれの経路でも印を消すため、
+        // ここで消さなくても印が残り続けることはない
         this.unmountPanel();
     }
 
@@ -1048,7 +1074,11 @@ class LightboxPanel {
         // アイコンだけでは意味が伝わらないので、読み上げ用と マウス用の両方を付ける
         button.setAttribute('aria-label', item.label);
         button.title = item.label;
-        button.disabled = this.pending.has(item.kind);
+        // 飛行中かどうかは「投稿 + 種別」で見る (runAction() と同じキー)
+        const pendingKey = this.post
+            ? buildPendingKey(this.post.postUri, item.kind, config)
+            : null;
+        button.disabled = pendingKey !== null && this.pending.has(pendingKey);
         // メニューを持つのはリポストだけ。他の 3 つには付けない
         if (item.kind === 'repost') {
             button.setAttribute('aria-haspopup', 'menu');
@@ -1080,31 +1110,43 @@ class LightboxPanel {
      * 操作を 1 つ実行する。
      *
      * **楽観的更新。** 押した瞬間に見た目を変え、失敗したら控えておいた
-     * 元の状態へ戻す。飛行中の同じ操作は弾く (連打で同じレコードが
-     * 2 つできると片方が取り消せなくなる)。
+     * 元の状態へ戻す。飛行中の同じ操作は `buildPendingKey()` のキー
+     * (投稿 + 種別) で弾く (連打でも、閉じて開き直しても、同じレコードが
+     * 2 つできると片方が取り消せなくなるため)。
+     * **失敗したときは覚えている投稿を捨てる** (サーバ側では成功している
+     * ことがあり、不確かなまま覚え込むと次の押下で 2 本目が飛ぶ)。
      * @param {'like'|'repost'|'bookmark'} kind
      * @returns {Promise<void>}
      */
     async runAction(kind) {
-        // catch でも巻き戻せるよう、try の外のスコープに出しておく
+        // catch でも巻き戻し・飛行中の印の後始末ができるよう、
+        // try の外のスコープに出しておく
         let previous = null;
+        let post = null;
+        let generation = this.generation;
+        let key = null;
         try {
-            if (!this.post || !this.state || this.pending.has(kind)) {
+            if (!this.post || !this.state) {
                 return;
             }
-            const post = this.post;
+            post = this.post;
             // teardown() で必ず加算される世代。**this.post だけでは
             // 「閉じて同じ投稿を開き直した」を検知できない**
             // (this.cache が同じ PanelPost 参照を返すため)
-            const generation = this.generation;
+            generation = this.generation;
+            // 投稿と種別の両方で弾く。閉じて開き直しても飛行中は押させない
+            key = buildPendingKey(post.postUri, kind, EXT_CONFIG.postActions);
+            if (this.pending.has(key)) {
+                return;
+            }
             previous = this.state;
             const next = toggleActionState(previous, kind);
-            this.pending.add(kind);
+            this.pending.add(key);
             this.state = next;
             this.renderActions();
 
             const result = await this.callAction(kind, post, previous, next);
-            this.pending.delete(kind);
+            this.pending.delete(key);
             if (result.ok) {
                 // createRecord の応答の URI を取り込む。取り込まないと取り消せない
                 if (kind === 'like' && next.liked) {
@@ -1114,17 +1156,31 @@ class LightboxPanel {
                     next.repostUri = result.recordUri;
                 }
                 // 覚えている投稿にも反映する。**この種別のフィールドだけを書く**
-                // (this.pending は種別ごとにしか弾かないため、別種の操作が同時に
+                // (this.pending は投稿と種別の組でしか弾かないため、別種の操作が同時に
                 // 飛行中の場合がある。全フィールドを書くと互いの結果を消し合う)。
                 // 破棄ガードより前で無条件に行う。post はこの呼び出しがローカルに
                 // 掴んでいるキャッシュ内のオブジェクトなので、応答待ちの間に
                 // 閉じられていても書き戻して構わない
                 syncPostViewer(post, kind, next);
+            } else {
+                // **失敗しても「押す前の状態」を覚え込まない。** 橋渡しは 12 秒で
+                // タイムアウトして {ok: false} を返すが、そのときサーバ側では
+                // レコードができていることがある。覚えたままにすると recordUri を
+                // 永久に失い、次の押下で 2 本目のレコードができる。
+                // 覚えている投稿を捨てて、次に開いたときサーバから引き直す。
+                // **今開いているパネルは再取得しない** (下で楽観的更新を巻き戻し、
+                // 表示はそのままにする)。目的は開き直したときに正しくなること
+                this.cache.delete(post.postUri);
             }
             // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、
             // 画面への反映は捨てる (書き戻しは上で完了しているので、次に開いたときは
             // 正しい状態から描かれる)
             if (this.post !== post || generation !== this.generation) {
+                // 閉じて**同じ**投稿を開き直された場合だけ、飛行中の印が
+                // 外れたことをボタンへ反映する (disabled のまま残さない)
+                if (this.post === post) {
+                    this.renderActions();
+                }
                 return;
             }
             if (!result.ok) {
@@ -1147,7 +1203,15 @@ class LightboxPanel {
             this.renderActions();
         } catch (error) {
             console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
-            this.pending.delete(kind);
+            if (key) {
+                this.pending.delete(key);
+            }
+            // 成功経路と同じ破棄ガード。**別の投稿を開いた後に例外が来ると、
+            // previous (前の投稿の URI) を今の投稿の状態へ書き込んでしまい、
+            // 次の押下で別の投稿のいいねを消す**経路になる
+            if (!post || this.post !== post || generation !== this.generation) {
+                return;
+            }
             // 通信していないのに見た目だけ変わったままにしない。その種別だけを
             // 打ち消す (this.state が既に無ければ何もしない)
             if (previous && this.state) {
@@ -1423,7 +1487,8 @@ if (typeof module !== 'undefined' && module.exports) {
         shouldShowPanel,
         toSafeLinkHref,
         syncPostViewer,
-        revertActionState
+        revertActionState,
+        buildPendingKey
     };
 }
 

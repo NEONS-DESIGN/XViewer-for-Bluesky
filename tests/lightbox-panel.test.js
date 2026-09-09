@@ -26,10 +26,12 @@ const {
     shouldShowPanel,
     toSafeLinkHref,
     syncPostViewer,
-    revertActionState
+    revertActionState,
+    buildPendingKey
 } = require('../lightbox-panel.js');
 
 const config = EXT_CONFIG.lightboxPanel;
+const actionsConfig = EXT_CONFIG.postActions;
 
 /** fixture を読む。 */
 function loadFixture(name) {
@@ -368,4 +370,67 @@ test('revertActionState: 取り消し (delete) が失敗すると、元の URI �
     const reverted = revertActionState(afterUnlike, 'like', liked);
     assert.strictEqual(reverted.liked, true);
     assert.strictEqual(reverted.likeUri, 'at://did:plc:me/app.bsky.feed.like/abc');
+});
+
+test('buildPendingKey: 投稿が違えば別のキーになる (閉じて別の投稿を開いても巻き添えにしない)', () => {
+    const a = buildPendingKey(
+        'at://did:plc:me/app.bsky.feed.post/aaa', 'like', actionsConfig
+    );
+    const b = buildPendingKey(
+        'at://did:plc:me/app.bsky.feed.post/bbb', 'like', actionsConfig
+    );
+    assert.notStrictEqual(a, b);
+});
+
+test('buildPendingKey: 同じ投稿の同じ種別なら同じキーになる (閉じて開き直しても飛行中を弾く)', () => {
+    const uri = 'at://did:plc:me/app.bsky.feed.post/aaa';
+    assert.strictEqual(
+        buildPendingKey(uri, 'like', actionsConfig),
+        buildPendingKey(uri, 'like', actionsConfig)
+    );
+});
+
+test('buildPendingKey: 同じ投稿でも種別が違えば別のキーになる (別種は同時に飛べる)', () => {
+    const uri = 'at://did:plc:me/app.bsky.feed.post/aaa';
+    const keys = new Set([
+        buildPendingKey(uri, 'like', actionsConfig),
+        buildPendingKey(uri, 'repost', actionsConfig),
+        buildPendingKey(uri, 'bookmark', actionsConfig)
+    ]);
+    assert.strictEqual(keys.size, 3);
+});
+
+test('buildPendingKey: 投稿の AT URI が : を含んでも 3 種の間で衝突しない', () => {
+    // AT URI は did:plc: を含む。区切りに : を使っても、種別が固定の 3 語である
+    // 限り「別の投稿 + 別の種別」の組み合わせと同じ文字列にはならない
+    const seen = new Set();
+    const uris = [
+        'at://did:plc:me/app.bsky.feed.post/aaa',
+        'at://did:plc:me/app.bsky.feed.post/aaa:like',
+        'at://did:plc:other/app.bsky.feed.post/bbb'
+    ];
+    for (const uri of uris) {
+        for (const kind of ['like', 'repost', 'bookmark']) {
+            seen.add(buildPendingKey(uri, kind, actionsConfig));
+        }
+    }
+    assert.strictEqual(seen.size, uris.length * 3);
+});
+
+test('M1 の破棄ガード: 別の投稿を開いた後の巻き戻しは、前の投稿の URI を持ち込まない', () => {
+    // runAction() の catch は DOM 依存でここからは呼べないため、ガードが
+    // 効いた場合の「触らない」ことだけを状態の形で確かめる。
+    // (前の投稿の previous を今の投稿の状態へ revert すると、今の投稿の
+    //  likeUri に前の投稿のいいねの URI が入り、次の押下でそれを削除してしまう)
+    const previousOfOldPost = readViewerState(
+        {like: 'at://did:plc:me/app.bsky.feed.like/old'},
+        {reply: 0, repost: 0, like: 5, quote: 0}
+    );
+    const currentOfNewPost = readViewerState(null, {reply: 0, repost: 0, like: 1, quote: 0});
+    // ガードが効くとこの revert 自体が走らない。走った場合に何が起きるかを示す
+    const ifNotGuarded = revertActionState(currentOfNewPost, 'like', previousOfOldPost);
+    assert.strictEqual(ifNotGuarded.likeUri, 'at://did:plc:me/app.bsky.feed.like/old');
+    // ガードが効いていれば、今の投稿の状態は手つかずのまま
+    assert.strictEqual(currentOfNewPost.likeUri, null);
+    assert.strictEqual(currentOfNewPost.liked, false);
 });

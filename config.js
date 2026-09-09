@@ -421,6 +421,13 @@ const EXT_CONFIG = {
          * **page-bridge.js の EXT_BRIDGE.composerModes と同じ値**
          */
         composerModes: {reply: 'reply', quote: 'quote'},
+        /**
+         * 飛行中の操作を覚えるキーの区切り。**投稿の AT URI と種別を
+         * つなぐだけの内部の値で、DOM にも通信にも出ない。**
+         * AT URI 自体が `:` を含むが、種別 (like / repost / bookmark) は
+         * 固定の 3 語のため、末尾で区切れば衝突しない
+         */
+        pendingKeySeparator: ':',
         actionsClass: 'ext-lb-actions',
         actionClass: 'ext-lb-action',
         activeClass: 'ext-lb-action-on',
