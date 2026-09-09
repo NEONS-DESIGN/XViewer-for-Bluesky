@@ -360,3 +360,30 @@
     margin: 0;
     color: var(--ext-lb-muted);
 }
+
+/*
+ * ライトボックスの操作性の調整 (lightbox-guard.js、2.5.0 で追加)
+ *
+ * Bluesky はダイアログの固定親に cursor: pointer だけを持つクラス
+ * (r-1loqt21) を付けており、それがライトボックス全域に継承される
+ * (2026-09-09 実測。SITE_SPEC.md 7.5)。そのため画像の上も半透明の背景も
+ * 閉じるボタンも同じ形になり、どこが押せるのか分からない。
+ *
+ * 起点は lightbox-guard.js が固定親に付ける目印の属性だけで、**本体の
+ * クラス名には依存しない** (css-g5y9jx / r-1loqt21 などは動的なため)。
+ * 本体のスタイルシートには触らず、目印を外せば完全に元へ戻る
+ */
+[data-bsky-ext-lightbox] {
+    cursor: default;
+}
+
+/*
+ * 押せるものにだけ形を残す。閉じるボタン・画像オプション・ALT 文の帯
+ * (実測で tabindex="0" を持つ) が対象。
+ * **ローカライズ済みの aria-label には依存しない** (言語で変わるため)
+ */
+[data-bsky-ext-lightbox] button,
+[data-bsky-ext-lightbox] [role="button"],
+[data-bsky-ext-lightbox] [tabindex]:not([tabindex="-1"]) {
+    cursor: pointer;
+}

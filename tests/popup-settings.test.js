@@ -11,10 +11,10 @@ global.EXT_CONFIG = EXT_CONFIG;
 const {ICON_SHAPES} = require('../icon-shapes.js');
 const {POPUP_THEMES, POPUP_THEME_TOGGLE, SETTING_ITEMS} = require('../popup.js');
 
-test('設定項目は 4 件で、表示順が定義順どおり', () => {
+test('設定項目は 5 件で、表示順が定義順どおり', () => {
     assert.deepStrictEqual(
         SETTING_ITEMS.map((item) => item.role),
-        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel']
+        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel', 'lightbox-guard']
     );
 });
 
@@ -75,11 +75,19 @@ test('アイコンの図形データは Material Symbols の viewBox とパス�
     });
 });
 
-test('設定項目は 4 件あり、4 件目がライトボックスのパネル', () => {
-    assert.equal(SETTING_ITEMS.length, 4);
+test('設定項目は 5 件あり、4 件目がライトボックスのパネル', () => {
+    assert.equal(SETTING_ITEMS.length, 5);
     const item = SETTING_ITEMS[3];
     assert.equal(item.role, 'lightbox-panel');
     assert.equal(item.icon, 'viewSidebar');
     assert.equal(item.storageKey, EXT_CONFIG.lightboxPanel.storageKey);
     assert.equal(item.defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
+});
+
+test('5 件目がライトボックスの操作性の調整', () => {
+    const item = SETTING_ITEMS[4];
+    assert.equal(item.role, 'lightbox-guard');
+    assert.equal(item.icon, 'lock');
+    assert.equal(item.storageKey, EXT_CONFIG.lightboxGuard.storageKey);
+    assert.equal(item.defaultValue, EXT_CONFIG.lightboxGuard.defaultEnabled);
 });

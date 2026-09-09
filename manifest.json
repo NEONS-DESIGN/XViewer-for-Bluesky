@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "Blueskyカスタム拡張機能",
-	"version": "2.4.2",
+	"version": "2.5.0",
 	"description": "Blueskyのプロフィールのメディア欄をサムネイル一覧表示に置き換え、タブを行き来する固定ボタンを追加します。",
 	"permissions": ["storage"],
 	"host_permissions": ["https://public.api.bsky.app/*"],
@@ -12,7 +12,7 @@
 	"content_scripts": [
 		{
 			"matches": ["*://bsky.app/*"],
-			"js": ["config.js", "debug.js", "icon-shapes.js", "icons.js", "bridge-client.js", "profile-tabs.js", "content.js", "media-source.js", "media-grid.js", "lightbox-panel.js"],
+			"js": ["config.js", "debug.js", "icon-shapes.js", "icons.js", "bridge-client.js", "profile-tabs.js", "content.js", "media-source.js", "media-grid.js", "lightbox-panel.js", "lightbox-guard.js"],
 			"css": ["style.css"],
 			"run_at": "document_end"
 		},

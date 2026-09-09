@@ -87,6 +87,15 @@ const SETTING_ITEMS = Object.freeze([
             + 'メディアグリッド以外の画像でも動きます。',
         storageKey: EXT_CONFIG.lightboxPanel.storageKey,
         defaultValue: EXT_CONFIG.lightboxPanel.defaultEnabled
+    }),
+    Object.freeze({
+        role: 'lightbox-guard',
+        icon: 'lock',
+        label: '画像のクリックで閉じない',
+        description: '開いた画像そのものを押しても閉じないようにし、'
+            + '押せるボタンだけにカーソルの形を残します。周りの暗い部分を押せば閉じます。',
+        storageKey: EXT_CONFIG.lightboxGuard.storageKey,
+        defaultValue: EXT_CONFIG.lightboxGuard.defaultEnabled
     })
 ]);
 

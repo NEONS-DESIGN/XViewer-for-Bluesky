@@ -363,6 +363,42 @@ const EXT_CONFIG = {
             postsPath: '/xrpc/app.bsky.feed.getPosts',
             timeoutMs: 12000
         }
+    },
+
+    /**
+     * ライトボックスの操作性の調整 (lightbox-guard.js、2.5.0 で追加)。
+     * 投稿情報パネル (lightboxPanel) とは独立した機能で、設定も別に持つ。
+     *
+     * Bluesky はダイアログの固定親に閉じるハンドラを置いており、画像はその
+     * 子であるためバブリングで閉じてしまう。同じ固定親のクラス r-1loqt21 が
+     * cursor: pointer だけを持ち、それがライトボックス全域に継承されるため、
+     * 画像の上も半透明の背景も閉じるボタンも見分けが付かない
+     * (2026-09-09 実測。SITE_SPEC.md 7.5)
+     */
+    lightboxGuard: {
+        storageKey: 'lightboxGuardEnabled',
+        /** 既定は有効。誤って閉じてしまう事故を防ぐ側に倒す */
+        defaultEnabled: true,
+        /**
+         * 固定親に付ける目印の属性。**CSS の起点はこれだけ。**
+         * 本体のクラス名 (css-g5y9jx r-1loqt21 ...) は動的で当てにできないため、
+         * 自分で付けた目印を見る。自分が生やした属性なので、撤去は
+         * removeAttribute で完全に元へ戻る
+         */
+        markerAttr: 'data-bsky-ext-lightbox',
+        /**
+         * 画像ライトボックスのダイアログを指すセレクタ。
+         * lightboxPanel と同じ相手 (その parentElement) に触るため値も揃える
+         */
+        dialogSelector: '[role="dialog"][aria-modal="true"]',
+        /**
+         * クリックを素通しする要素のセレクタ。**この除外は必須。**
+         * 左上の「画像オプション」ボタンは実測で (20,20)-(64,64)、画像の描画
+         * 矩形は (50,0)-(1158,661) で**重なっている** (2026-09-09 実測)。
+         * 除外しないとボタンが押せなくなる。
+         * **ローカライズ済みの aria-label には依存しない** (言語で変わるため)
+         */
+        interactiveSelector: 'button, [role="button"], [tabindex]:not([tabindex="-1"])'
     }
 };
 
