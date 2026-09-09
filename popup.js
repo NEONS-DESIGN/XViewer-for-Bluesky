@@ -41,8 +41,9 @@ const POPUP_THEME_TOGGLE = Object.freeze({
 
 /**
  * 設定項目の定義。配列順がそのまま表示順になる。
- * 関連する項目 (グリッド表示とぼかし解除) は隣に置く。片方だけ見ても
- * 振る舞いが分からないため。
+ * 並びは利用者から見た重要度順。よく使うもの (メディアグリッド → ライトボックス
+ * 周りの 3 つ) を上に置き、限られた場面でしか触らないもの (NSFW のぼかし解除・
+ * デバッグモード) を下に置く。
  * @typedef {Object} SettingItem
  * @property {string} role data-role に入れる目印
  * @property {string} icon ICON_SHAPES のキー
@@ -62,6 +63,33 @@ const SETTING_ITEMS = Object.freeze([
         defaultValue: EXT_CONFIG.mediaGrid.defaultEnabled
     }),
     Object.freeze({
+        role: 'lightbox-panel',
+        icon: 'viewSidebar',
+        label: 'ライトボックスに投稿情報を表示',
+        description: '画像を開いたとき、右側に本文・投稿日時・反応数を並べます。'
+            + 'メディアグリッド以外の画像でも動きます。',
+        storageKey: EXT_CONFIG.lightboxPanel.storageKey,
+        defaultValue: EXT_CONFIG.lightboxPanel.defaultEnabled
+    }),
+    Object.freeze({
+        role: 'post-actions',
+        icon: 'favorite',
+        label: 'ライトボックスから返信・いいね',
+        description: '画像を開いたまま、返信・リポスト・引用・いいね・ブックマークを'
+            + '行えるようにします。認証は Bluesky 本体のものをそのまま使います。',
+        storageKey: EXT_CONFIG.postActions.storageKey,
+        defaultValue: EXT_CONFIG.postActions.defaultEnabled
+    }),
+    Object.freeze({
+        role: 'lightbox-guard',
+        icon: 'lock',
+        label: '画像のクリックで閉じない',
+        description: '開いた画像そのものを押しても閉じないようにし、'
+            + '押せるボタンだけにカーソルの形を残します。周りの暗い部分を押せば閉じます。',
+        storageKey: EXT_CONFIG.lightboxGuard.storageKey,
+        defaultValue: EXT_CONFIG.lightboxGuard.defaultEnabled
+    }),
+    Object.freeze({
         role: 'nsfw-unblur',
         icon: 'visibility',
         label: 'NSFWのぼかしを解除',
@@ -78,33 +106,6 @@ const SETTING_ITEMS = Object.freeze([
             + '内部状態を html 要素の属性に書き出します。不具合を報告するときに使います。',
         storageKey: EXT_CONFIG.debug.storageKey,
         defaultValue: EXT_CONFIG.debug.defaultEnabled
-    }),
-    Object.freeze({
-        role: 'lightbox-panel',
-        icon: 'viewSidebar',
-        label: 'ライトボックスに投稿情報を表示',
-        description: '画像を開いたとき、右側に本文・投稿日時・反応数を並べます。'
-            + 'メディアグリッド以外の画像でも動きます。',
-        storageKey: EXT_CONFIG.lightboxPanel.storageKey,
-        defaultValue: EXT_CONFIG.lightboxPanel.defaultEnabled
-    }),
-    Object.freeze({
-        role: 'lightbox-guard',
-        icon: 'lock',
-        label: '画像のクリックで閉じない',
-        description: '開いた画像そのものを押しても閉じないようにし、'
-            + '押せるボタンだけにカーソルの形を残します。周りの暗い部分を押せば閉じます。',
-        storageKey: EXT_CONFIG.lightboxGuard.storageKey,
-        defaultValue: EXT_CONFIG.lightboxGuard.defaultEnabled
-    }),
-    Object.freeze({
-        role: 'post-actions',
-        icon: 'favorite',
-        label: 'ライトボックスから返信・いいね',
-        description: '画像を開いたまま、返信・リポスト・引用・いいね・ブックマークを'
-            + '行えるようにします。認証は Bluesky 本体のものをそのまま使います。',
-        storageKey: EXT_CONFIG.postActions.storageKey,
-        defaultValue: EXT_CONFIG.postActions.defaultEnabled
     })
 ]);
 

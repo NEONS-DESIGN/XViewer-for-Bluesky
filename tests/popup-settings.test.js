@@ -17,11 +17,11 @@ const {POPUP_THEMES, POPUP_THEME_TOGGLE, SETTING_ITEMS} = require('../popup.js')
  */
 const EXPECTED_ITEMS = [
     {role: 'media-grid', source: EXT_CONFIG.mediaGrid},
-    {role: 'nsfw-unblur', source: EXT_CONFIG.mediaGrid.unblur},
-    {role: 'debug', source: EXT_CONFIG.debug},
     {role: 'lightbox-panel', source: EXT_CONFIG.lightboxPanel},
+    {role: 'post-actions', source: EXT_CONFIG.postActions},
     {role: 'lightbox-guard', source: EXT_CONFIG.lightboxGuard},
-    {role: 'post-actions', source: EXT_CONFIG.postActions}
+    {role: 'nsfw-unblur', source: EXT_CONFIG.mediaGrid.unblur},
+    {role: 'debug', source: EXT_CONFIG.debug}
 ];
 
 test('設定項目は対応表と同じ件数・同じ順で、保存キーと既定値は EXT_CONFIG と一致する (二重に持たない)', () => {
