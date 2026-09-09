@@ -154,16 +154,32 @@
  * 幅と z-index は JS が要素の style に直接渡す (config 由来の値のため)。
  *
  * 配色は Bluesky 本体のテーマに CSS だけで追随する。本体は html 要素に
- * theme--light / theme--dark / theme--dim のいずれかを付ける (2026-09-09 実測)。
- * 既定はダークに倒し、ライトのときだけ同じ 5 つを差し替える。
+ * theme--light / theme--dark / theme--dim のいずれかを付け、同じ html 要素に
+ * 配色の CSS 変数を出している (2026-09-09 実測。SITE_SPEC.md 6.6)。
+ *   --background      … body の背景色そのもの (#ffffff / #000000 / #151D28)
+ *   --text            … body の文字色 (#000000 / #ffffff / #ffffff)
+ *   --backgroundLight … 本体の区切り線と同じ色 (#DCE2EA / #232E3E / #2C3A4E)
+ * **パネルの色はこの変数をそのまま使う。自前の値を並べない。**
+ * パネルは document.body 直下にあり、カスタムプロパティは継承するため、
+ * 本体がテーマクラスを差し替えた瞬間に JS を介さず追随する。
+ *
+ * var() の第 2 引数は、本体がこの変数を出さなくなった場合のフォールバック。
+ * 既定はダークに倒し、ライト / ディムのときだけ同じ 3 つを差し替える。
  * **片方のテーマにしか定義の無い色を作らないこと**
  */
 #ext-lightbox-panel {
-    --ext-lb-bg: #1d212b;
-    --ext-lb-text: #eff0f4;
-    --ext-lb-muted: #9aa0b4;
-    --ext-lb-border: #262b38;
-    --ext-lb-accent: #4ea3d6;
+    --ext-lb-bg: var(--background, #000000);
+    --ext-lb-text: var(--text, #ffffff);
+    --ext-lb-border: var(--backgroundLight, #232e3e);
+    /*
+     * 本体は淡色の文字色 (ハンドル・日時) を変数で出さないため、混色で作る。
+     * 地色ではなく一段明るい地色と混ぜるのは、本体の淡色が青灰のためで、
+     * 地色と混ぜると無彩色になって浮く。この比でダークテーマの実測値
+     * rgb(165,178,197) に最も近づく (実測 rgb(165,169,176))
+     */
+    --ext-lb-muted: color-mix(in srgb, var(--ext-lb-text) 59%, var(--ext-lb-border));
+    /* リンク色。ダークテーマの実測値。ライト / ディムは未実測のため共通で使う */
+    --ext-lb-accent: #4291ff;
 
     position: fixed;
     top: 0;
@@ -181,11 +197,15 @@
 }
 
 :root.theme--light #ext-lightbox-panel {
-    --ext-lb-bg: #ffffff;
-    --ext-lb-text: #1c1e26;
-    --ext-lb-muted: #5c6275;
-    --ext-lb-border: #d6d9e0;
-    --ext-lb-accent: #1f7fb8;
+    --ext-lb-bg: var(--background, #ffffff);
+    --ext-lb-text: var(--text, #000000);
+    --ext-lb-border: var(--backgroundLight, #dce2ea);
+}
+
+:root.theme--dim #ext-lightbox-panel {
+    --ext-lb-bg: var(--background, #151d28);
+    --ext-lb-text: var(--text, #ffffff);
+    --ext-lb-border: var(--backgroundLight, #2c3a4e);
 }
 
 /*
