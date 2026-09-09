@@ -255,7 +255,19 @@ const EXT_CONFIG = {
                 /** 開いているライトボックスの postUri を読む (lightbox-panel.js) */
                 getLightbox: 'get-lightbox',
                 /** 遷移の前にライトボックスを確実に閉じる (lightbox-panel.js) */
-                closeLightbox: 'close-lightbox'
+                closeLightbox: 'close-lightbox',
+                /**
+                 * 本体の認証済み agent.fetchHandler を借りて XRPC を呼ぶ
+                 * (post-actions.js)。**白名簿は page-bridge.js が持つ**
+                 */
+                callXrpc: 'call-xrpc',
+                /** 本体の投稿作成モーダルを返信・引用モードで開く (post-actions.js) */
+                openComposer: 'open-composer',
+                /**
+                 * ログイン状態と自分の DID を読む (post-actions.js)。
+                 * **トークンは返さない**
+                 */
+                getSession: 'get-session'
             },
             /**
              * navigate で行ける先の白名簿。**分離ワールドから任意のルートを
@@ -370,6 +382,63 @@ const EXT_CONFIG = {
             origin: 'https://public.api.bsky.app',
             postsPath: '/xrpc/app.bsky.feed.getPosts',
             timeoutMs: 12000
+        }
+    },
+
+    /**
+     * ライトボックスのパネルからの投稿操作 (post-actions.js / lightbox-panel.js)。
+     *
+     * **この拡張機能で唯一の書き込み機能。** 認証は本体が持つ
+     * agent.fetchHandler を橋渡しで借りるだけで、localStorage の accessJwt には
+     * 触らない (SITE_SPEC.md 5.2 の方針)。設計は
+     * docs/design/specs/2026-09-09-lightbox-post-actions-design.md
+     */
+    postActions: {
+        storageKey: 'postActionsEnabled',
+        /** 既定は有効。利用者の要望で入れた機能のため */
+        defaultEnabled: true,
+        /**
+         * 橋渡しに通す XRPC の NSID。
+         * **page-bridge.js の EXT_BRIDGE.xrpc と同じ値。片方を変えたら両方直す**
+         */
+        nsid: {
+            getPosts: 'app.bsky.feed.getPosts',
+            createRecord: 'com.atproto.repo.createRecord',
+            deleteRecord: 'com.atproto.repo.deleteRecord',
+            createBookmark: 'app.bsky.bookmark.createBookmark',
+            deleteBookmark: 'app.bsky.bookmark.deleteBookmark'
+        },
+        /**
+         * 書き込みを許すコレクション。
+         * **page-bridge.js の EXT_BRIDGE.recordCollections と同じ値**
+         */
+        collections: {
+            like: 'app.bsky.feed.like',
+            repost: 'app.bsky.feed.repost'
+        },
+        /**
+         * open-composer が受け付けるモード。
+         * **page-bridge.js の EXT_BRIDGE.composerModes と同じ値**
+         */
+        composerModes: {reply: 'reply', quote: 'quote'},
+        actionsClass: 'ext-lb-actions',
+        actionClass: 'ext-lb-action',
+        activeClass: 'ext-lb-action-on',
+        actionIconClass: 'ext-lb-action-icon',
+        menuClass: 'ext-lb-menu',
+        menuItemClass: 'ext-lb-menu-item',
+        errorClass: 'ext-lb-action-error',
+        text: {
+            reply: '返信する',
+            repost: 'リポストの操作',
+            repostDo: 'リポスト',
+            repostUndo: 'リポストを取り消す',
+            quote: '引用する',
+            like: 'いいね',
+            likeUndo: 'いいねを取り消す',
+            bookmark: 'ブックマークに追加',
+            bookmarkUndo: 'ブックマークから外す',
+            failed: '操作できませんでした'
         }
     },
 

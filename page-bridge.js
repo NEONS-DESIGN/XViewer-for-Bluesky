@@ -15,7 +15,10 @@
             switchTab: 'switch-tab',
             navigate: 'navigate',
             getLightbox: 'get-lightbox',
-            closeLightbox: 'close-lightbox'
+            closeLightbox: 'close-lightbox',
+            callXrpc: 'call-xrpc',
+            openComposer: 'open-composer',
+            getSession: 'get-session'
         },
         rootId: 'root',
         containerKeyPrefix: '__reactContainer$',
@@ -29,11 +32,39 @@
         /** route を省略したときの行き先 (従来の呼び出しとの互換) */
         defaultRouteName: 'PostThread',
         maxWalkNodes: 60000,
-        maxWalkDepth: 250
+        maxWalkDepth: 250,
+        /**
+         * call-xrpc が通す XRPC の白名簿。**config.js の
+         * EXT_CONFIG.postActions.nsid と同じ値。片方を変えたら両方直す。**
+         *
+         * ここを緩めると、この橋渡しは「本体のセッションで任意の XRPC を
+         * 呼べる汎用の穴」になる。ext:bridge-request は document 上の
+         * CustomEvent であり、bsky.app 上で動く誰でも撃てる
+         */
+        xrpc: {
+            'app.bsky.feed.getPosts': {target: 'appview', method: 'GET'},
+            'com.atproto.repo.createRecord': {target: 'pds', method: 'POST'},
+            'com.atproto.repo.deleteRecord': {target: 'pds', method: 'POST'},
+            'app.bsky.bookmark.createBookmark': {target: 'appview', method: 'POST'},
+            'app.bsky.bookmark.deleteBookmark': {target: 'appview', method: 'POST'}
+        },
+        /**
+         * createRecord / deleteRecord で触れるコレクション。
+         * **config.js の EXT_CONFIG.postActions.collections と同じ値。**
+         * ここに無いものは通さないため、投稿・削除・フォロー・ブロックは
+         * この橋渡しでは行えない
+         */
+        recordCollections: ['app.bsky.feed.like', 'app.bsky.feed.repost'],
+        /**
+         * open-composer が受け付けるモード。
+         * **config.js の EXT_CONFIG.postActions.composerModes と同じ値**
+         */
+        composerModes: ['reply', 'quote']
     };
 
     let lightboxControls = null;
     let navigationControls = null;
+    let composerControls = null;
 
     /**
      * React の fiber ツリーを深さ優先で辿り、述語に合う Context の value を返す。
@@ -254,6 +285,205 @@
         }
     }
 
+    /**
+     * 本体の認証済みクライアント一式を探す。
+     *
+     * **走査結果をキャッシュしない。** getLightbox と同じ理由で、React は
+     * 状態が変わるたび Context の value を作り直す。アカウントを切り替えたあとも
+     * 古いクライアントを返し続けると、別人の repo へ書き込む事故になる。
+     * 走査は利用者が押したときにしか走らないため、毎回歩いて構わない
+     * @returns {Object|null} {session, appviewClient, pdsClient, ...}
+     */
+    function findClients() {
+        return findContextValue((value) => typeof value.pdsClient === 'object'
+            && value.pdsClient !== null
+            && typeof value.appviewClient === 'object'
+            && value.appviewClient !== null);
+    }
+
+    /**
+     * 投稿作成モーダルの開閉制御を探す。
+     * @returns {Object|null} {openComposer, closeComposer}
+     */
+    function findComposerControls() {
+        return findContextValue((value) => typeof value.openComposer === 'function');
+    }
+
+    /**
+     * ログイン中の DID を読む。**トークンには触らない。**
+     * @param {Object|null} clients findClients() の結果
+     * @returns {string|null} 未ログインなら null
+     */
+    function readSessionDid(clients) {
+        try {
+            const did = clients
+                && clients.appviewClient
+                && clients.appviewClient.agent
+                && clients.appviewClient.agent.did;
+            return typeof did === 'string' && did ? did : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    /**
+     * call-xrpc の要求を検査する。**通らないものはここで落とす。**
+     * NSID の白名簿、レコード書き込みの collection、repo が本人かの 3 段。
+     * @param {Object} payload {nsid, params, body}
+     * @param {string|null} sessionDid ログイン中の DID
+     * @returns {{ok: true, rule: {target: string, method: string}}
+     *   |{ok: false, reason: string}}
+     */
+    function checkXrpcRequest(payload, sessionDid) {
+        if (!payload || typeof payload !== 'object') {
+            return {ok: false, reason: 'invalid-payload'};
+        }
+        const rule = Object.prototype.hasOwnProperty.call(EXT_BRIDGE.xrpc, payload.nsid)
+            ? EXT_BRIDGE.xrpc[payload.nsid]
+            : null;
+        if (!rule) {
+            return {ok: false, reason: 'nsid-not-allowed'};
+        }
+        const isRecordWrite = payload.nsid === 'com.atproto.repo.createRecord'
+            || payload.nsid === 'com.atproto.repo.deleteRecord';
+        if (!isRecordWrite) {
+            return {ok: true, rule};
+        }
+        const body = payload.body;
+        if (!body || typeof body !== 'object') {
+            return {ok: false, reason: 'invalid-body'};
+        }
+        if (EXT_BRIDGE.recordCollections.indexOf(body.collection) === -1) {
+            return {ok: false, reason: 'collection-not-allowed'};
+        }
+        if (!sessionDid || body.repo !== sessionDid) {
+            return {ok: false, reason: 'repo-not-self'};
+        }
+        return {ok: true, rule};
+    }
+
+    /**
+     * GET の問い合わせ文字列を組み立てる。
+     * 配列は同じ名前を繰り返す (uris=a&uris=b。XRPC の約束)。
+     * @param {Object|undefined} params
+     * @returns {string} 先頭の ? を含む。空なら空文字
+     */
+    function buildQuery(params) {
+        if (!params || typeof params !== 'object') {
+            return '';
+        }
+        const search = new URLSearchParams();
+        Object.keys(params).forEach((key) => {
+            const value = params[key];
+            if (Array.isArray(value)) {
+                value.forEach((item) => search.append(key, String(item)));
+                return;
+            }
+            if (value !== undefined && value !== null) {
+                search.append(key, String(value));
+            }
+        });
+        const query = search.toString();
+        return query ? `?${query}` : '';
+    }
+
+    /**
+     * 本体の認証済み fetchHandler を借りて XRPC を 1 回呼ぶ。
+     * **白名簿を通ったものだけが実際に飛ぶ。**
+     * @param {Object} payload {nsid, params, body}
+     * @returns {Promise<{ok: boolean, status?: number, json?: Object|null,
+     *   reason: string|null}>}
+     */
+    async function callXrpc(payload) {
+        const clients = findClients();
+        if (!clients) {
+            return {ok: false, reason: 'no-client'};
+        }
+        const checked = checkXrpcRequest(payload, readSessionDid(clients));
+        if (!checked.ok) {
+            return {ok: false, reason: checked.reason};
+        }
+        const client = checked.rule.target === 'pds'
+            ? clients.pdsClient
+            : clients.appviewClient;
+        const agent = client && client.agent;
+        if (!agent || typeof agent.fetchHandler !== 'function') {
+            return {ok: false, reason: 'no-agent'};
+        }
+        const init = {
+            method: checked.rule.method,
+            headers: {accept: 'application/json'}
+        };
+        let path = `/xrpc/${payload.nsid}`;
+        if (checked.rule.method === 'GET') {
+            path += buildQuery(payload.params);
+        } else {
+            init.headers['content-type'] = 'application/json';
+            init.body = JSON.stringify(payload.body || {});
+        }
+        try {
+            const response = await agent.fetchHandler(path, init);
+            let json = null;
+            try {
+                json = await response.json();
+            } catch (error) {
+                json = null;
+            }
+            return {
+                ok: response.ok === true,
+                status: response.status,
+                json,
+                reason: response.ok === true ? null : 'http-error'
+            };
+        } catch (error) {
+            return {ok: false, reason: 'fetch-failed'};
+        }
+    }
+
+    /**
+     * 本体の投稿作成モーダルを返信・引用モードで開く。
+     * @param {{mode: string, post: Object}} payload
+     * @returns {{ok: boolean, reason: string|null}}
+     */
+    function openComposer(payload) {
+        const mode = payload && payload.mode;
+        if (EXT_BRIDGE.composerModes.indexOf(mode) === -1) {
+            return {ok: false, reason: 'unknown-mode'};
+        }
+        const post = payload && payload.post;
+        if (!post || typeof post !== 'object'
+            || typeof post.uri !== 'string' || typeof post.cid !== 'string') {
+            return {ok: false, reason: 'invalid-payload'};
+        }
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            if (!composerControls) {
+                composerControls = findComposerControls();
+            }
+            if (!composerControls) {
+                return {ok: false, reason: 'no-composer'};
+            }
+            try {
+                composerControls.openComposer(
+                    mode === 'reply' ? {replyTo: post} : {quote: post}
+                );
+                return {ok: true, reason: null};
+            } catch (error) {
+                // 制御が古くなっている可能性があるので 1 度だけ取り直して再試行する
+                composerControls = null;
+            }
+        }
+        return {ok: false, reason: 'open-failed'};
+    }
+
+    /**
+     * ログイン状態と自分の DID を返す。**トークンは絶対に返さない。**
+     * @returns {{ok: boolean, hasSession: boolean, did: string|null}}
+     */
+    function getSession() {
+        const did = readSessionDid(findClients());
+        return {ok: true, hasSession: did !== null, did};
+    }
+
     function reply(id, payload) {
         try {
             document.dispatchEvent(new CustomEvent(EXT_BRIDGE.resultEvent, {
@@ -294,12 +524,36 @@
             reply(detail.id, closeLightbox());
             return;
         }
+        if (detail.action === EXT_BRIDGE.actions.callXrpc) {
+            callXrpc(detail.payload).then(
+                (result) => reply(detail.id, result),
+                () => reply(detail.id, {ok: false, reason: 'call-failed'})
+            );
+            return;
+        }
+        if (detail.action === EXT_BRIDGE.actions.openComposer) {
+            reply(detail.id, openComposer(detail.payload));
+            return;
+        }
+        if (detail.action === EXT_BRIDGE.actions.getSession) {
+            reply(detail.id, getSession());
+            return;
+        }
         reply(detail.id, {ok: false, reason: 'unknown-action'});
     }
 
-    try {
-        document.addEventListener(EXT_BRIDGE.requestEvent, handleRequest);
-    } catch (error) {
-        console.error('[Bluesky拡張] 橋渡しの起動に失敗しました', error);
+    // tests から require するためだけの分岐。MAIN ワールドでは module が
+    // 未定義のため何もしない
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {EXT_BRIDGE, checkXrpcRequest, buildQuery};
+    }
+
+    // 橋渡しとしての起動。Node のテストからは document が無いため実行されない
+    if (typeof document !== 'undefined') {
+        try {
+            document.addEventListener(EXT_BRIDGE.requestEvent, handleRequest);
+        } catch (error) {
+            console.error('[Bluesky拡張] 橋渡しの起動に失敗しました', error);
+        }
     }
 }());
