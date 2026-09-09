@@ -421,6 +421,11 @@ class LightboxPanel {
         this.menuEl = null;
         /** @type {Function|null} メニューの外側の押下を受けるリスナー。外すのに要る */
         this.onOutsideClick = null;
+        /**
+         * @type {HTMLElement|null} メニューを開いたボタン。
+         * 閉じるときに aria-expanded を戻すのに要る
+         */
+        this.menuAnchor = null;
     }
 
     /**
@@ -833,6 +838,10 @@ class LightboxPanel {
             if (!this.bodyEl) {
                 return;
             }
+            // bodyEl をまるごと作り直すため、メニューが宙に浮く前に片付ける
+            // (chrome.storage.onChanged からの再描画は mountPanel() を経由せず
+            // ここへ直接来るため、renderActions() の片付けだけでは足りない)
+            this.closeRepostMenu();
             const config = this.config;
             this.post = post;
             this.state = readViewerState(post.viewer, post.counts);
@@ -1040,6 +1049,11 @@ class LightboxPanel {
         button.setAttribute('aria-label', item.label);
         button.title = item.label;
         button.disabled = this.pending.has(item.kind);
+        // メニューを持つのはリポストだけ。他の 3 つには付けない
+        if (item.kind === 'repost') {
+            button.setAttribute('aria-haspopup', 'menu');
+            button.setAttribute('aria-expanded', 'false');
+        }
         const icon = createIcon(document, item.icon);
         icon.classList.add(config.actionIconClass);
         button.appendChild(icon);
@@ -1284,9 +1298,17 @@ class LightboxPanel {
             menu.style.bottom = `${anchor.offsetHeight + 4}px`;
             anchor.parentElement.appendChild(menu);
             this.menuEl = menu;
+            this.menuAnchor = anchor;
+            anchor.setAttribute('aria-expanded', 'true');
             // 開いた押下自体で閉じないよう、次の周回から外側の押下を受ける
             this.onOutsideClick = (event) => {
-                if (!this.menuEl || this.menuEl.contains(event.target)) {
+                // ボタン自身の押下はここで無視する。**capture 段のため、この
+                // リスナーはボタンの click より先に走る。** ここで閉じてしまうと
+                // 続く click が「閉じている」と見て開き直し、実質トグルが
+                // 死ぬ (押しても閉じられない)
+                if (!this.menuEl
+                    || this.menuEl.contains(event.target)
+                    || anchor.contains(event.target)) {
                     return;
                 }
                 this.closeRepostMenu();
@@ -1313,6 +1335,10 @@ class LightboxPanel {
             if (this.menuEl) {
                 this.menuEl.remove();
                 this.menuEl = null;
+            }
+            if (this.menuAnchor) {
+                this.menuAnchor.setAttribute('aria-expanded', 'false');
+                this.menuAnchor = null;
             }
         } catch (error) {
             console.error('[Bluesky拡張] リポストのメニューを閉じられませんでした', error);
