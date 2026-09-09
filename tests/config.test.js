@@ -151,14 +151,14 @@ test('操作ボタンの色は style.css に種別ぶん書いてある', () => 
     const fs = require('node:fs');
     const path = require('node:path');
     const css = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
-    // 色を持つのはリポスト・いいね・ブックマークの 3 つ (返信は既定の文字色のまま)
-    const colored = ['repost', 'like', 'bookmark'];
+    // 4 種別すべてが色を持つ (返信の水色は 2.8.1 で足した)
+    const colored = ['reply', 'repost', 'like', 'bookmark'];
     for (const kind of colored) {
         const cls = EXT_CONFIG.postActions.kindClass[kind];
         assert.ok(css.includes(`.${cls} {`), `${cls} のセレクタが style.css に無い`);
         assert.ok(css.includes(`--ext-lb-${kind}:`), `--ext-lb-${kind} が style.css に無い`);
     }
-    // ライトテーマにも 3 色そろっていること (片方のテーマにしか無い色を作らない)
+    // ライトテーマにも 4 色そろっていること (片方のテーマにしか無い色を作らない)
     const light = css.slice(css.indexOf(':root.theme--light #ext-lightbox-panel {'));
     const lightBlock = light.slice(0, light.indexOf('}'));
     for (const kind of colored) {
