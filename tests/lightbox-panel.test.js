@@ -9,6 +9,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {EXT_CONFIG} = require('../config.js');
+const {readViewerState, toggleActionState} = require('../post-actions.js');
+
+// lightbox-panel.js は content script (グローバルスクリプト) として書かれており、
+// revertActionState() は post-actions.js が定義する toggleActionState を
+// グローバル経由で参照する (両方とも manifest.json の読み込み順でグローバル
+// スコープを共有する前提のため)。テストでも同じ状態を作ってから require する
+global.toggleActionState = toggleActionState;
+
 const {
     parsePostUri,
     applyFacets,
@@ -17,9 +25,9 @@ const {
     formatCount,
     shouldShowPanel,
     toSafeLinkHref,
-    syncPostViewer
+    syncPostViewer,
+    revertActionState
 } = require('../lightbox-panel.js');
-const {readViewerState, toggleActionState} = require('../post-actions.js');
 
 const config = EXT_CONFIG.lightboxPanel;
 
@@ -227,80 +235,127 @@ test('parsePostForPanel: viewer が無ければ null、cid が無ければ空文
     assert.strictEqual(post.cid, '');
 });
 
-test('syncPostViewer: 書き戻した投稿に readViewerState を通すと、同じ状態が復元される', () => {
+test('syncPostViewer: like を書き戻すと viewer.like / counts.like だけが変わり、他は保たれる', () => {
     const post = {
         postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
         cid: 'bafyreiexamplecid',
-        viewer: null,
-        counts: {reply: 0, repost: 0, like: 3, quote: 0}
+        viewer: {like: null, repost: 'at://did:plc:me/app.bsky.feed.repost/rp', bookmarked: true},
+        counts: {reply: 1, repost: 2, like: 3, quote: 4}
     };
+    // like 以外のフィールドは無視されるはずの「わざと違う値」を入れておく
     const state = {
-        liked: true,
         likeUri: 'at://did:plc:me/app.bsky.feed.like/def',
-        reposted: false,
-        repostUri: null,
-        bookmarked: true,
-        counts: {reply: 0, repost: 0, like: 4, quote: 0}
+        repostUri: 'at://should-not-be-written',
+        bookmarked: false,
+        counts: {reply: 999, repost: 999, like: 4, quote: 999}
     };
-    syncPostViewer(post, state);
-    // post.counts / post.viewer が更新された投稿を、開き直したときと同じ経路
-    // (readViewerState) に通す。操作前の状態へ巻き戻らないことを確かめる
-    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), state);
+    syncPostViewer(post, 'like', state);
+    assert.strictEqual(post.viewer.like, 'at://did:plc:me/app.bsky.feed.like/def');
+    assert.strictEqual(post.counts.like, 4);
+    // like 以外のフィールドは触れられていない
+    assert.strictEqual(post.viewer.repost, 'at://did:plc:me/app.bsky.feed.repost/rp');
+    assert.strictEqual(post.viewer.bookmarked, true);
+    assert.strictEqual(post.counts.reply, 1);
+    assert.strictEqual(post.counts.repost, 2);
+    assert.strictEqual(post.counts.quote, 4);
 });
 
-test('syncPostViewer: 取り消した後は liked / reposted が false に戻る', () => {
+test('syncPostViewer: bookmark を書き戻すと viewer.bookmarked だけが変わり、viewer.like や counts には触れない', () => {
     const post = {
         postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
         cid: 'bafyreiexamplecid',
         viewer: {like: 'at://did:plc:me/app.bsky.feed.like/abc', repost: null, bookmarked: false},
-        counts: {reply: 0, repost: 0, like: 4, quote: 0}
+        counts: {reply: 0, repost: 0, like: 5, quote: 0}
     };
+    // bookmark 以外のフィールドは無視されるはずの「わざと違う値」を入れておく
     const state = {
-        liked: false,
         likeUri: null,
-        reposted: false,
-        repostUri: null,
-        bookmarked: false,
-        counts: {reply: 0, repost: 0, like: 3, quote: 0}
+        repostUri: 'at://should-not-be-written',
+        bookmarked: true,
+        counts: {reply: 0, repost: 0, like: 999, quote: 0}
     };
-    syncPostViewer(post, state);
-    assert.strictEqual(post.viewer.like, null);
-    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), state);
+    syncPostViewer(post, 'bookmark', state);
+    assert.strictEqual(post.viewer.bookmarked, true);
+    // like / repost / counts は触れられていない
+    assert.strictEqual(post.viewer.like, 'at://did:plc:me/app.bsky.feed.like/abc');
+    assert.strictEqual(post.viewer.repost, null);
+    assert.strictEqual(post.counts.like, 5);
 });
 
 test('syncPostViewer: 壊れた post を渡しても例外を投げない', () => {
-    assert.doesNotThrow(() => syncPostViewer(null, {
+    assert.doesNotThrow(() => syncPostViewer(null, 'like', {
         likeUri: null, repostUri: null, bookmarked: false,
         counts: {reply: 0, repost: 0, like: 0, quote: 0}
     }));
 });
 
 /*
- * 回帰テスト (修正ラウンド 2): runAction() は createRecord の応答の URI を
- * this.state ではなく next (toggleActionState() が返す、押した後の状態) へ
- * 取り込み、syncPostViewer(post, next) を「別の投稿へ移った・閉じて開き直された」
- * 破棄ガードより前で無条件に呼ぶ。応答が返る前にライトボックスを閉じても、
- * 成功した書き込みだけはキャッシュ (PanelPost) へ確実に反映されることを保証する
- * ための並び順で、runAction() のクラス構造を変えずには async の実行順序その
- * ものは単体テストできない。ここでは runAction() の成功経路が組み立てる値
- * (toggleActionState() の戻り値に createRecord の応答の URI を足したもの) を
- * syncPostViewer() に通し、その値がそのまま投稿へ書き戻ることを検証する
+ * 回帰テスト (修正ラウンド 3): this.pending は種別ごとにしか操作を弾かないため、
+ * 別種の操作 (いいねとブックマークなど) が同時に飛行中になり得る。
+ * syncPostViewer() が全フィールドをまるごと書き戻す実装だと、後から書き戻した
+ * 側が先に書き戻した側の結果を消してしまう (2026-09-09、修正ラウンド 3 で
+ * 見つかった Important。CHANGELOG.md [2.6.3])。runAction() が実際に組み立てる
+ * 値の並び (toggleActionState() を種別ごとに重ねがけし、応答の順に
+ * syncPostViewer() を呼ぶ) を再現し、両方の結果が残ることを確かめる。
+ * この書き戻しが種別を無視して全フィールドを書く実装に戻ると、この
+ * テストは失敗する (2 回目の syncPostViewer() 呼び出しが 1 回目の
+ * viewer.like を消してしまうため)
  */
-test('syncPostViewer: recordUri を取り込んだ next を渡すと、いいねの URI ごと書き戻る', () => {
+test('syncPostViewer: いいねとブックマークが同時に飛行中でも、種別ごとに書き戻せば互いを消さない', () => {
     const post = {
         postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
         cid: 'bafyreiexamplecid',
         viewer: null,
         counts: {reply: 0, repost: 0, like: 2, quote: 0}
     };
-    const previous = readViewerState(null, post.counts);
-    // runAction() が押した瞬間に作る楽観的な状態
-    const next = toggleActionState(previous, 'like');
-    assert.strictEqual(next.likeUri, null, '取り込み前は URI がまだ無い');
-    // createRecord の応答が返った直後、runAction() は this.state ではなく
-    // next 自身に recordUri を取り込む
-    next.likeUri = 'at://did:plc:me/app.bsky.feed.like/xyz';
-    // 破棄ガードの成否によらず、書き戻しは post に対して行われる
-    syncPostViewer(post, next);
-    assert.deepStrictEqual(readViewerState(post.viewer, post.counts), next);
+    // t0: いいねを押す (runAction('like') が this.state を作る)
+    const startState = readViewerState(post.viewer, post.counts);
+    const nextLike = toggleActionState(startState, 'like');
+    // t1: 応答が返る前にブックマークも押す (runAction('bookmark') は
+    // this.state (= nextLike) から次の状態を作る)
+    const nextBookmark = toggleActionState(nextLike, 'bookmark');
+
+    // t2: いいねの応答が先に返る。recordUri は nextLike 自身に取り込む
+    nextLike.likeUri = 'at://did:plc:me/app.bsky.feed.like/abc';
+    syncPostViewer(post, 'like', nextLike);
+
+    // t3: ブックマークの応答が返る
+    syncPostViewer(post, 'bookmark', nextBookmark);
+
+    // どちらの結果も投稿に残っていること
+    const restored = readViewerState(post.viewer, post.counts);
+    assert.strictEqual(restored.liked, true);
+    assert.strictEqual(restored.likeUri, 'at://did:plc:me/app.bsky.feed.like/abc');
+    assert.strictEqual(restored.bookmarked, true);
+});
+
+test('revertActionState: 打ち消すのはその種別だけで、飛行中の別種の操作の結果は保たれる', () => {
+    const start = readViewerState(null, {reply: 0, repost: 0, like: 5, quote: 0});
+    // いいねを押す (previous はいいねを押す前の start)
+    const afterLike = toggleActionState(start, 'like');
+    // 応答前にブックマークも押す (this.state は afterLike → afterBookmark へ進む)
+    const afterBookmark = toggleActionState(afterLike, 'bookmark');
+    // いいねの通信が失敗した。this.state は既に afterBookmark まで進んでいるが、
+    // 打ち消すのは 'like' の分だけ
+    const reverted = revertActionState(afterBookmark, 'like', start);
+    assert.strictEqual(reverted.liked, false);
+    assert.strictEqual(reverted.likeUri, null);
+    assert.strictEqual(reverted.counts.like, 5);
+    // 飛行中だったブックマークの結果は保たれる
+    assert.strictEqual(reverted.bookmarked, true);
+});
+
+test('revertActionState: 取り消し (delete) が失敗すると、元の URI が戻る', () => {
+    const liked = readViewerState(
+        {like: 'at://did:plc:me/app.bsky.feed.like/abc'},
+        {reply: 0, repost: 0, like: 5, quote: 0}
+    );
+    // いいねの取り消しを押す (liked: true → false)
+    const afterUnlike = toggleActionState(liked, 'like');
+    // toggleActionState() は方向によらず likeUri を null にする
+    assert.strictEqual(afterUnlike.likeUri, null);
+    // 削除が失敗した。previous (取り消し前の liked) から URI を戻す
+    const reverted = revertActionState(afterUnlike, 'like', liked);
+    assert.strictEqual(reverted.liked, true);
+    assert.strictEqual(reverted.likeUri, 'at://did:plc:me/app.bsky.feed.like/abc');
 });

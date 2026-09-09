@@ -304,26 +304,60 @@ function toSafeLinkHref(uri, config) {
 
 /**
  * 成功した操作の結果を、覚えている投稿へ書き戻す。
- * **書き戻さないと、開き直したときやトグルの切り替えで操作前の状態から
- * 描き直され、いいね・リポストのレコードが二重にできる**
- * (`renderPost()` は毎回 `post.viewer` から状態を作り直すため)。
+ * **その種別 (kind) に対応するフィールドだけを書き、他の種別には触れない。**
+ * `this.pending` は種別ごとにしか操作を弾かないため、別種の操作
+ * (例: いいねとブックマーク) が同時に飛行中になり得る。全フィールドを
+ * まるごと書き戻すと、後から書き戻った側が先に書き戻した側の結果を
+ * 消してしまう (2026-09-09 実機の手前で見つかった Important。
+ * `CHANGELOG.md` `[2.6.3]` 参照)。
  * 書き戻す先は自前で作った `PanelPost` (キャッシュに入っているものと
  * 同じ参照) で、本体 DOM にも本体のキャッシュにも触れない
  * @param {PanelPost} post 書き戻す先
- * @param {ActionState} state 反映する状態
+ * @param {'like'|'repost'|'bookmark'} kind
+ * @param {ActionState} state 反映する状態。kind に対応するフィールドだけを読む
  * @returns {void}
  */
-function syncPostViewer(post, state) {
+function syncPostViewer(post, kind, state) {
     try {
         const viewer = Object.assign({}, post.viewer);
-        viewer.like = state.likeUri;
-        viewer.repost = state.repostUri;
-        viewer.bookmarked = state.bookmarked;
+        const counts = Object.assign({}, post.counts);
+        if (kind === 'like') {
+            viewer.like = state.likeUri;
+            counts.like = state.counts.like;
+        } else if (kind === 'repost') {
+            viewer.repost = state.repostUri;
+            counts.repost = state.counts.repost;
+        } else if (kind === 'bookmark') {
+            viewer.bookmarked = state.bookmarked;
+        }
         post.viewer = viewer;
-        post.counts = Object.assign({}, post.counts, state.counts);
+        post.counts = counts;
     } catch (error) {
         console.error('[Bluesky拡張] 投稿の状態の書き戻しに失敗しました', error);
     }
+}
+
+/**
+ * 失敗した操作を、その種別だけ打ち消した新しい状態にする。
+ * **他の種別 (別の操作が同時に飛行中でも) には触れない。** もう一度
+ * `toggleActionState()` を通すだけで、対象の種別だけが打ち消され、
+ * 他の種別が積み重ねた変化はそのまま残る。
+ * `toggleActionState()` は方向によらず対象種別の URI を null にするため、
+ * **「削除に失敗して元の反応が残った」場合は、ここで元の URI を戻す**
+ * (でなければ、まだ存在するレコードの URI をパネルが見失う)
+ * @param {ActionState} state 打ち消す元になる、今の状態
+ * @param {'like'|'repost'|'bookmark'} kind
+ * @param {ActionState} previous 押す前の状態。URI の復元に使う
+ * @returns {ActionState} 打ち消した後の新しい状態
+ */
+function revertActionState(state, kind, previous) {
+    const reverted = toggleActionState(state, kind);
+    if (kind === 'like') {
+        reverted.likeUri = previous.likeUri;
+    } else if (kind === 'repost') {
+        reverted.repostUri = previous.repostUri;
+    }
+    return reverted;
 }
 
 /**
@@ -1034,13 +1068,13 @@ class LightboxPanel {
                 if (kind === 'repost' && next.reposted) {
                     next.repostUri = result.recordUri;
                 }
-                // 覚えている投稿にも反映する。**破棄ガードより前で無条件に行う。**
-                // post はこの呼び出しがローカルに掴んでいるキャッシュ内のオブジェクト
-                // なので、応答待ちの間に閉じられていても書き戻して構わない。
-                // ガードの後ろに置くと、応答が返る前に閉じた場合だけ成功した書き込みが
-                // キャッシュへ反映されず、開き直すと「未いいね」から描かれて
-                // レコードが二重にできる
-                syncPostViewer(post, next);
+                // 覚えている投稿にも反映する。**この種別のフィールドだけを書く**
+                // (this.pending は種別ごとにしか弾かないため、別種の操作が同時に
+                // 飛行中の場合がある。全フィールドを書くと互いの結果を消し合う)。
+                // 破棄ガードより前で無条件に行う。post はこの呼び出しがローカルに
+                // 掴んでいるキャッシュ内のオブジェクトなので、応答待ちの間に
+                // 閉じられていても書き戻して構わない
+                syncPostViewer(post, kind, next);
             }
             // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、
             // 画面への反映は捨てる (書き戻しは上で完了しているので、次に開いたときは
@@ -1049,19 +1083,30 @@ class LightboxPanel {
                 return;
             }
             if (!result.ok) {
-                this.state = previous;
+                // その種別だけを打ち消す。previous へまるごと戻すと、飛行中の
+                // 別種の操作の結果を消してしまう
+                this.state = revertActionState(this.state, kind, previous);
                 this.renderActions();
                 this.showActionError();
                 return;
             }
-            this.state = next;
+            // 足りないのは URI だけ。liked / bookmarked / counts はこの種別の
+            // 楽観的更新が既に生きた状態の連鎖に入っているため、まるごと
+            // 差し替えない (差し替えると、飛行中の別種の操作の結果を消してしまう)
+            if (kind === 'like' && next.liked) {
+                this.state.likeUri = result.recordUri;
+            }
+            if (kind === 'repost' && next.reposted) {
+                this.state.repostUri = result.recordUri;
+            }
             this.renderActions();
         } catch (error) {
             console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
             this.pending.delete(kind);
-            // 通信していないのに見た目だけ変わったままにしない
-            if (previous) {
-                this.state = previous;
+            // 通信していないのに見た目だけ変わったままにしない。その種別だけを
+            // 打ち消す (this.state が既に無ければ何もしない)
+            if (previous && this.state) {
+                this.state = revertActionState(this.state, kind, previous);
                 this.renderActions();
                 this.showActionError();
             }
@@ -1205,7 +1250,8 @@ if (typeof module !== 'undefined' && module.exports) {
         formatCount,
         shouldShowPanel,
         toSafeLinkHref,
-        syncPostViewer
+        syncPostViewer,
+        revertActionState
     };
 }
 

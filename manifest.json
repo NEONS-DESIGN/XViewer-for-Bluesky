@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "Blueskyカスタム拡張機能",
-	"version": "2.6.2",
+	"version": "2.6.3",
 	"description": "Blueskyのプロフィールのメディア欄をサムネイル一覧表示に置き換え、タブを行き来する固定ボタンを追加します。",
 	"permissions": ["storage"],
 	"host_permissions": ["https://public.api.bsky.app/*"],
