@@ -138,31 +138,37 @@ class PostActions {
     constructor(config) {
         this.config = config;
         /**
-         * ログイン中の DID。**1 回引いたら覚える。**
+         * ログイン中の DID。**成功したときだけ覚える。**
+         * 失敗 (タイムアウトなど) まで覚えると、一度の通信の乱れでそのタブが
+         * 以後ずっと未ログイン扱いに固定されてしまうため、取れなかった場合は
+         * 次回の呼び出しでもう一度問い合わせる。
          * アカウントを切り替えるとページが作り直されるため、
          * ここで古い値を持ち続ける経路は無い
          * @type {string|null}
          */
         this.sessionDid = null;
-        /** @type {boolean} 一度でも get-session を試したか */
-        this.sessionAsked = false;
     }
 
     /**
      * ログイン中の DID を返す。
+     * **失敗は覚えない。** `sessionDid` が付いた (= 成功した) ときだけキャッシュとして
+     * 使い、取れなかった場合は次回の呼び出しで再度 get-session を試す。
+     * 未ログインの利用者は押すたびに問い合わせが走るが、押下時にしか走らないため許容する
      * @returns {Promise<string|null>} 未ログイン・橋渡し失敗なら null
      */
     async getSessionDid() {
-        if (this.sessionAsked) {
+        if (this.sessionDid !== null) {
             return this.sessionDid;
         }
         const actions = EXT_CONFIG.mediaGrid.bridge.actions;
         const result = await callBridge(actions.getSession, {});
-        this.sessionAsked = true;
-        this.sessionDid = (result && result.ok && typeof result.did === 'string')
+        const did = (result && result.ok && typeof result.did === 'string')
             ? result.did
             : null;
-        return this.sessionDid;
+        if (did !== null) {
+            this.sessionDid = did;
+        }
+        return did;
     }
 
     /**
