@@ -511,18 +511,22 @@ class LightboxPanel {
     }
 
     /**
-     * `dialogSelector` に一致する要素のうち、実際に見えているものを 1 件返す。
+     * `dialogSelector` に一致する要素のうち、実際に見えている**画像ライトボックス**を
+     * 1 件返す。
      * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の
      * 方を掴む**ことでこのプロジェクトは 2 回 Critical を踏んでいる
      * (`postsFeed` / `profilePager`。`SITE_SPEC.md` 6.3)。開閉の判定
      * (`isLightboxVisible()`) と介入対象を必ず同じ要素にするため、
-     * `querySelectorAll` + `getClientRects().length > 0` に揃える
+     * `querySelectorAll` + `getClientRects().length > 0` に揃える。
+     * **投稿作成モーダルが同時に開いていることがある**ため、
+     * `isLightboxDialog()` で除く
      * @returns {Element|null}
      */
     findVisibleDialog() {
         const nodes = document.querySelectorAll(this.config.dialogSelector);
         for (let i = 0; i < nodes.length; i += 1) {
-            if (nodes[i].getClientRects().length > 0) {
+            if (nodes[i].getClientRects().length > 0
+                && isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
                 return nodes[i];
             }
         }

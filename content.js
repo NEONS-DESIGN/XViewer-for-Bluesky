@@ -150,6 +150,29 @@ function isLightboxVisible() {
 }
 
 /**
+ * そのダイアログが画像ライトボックスかどうか。
+ *
+ * **ライトボックスと投稿作成モーダルは同時に開く** (2026-09-09 実測)。
+ * 投稿作成モーダルは中に data-testid="composePostView" を持つので、
+ * それを含まない方がライトボックスである。**aria-label はロケール依存の
+ * ため使わない** (開発メモ)。
+ * @param {Element|null} dialog 調べるダイアログ
+ * @param {Object} config EXT_CONFIG.lightbox
+ * @returns {boolean} 読めなければ false (掴まない側に倒す)
+ */
+function isLightboxDialog(dialog, config) {
+    try {
+        if (!dialog || typeof dialog.querySelector !== 'function') {
+            return false;
+        }
+        return dialog.querySelector(config.composerSelector) === null;
+    } catch (error) {
+        console.error('[Bluesky拡張] ダイアログの判別に失敗しました', error);
+        return false;
+    }
+}
+
+/**
  * ライトボックスの表示状態が変わったときに呼ぶ購読者。
  * **新しい document.body 全体の監視を足さないための仕組み。**
  * NavButtonManager.update() は既に毎回 isLightboxVisible() を計算しており、
@@ -985,7 +1008,7 @@ function main() {
 
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {parseProfilePath};
+    module.exports = {parseProfilePath, isLightboxDialog};
 }
 
 // content script としての起動。Node のテストからは document が無いため実行されない

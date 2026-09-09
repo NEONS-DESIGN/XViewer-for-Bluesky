@@ -12,6 +12,7 @@ const {
     shouldBlockLightboxClick,
     isInteractiveHit
 } = require('../lightbox-guard.js');
+const {isLightboxDialog} = require('../content.js');
 
 /**
  * closest() の結果を受け取る側の検査に使う最小のダミー。
@@ -153,4 +154,47 @@ test('EXT_CONFIG.lightboxGuard は必要な設定を持つ', () => {
     assert.equal(typeof config.interactiveSelector, 'string');
     // 介入する相手はパネルと同じ要素でなければならない
     assert.equal(config.dialogSelector, EXT_CONFIG.lightboxPanel.dialogSelector);
+});
+
+/**
+ * ダイアログの代わりになる最小の相手を作る。
+ * querySelector だけ持てば isLightboxDialog は動く。
+ * @param {boolean} hasComposer 投稿作成モーダルの目印を含むか
+ * @returns {Object} ダイアログの代わり
+ */
+function makeDialog(hasComposer) {
+    return {
+        querySelector(selector) {
+            return (hasComposer && selector === EXT_CONFIG.lightbox.composerSelector)
+                ? {}
+                : null;
+        }
+    };
+}
+
+test('isLightboxDialog: 投稿作成モーダルを含まないダイアログはライトボックス', () => {
+    assert.strictEqual(
+        isLightboxDialog(makeDialog(false), EXT_CONFIG.lightbox),
+        true
+    );
+});
+
+test('isLightboxDialog: 投稿作成モーダルを含むダイアログはライトボックスではない', () => {
+    assert.strictEqual(
+        isLightboxDialog(makeDialog(true), EXT_CONFIG.lightbox),
+        false
+    );
+});
+
+test('isLightboxDialog: null を渡しても落ちず false を返す', () => {
+    assert.strictEqual(isLightboxDialog(null, EXT_CONFIG.lightbox), false);
+});
+
+test('isLightboxDialog: querySelector が投げても false を返す', () => {
+    const broken = {
+        querySelector() {
+            throw new Error('壊れた要素');
+        }
+    };
+    assert.strictEqual(isLightboxDialog(broken, EXT_CONFIG.lightbox), false);
 });

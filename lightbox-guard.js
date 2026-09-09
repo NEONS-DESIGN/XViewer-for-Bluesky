@@ -208,16 +208,19 @@ class LightboxGuard {
     }
 
     /**
-     * 表示中のダイアログを探す。
+     * 表示中の**画像ライトボックス**のダイアログを探す。
      *
      * **同じ目印の要素がページ内に複数あることがある** (SITE_SPEC.md 6.3)。
-     * 投稿情報パネルと同じ要素に触るため、探し方も揃えてある
+     * 投稿情報パネルと同じ要素に触るため、探し方も揃えてある。
+     * 投稿作成モーダルは `isLightboxDialog()` で除く (2026-09-09 実測で、
+     * これが無いと投稿作成モーダルの側に目印を付けてしまう)
      * @returns {Element|null}
      */
     findVisibleDialog() {
         const nodes = document.querySelectorAll(this.config.dialogSelector);
         for (let i = 0; i < nodes.length; i += 1) {
-            if (nodes[i].getClientRects().length > 0) {
+            if (nodes[i].getClientRects().length > 0
+                && isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
                 return nodes[i];
             }
         }
