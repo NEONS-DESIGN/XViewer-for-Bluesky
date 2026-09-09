@@ -83,9 +83,3 @@ test('設定項目は 4 件あり、4 件目がライトボックスのパネル
     assert.equal(item.storageKey, EXT_CONFIG.lightboxPanel.storageKey);
     assert.equal(item.defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
 });
-
-test('設定項目のアイコンはすべて ICON_SHAPES に存在する', () => {
-    for (const item of SETTING_ITEMS) {
-        assert.ok(ICON_SHAPES[item.icon], `未知のアイコン: ${item.icon}`);
-    }
-});

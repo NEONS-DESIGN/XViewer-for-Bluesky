@@ -323,6 +323,8 @@ const EXT_CONFIG = {
         dialogSelector: '[role="dialog"][aria-modal="true"]',
         /** 日時と数値の表記に使うロケール */
         locale: 'ja-JP',
+        /** 投稿日時の表記。本体のフィードは相対表記なので、パネルは絶対表記に徹する */
+        dateFormat: {dateStyle: 'long', timeStyle: 'short'},
         /**
          * 取得済みの投稿を保持する上限。超えたら古いものから捨てる。
          * ページを離れれば消える (メモリのみ)

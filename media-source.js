@@ -6,7 +6,8 @@
  * @property {string} key            重複排除キー (postId そのもの)
  * @property {string} postId         投稿の rkey
  * @property {string} postUri        投稿の AT URI (ライトボックスの metricsContext に渡す)
- * @property {string} authorDid      投稿者の DID (同上)
+ * @property {string|null} authorDid 投稿者の DID (同上)。metricsContext の付加情報でしかなく、
+ *                                    欠けてもタイル表示・パネル (postUri のみで動く) には影響しないため必須にしない
  * @property {string} postHref       /profile/<handle>/post/<rkey>
  * @property {string} authorHandle   投稿者のハンドル (SPA 遷移の bridge に渡す。postHref からの再抽出はしない)
  * @property {'image'|'video'} type  先頭メディアの種別
@@ -139,8 +140,10 @@ function toMediaEntries(feedItem, config) {
         }
         const postId = extractRkey(post.uri);
         const handle = post.author && post.author.handle;
+        // authorDid は metricsContext の付加情報 (postAuthorDid) にしか使わない。
+        // 欠けているだけでタイルを丸ごと落とすのは強すぎるため必須条件から外す
         const authorDid = post.author && post.author.did;
-        if (!postId || !handle || !authorDid) {
+        if (!postId || !handle) {
             return [];
         }
         const media = extractMediaFromEmbed(post.embed, config);
@@ -162,7 +165,7 @@ function toMediaEntries(feedItem, config) {
             key: postId,
             postId,
             postUri: post.uri,
-            authorDid,
+            authorDid: authorDid || null,
             postHref: `/profile/${handle}/post/${postId}`,
             authorHandle: handle,
             type: head.type,

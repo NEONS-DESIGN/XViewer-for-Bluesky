@@ -98,6 +98,12 @@ test('ライトボックスのパネルは寸法と識別子を持つ', () => {
     assert.equal(typeof panel.dialogSelector, 'string');
 });
 
+test('ライトボックスのパネルは投稿日時の書式を持つ', () => {
+    const panel = EXT_CONFIG.lightboxPanel;
+    assert.equal(panel.locale, 'ja-JP');
+    assert.deepEqual(panel.dateFormat, {dateStyle: 'long', timeStyle: 'short'});
+});
+
 test('ライトボックスのパネルは facets の対応表を持つ', () => {
     const facets = EXT_CONFIG.lightboxPanel.facets;
     assert.equal(facets['app.bsky.richtext.facet#link'].kind, 'link');

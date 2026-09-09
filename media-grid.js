@@ -309,7 +309,8 @@ class MediaGrid {
                  */
                 metricsContext: {
                     postUri: entry.postUri,
-                    postAuthorDid: entry.authorDid,
+                    // authorDid は欠けうる付加情報。無ければ本体と同じ「省略」の形に揃える
+                    postAuthorDid: entry.authorDid || undefined,
                     layout: config.bridge.lightboxLayout
                 }
             }).then((result) => {

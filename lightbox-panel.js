@@ -229,10 +229,7 @@ function formatPostDate(iso, config) {
         if (Number.isNaN(date.getTime())) {
             return null;
         }
-        return new Intl.DateTimeFormat(config.locale, {
-            dateStyle: 'long',
-            timeStyle: 'short'
-        }).format(date);
+        return new Intl.DateTimeFormat(config.locale, config.dateFormat).format(date);
     } catch (error) {
         console.error('[Bluesky拡張] 投稿日時の整形に失敗しました', error);
         return null;
@@ -302,8 +299,11 @@ function toSafeLinkHref(uri, config) {
  *
  * **本体 DOM への介入は、ダイアログの固定親に当てるインラインの right
  * 1 プロパティだけ。** 当てた要素そのものを覚えておき、撤去時はその参照に
- * 対して空文字を書く。セレクタで引き直さない (閉じた後は引けない)。
- * 要素が既に消えていれば何もしない (設計文書 8 節)
+ * 対して**上書き前に控えておいた元のインラインの値**を書き戻す。
+ * Bluesky 自身が right: 0px をインラインで書いているため、空文字に戻すと
+ * その指定ごと消えて固定親の幅が shrink-to-fit で 0 に潰れる
+ * (2026-09-09 実機で確認した Critical)。セレクタで引き直さない
+ * (閉じた後は引けない)。要素が既に消えていれば何もしない (設計文書 8 節)
  */
 class LightboxPanel {
     /**
@@ -511,6 +511,25 @@ class LightboxPanel {
     }
 
     /**
+     * `dialogSelector` に一致する要素のうち、実際に見えているものを 1 件返す。
+     * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の
+     * 方を掴む**ことでこのプロジェクトは 2 回 Critical を踏んでいる
+     * (`postsFeed` / `profilePager`。`SITE_SPEC.md` 6.3)。開閉の判定
+     * (`isLightboxVisible()`) と介入対象を必ず同じ要素にするため、
+     * `querySelectorAll` + `getClientRects().length > 0` に揃える
+     * @returns {Element|null}
+     */
+    findVisibleDialog() {
+        const nodes = document.querySelectorAll(this.config.dialogSelector);
+        for (let i = 0; i < nodes.length; i += 1) {
+            if (nodes[i].getClientRects().length > 0) {
+                return nodes[i];
+            }
+        }
+        return null;
+    }
+
+    /**
      * 本体のダイアログの固定親を狭める。
      * **見つからなければ何もしない** (パネルは重なる表示に落ちる)。
      * **上書きする前に元のインラインの値を控える。** Bluesky 自身が
@@ -523,7 +542,7 @@ class LightboxPanel {
             if (this.collapsed || this.shrunkEl) {
                 return;
             }
-            const dialog = document.querySelector(this.config.dialogSelector);
+            const dialog = this.findVisibleDialog();
             const parent = dialog && dialog.parentElement;
             if (!parent) {
                 return;
@@ -841,10 +860,13 @@ class LightboxPanel {
         const actions = EXT_CONFIG.mediaGrid.bridge.actions;
         try {
             await callBridge(actions.closeLightbox, {});
-            this.teardown();
             await callBridge(actions.navigate, target);
         } catch (error) {
             console.error('[Bluesky拡張] パネルからの遷移に失敗しました', error);
+        } finally {
+            // callBridge は仕様上 reject しないが、finally にしておくことで
+            // 「遷移に失敗したのに right が戻らない」経路を構造的に無くす
+            this.teardown();
         }
     }
 }

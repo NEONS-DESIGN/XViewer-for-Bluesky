@@ -197,6 +197,17 @@
     background: transparent;
     border-left: none;
     overflow: visible;
+    /*
+     * position: fixed; top: 0; right: 0; bottom: 0 は畳んでも解除されないため、
+     * 何もしなければ全高の透明な帯がライトボックスの手前に残り、その帯では
+     * 背景クリックによる閉じ操作を拾ってしまう。パネル自体をクリック透過にし、
+     * 開き直すための開くボタン (.ext-lb-toggle) だけ下で pointer-events を戻す
+     */
+    pointer-events: none;
+}
+
+#ext-lightbox-panel.ext-lb-collapsed .ext-lb-toggle {
+    pointer-events: auto;
 }
 
 #ext-lightbox-panel.ext-lb-collapsed .ext-lb-body {
