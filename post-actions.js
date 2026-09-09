@@ -326,7 +326,8 @@ class PostActions {
      * 本体の投稿作成モーダルを返信・引用モードで開く。
      * **ライトボックスは閉じない** (2026-09-09 実測で、同時に開けることを確認)。
      * @param {'reply'|'quote'} mode
-     * @param {{uri: string, cid: string, text: string, author: Object}} post
+     * @param {Object} post getPosts が返す `post` オブジェクトそのもの (PostView)。
+     *   **整形しない。** quote は完全な PostView を要求するため
      * @returns {Promise<{ok: boolean, reason: string|null}>}
      */
     async openComposer(mode, post) {

@@ -28,7 +28,11 @@
  * @typedef {Object} PanelPost
  * @property {string} postUri AT URI
  * @property {string} cid 投稿の CID。いいね・リポスト・ブックマークに要る
- * @property {string} authorDid 作者の DID。投稿作成モーダルに渡す
+ * @property {Object} raw getPosts が返す `post` オブジェクトそのもの。
+ *   **本体の投稿作成モーダル (openComposer) に渡すためだけの生データで、
+ *   整形しない。** `quote` は完全な PostView を要求し、整形した部分
+ *   オブジェクトを渡すと本体の React ツリーがアンマウントされる
+ *   (2026-09-09 実機で確認。`SITE_SPEC.md` 7.7 節)
  * @property {Object|null} viewer getPosts の viewer をそのまま。
  *   **未認証の取得では付かない。** 解釈は post-actions.js の readViewerState() が行う
  * @property {string} handle 作者のハンドル
@@ -198,7 +202,7 @@ function parsePostForPanel(json, config) {
         return {
             postUri: post.uri,
             cid: typeof post.cid === 'string' ? post.cid : '',
-            authorDid: typeof author.did === 'string' ? author.did : '',
+            raw: post,
             viewer: (post.viewer && typeof post.viewer === 'object') ? post.viewer : null,
             handle,
             displayName: (typeof author.displayName === 'string' && author.displayName)
@@ -1297,17 +1301,16 @@ class LightboxPanel {
                 return;
             }
             this.closeRepostMenu();
-            const result = await this.actions.openComposer(mode, {
-                uri: this.post.postUri,
-                cid: this.post.cid,
-                text: this.post.text,
-                author: {
-                    did: this.post.authorDid,
-                    handle: this.post.handle,
-                    displayName: this.post.displayName,
-                    avatar: this.post.avatarUrl
-                }
-            });
+            // 本体の openComposer は quote に完全な PostView を要求する
+            // (部分オブジェクトを渡すと本体の React ツリーが落ちる。
+            // 2026-09-09 実機で確認)。replyTo も同じ形で動くことを確認済みのため、
+            // 返信・引用のどちらでも raw (getPosts の post をそのまま) を渡し、
+            // 経路を 1 本にする。raw が無ければ本体を落とすより何もしないほうが良い
+            if (!this.post.raw) {
+                this.showActionError();
+                return;
+            }
+            const result = await this.actions.openComposer(mode, this.post.raw);
             if (!result.ok) {
                 this.showActionError();
             }

@@ -225,14 +225,13 @@ test('parsePostForPanel: cid と viewer をそのまま持ち帰る', () => {
     assert.strictEqual(post.viewer.bookmarked, true);
 });
 
-test('parsePostForPanel: 作者の DID を持ち帰り、無ければ空文字にする', () => {
+test('parsePostForPanel: raw に getPosts の post オブジェクトそのものを持ち帰る', () => {
+    // openComposer の quote は完全な PostView を要求するため (2026-09-09 実機で確認)、
+    // 整形前の post をそのまま持ち帰っていることを確認する
     const json = loadFixture('get-posts-simple.json');
-    const withDid = parsePostForPanel(json, config);
-    assert.strictEqual(withDid.authorDid, 'did:plc:z72i7hdynmk6r22z27h6tvur');
-
-    delete json.posts[0].author.did;
-    const withoutDid = parsePostForPanel(json, config);
-    assert.strictEqual(withoutDid.authorDid, '');
+    const post = parsePostForPanel(json, config);
+    assert.strictEqual(post.raw, json.posts[0]);
+    assert.strictEqual(post.raw.author.did, 'did:plc:z72i7hdynmk6r22z27h6tvur');
 });
 
 test('parsePostForPanel: viewer が無ければ null、cid が無ければ空文字', () => {
