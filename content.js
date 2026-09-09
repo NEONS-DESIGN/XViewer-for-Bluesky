@@ -79,12 +79,21 @@ function getOwnHandle() {
 
 /**
  * 指定した actor が自分自身のプロフィールかどうかを判定する。
- * @param {string} actor
+ * URL の actor が DID (`/profile/did:plc:...`) でも判定できるよう、
+ * getProfile の応答の handle / did とも照合する (左ナビの href はハンドル)。
+ * @param {string} actor URL 上の actor (ハンドルまたは DID)
+ * @param {Object} [profile] getProfile の応答。無ければ actor だけで比べる
  * @returns {boolean}
  */
-function isOwnProfile(actor) {
+function isOwnProfile(actor, profile) {
     const handle = getOwnHandle();
-    return !!handle && handle === actor;
+    if (!handle) {
+        return false;
+    }
+    if (handle === actor) {
+        return true;
+    }
+    return !!profile && (handle === profile.handle || handle === profile.did);
 }
 
 /**
@@ -147,6 +156,33 @@ function isLightboxVisible() {
         console.error('[Bluesky拡張] ライトボックスの表示判定に失敗しました', error);
         return false;
     }
+}
+
+/**
+ * `selector` に一致する要素のうち、実際に見えている**画像ライトボックス**を 1 件返す。
+ * lightbox-panel.js / lightbox-guard.js が介入する相手 (その parentElement) を
+ * 決めるのに使う。
+ * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の方を掴む**
+ * ことでこのプロジェクトは 2 回 Critical を踏んでいる (`postsFeed` / `profilePager`。
+ * `SITE_SPEC.md` 6.3)。開閉の判定 (`isLightboxVisible()`) と介入対象を必ず同じ要素に
+ * するため `querySelectorAll` + `getClientRects().length > 0` に揃え、同時に開く
+ * ことがある投稿作成モーダルは `isLightboxDialog()` で除く
+ * @param {string} selector ダイアログのセレクタ (EXT_CONFIG.lightboxPanel.dialogSelector など)
+ * @returns {Element|null}
+ */
+function findVisibleLightboxDialog(selector) {
+    try {
+        const nodes = document.querySelectorAll(selector);
+        for (let i = 0; i < nodes.length; i += 1) {
+            if (nodes[i].getClientRects().length > 0
+                && isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
+                return nodes[i];
+            }
+        }
+    } catch (error) {
+        console.error('[Bluesky拡張] ライトボックスのダイアログの探索に失敗しました', error);
+    }
+    return null;
 }
 
 /**
@@ -246,9 +282,6 @@ function isDomReadyForTabResolution() {
 function getSelectedTabIndex() {
     try {
         const underlineSelector = EXT_CONFIG.selectors.tabUnderline;
-        if (!underlineSelector) {
-            return selectedTabIndex;
-        }
         const tabs = document.querySelectorAll(EXT_CONFIG.selectors.tab);
         for (let i = 0; i < tabs.length; i += 1) {
             if (tabs[i].querySelector(underlineSelector)) {
@@ -276,6 +309,11 @@ function trackTabClicks() {
                 const tabs = document.querySelectorAll(EXT_CONFIG.selectors.tab);
                 for (let i = 0; i < tabs.length; i += 1) {
                     if (tabs[i].contains(event.target)) {
+                        // タブバーが差し替わっていたら監視を張り直す (外れた要素の
+                        // 監視は発火しないため、押下を合図にする)
+                        if (tabObserver) {
+                            tabObserver.ensureAttached();
+                        }
                         if (i !== selectedTabIndex) {
                             // selectedTabIndex 自体はここで同期的に更新する
                             // (DOM 判定が使えないときのフォールバック値として
@@ -317,14 +355,16 @@ function trackTabClicks() {
 
 /**
  * 現在のページ情報を返す。対象外のページでは null。
+ * @param {number} [knownIndex] 呼び出し側が既に求めた選択タブの index。
+ *   渡すと document 全体のタブ走査を省く (sync() のような高頻度の経路向け)
  * @returns {PageInfo|null}
  */
-function getPageInfo() {
+function getPageInfo(knownIndex) {
     const parsed = parseProfilePath(location.pathname, EXT_CONFIG);
     if (!parsed) {
         return null;
     }
-    const index = getSelectedTabIndex();
+    const index = typeof knownIndex === 'number' ? knownIndex : getSelectedTabIndex();
     const tab = currentTabs[index];
     return {
         actor: parsed.actor,
@@ -338,7 +378,8 @@ function getPageInfo() {
  * 呼び出し側 (ensureTabsResolved) に未確定のまま持ち越させる。
  * DOM のタブ数と算出結果が一致しない場合は空配列を返し、機能を無効化して確定させる。
  * @param {string} actor
- * @returns {Promise<Array<{name: string, view: string|undefined}>>|Promise<null>}
+ * @returns {Promise<Array<{name: string, view: string|undefined}>|null|symbol>}
+ *   null は DOM が未準備 (すぐ再試行)、TABS_RETRY_LATER は一時的な失敗 (間隔を空けて再試行)
  */
 async function resolveTabs(actor) {
     try {
@@ -355,19 +396,21 @@ async function resolveTabs(actor) {
         // 応答が返らないまま止まると tabsResolving が立ちっぱなしになり、
         // ensureTabsResolved() の再試行がすべて素通りしてタブ列が永久に未確定
         // (= ナビボタンが隠れたまま) になる。必ず時間で打ち切る
-        // (Task 7 修正ラウンド 5。打ち切られた場合は catch で [] を返し、
-        // 「確定した末に機能無効」として扱う。!response.ok のときと同じ扱い)
+        // (Task 7 修正ラウンド 5)。打ち切り・回線断・5xx は一時的な失敗として
+        // TABS_RETRY_LATER を返し、間隔を空けて引き直す。ここで [] に確定させると、
+        // 遅い回線でタイムアウトを 1 回踏んだだけで、遷移するまでナビボタンも
+        // グリッドも出なくなる (「諦めて二度と試さない」経路になる)
         const options = {credentials: 'omit'};
         if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
             options.signal = AbortSignal.timeout(api.timeoutMs);
         }
         const response = await fetch(url.toString(), options);
         if (!response.ok) {
-            return [];
+            return isTransientProfileFailure(response, null) ? TABS_RETRY_LATER : [];
         }
         const profile = await response.json();
         const context = {
-            isMe: isOwnProfile(actor),
+            isMe: isOwnProfile(actor, profile),
             hasSession: hasSession()
         };
         const tabs = buildTabList(profile, context, EXT_CONFIG);
@@ -388,8 +431,37 @@ async function resolveTabs(actor) {
         return tabs;
     } catch (error) {
         console.error('[Bluesky拡張] タブ列の解決に失敗しました', error);
-        return [];
+        return isTransientProfileFailure(null, error) ? TABS_RETRY_LATER : [];
     }
+}
+
+/**
+ * resolveTabs() が「一時的な失敗なので後で引き直す」ことを表す印。
+ * null (DOM が未準備) と区別し、通信の失敗にはより長い間隔で再試行する
+ * (成功するまで 2 秒ごとに getProfile を叩き続けないため)
+ */
+const TABS_RETRY_LATER = Symbol('tabs-retry-later');
+
+/**
+ * getProfile の失敗が一時的なもの (回線断・タイムアウト・5xx) かどうか。
+ * 一時的でない失敗 (404 など) は「確定した末に機能無効」として扱う
+ * @param {Response|null} response 応答。例外のときは null
+ * @param {Error|null} error 例外。応答があるときは null
+ * @returns {boolean}
+ */
+function isTransientProfileFailure(response, error) {
+    if (response) {
+        return response.status === 429 || response.status >= 500;
+    }
+    if (!error) {
+        return false;
+    }
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+        return true;
+    }
+    // fetch の回線断は TypeError ("Failed to fetch")。プログラムミスの TypeError まで
+    // 一時的失敗にして永久に再試行しないよう、メッセージで fetch 由来に絞る
+    return error.name === 'TypeError' && /fetch/i.test(String(error.message));
 }
 
 /**
@@ -399,14 +471,14 @@ async function resolveTabs(actor) {
  * 低頻度タイマーで最後の受け皿を用意し、未確定のまま放置されないようにする
  * (Task 7 修正ラウンド 4)
  */
-function scheduleTabsResolveRetry() {
+function scheduleTabsResolveRetry(delayMs) {
     if (tabsResolveRetryTimerId !== null) {
         return;
     }
     tabsResolveRetryTimerId = setTimeout(() => {
         tabsResolveRetryTimerId = null;
         ensureTabsResolved();
-    }, EXT_CONFIG.tabResolution.retryIntervalMs);
+    }, typeof delayMs === 'number' ? delayMs : EXT_CONFIG.tabResolution.retryIntervalMs);
 }
 
 /** タブ列の確定を再試行する予約を取り消す (確定済み・対象外ページになったとき)。 */
@@ -445,6 +517,11 @@ async function ensureTabsResolved() {
             scheduleTabsResolveRetry();
             return;
         }
+        if (tabs === TABS_RETRY_LATER) {
+            // 通信の一時的な失敗。確定させず、間隔を空けて引き直す
+            scheduleTabsResolveRetry(EXT_CONFIG.tabResolution.errorRetryIntervalMs);
+            return;
+        }
         currentTabs = tabs;
         tabsResolved = true;
         cancelTabsResolveRetry();
@@ -457,6 +534,14 @@ async function ensureTabsResolved() {
         }
     } finally {
         tabsResolving = false;
+        // 応答を待つ間に別のアカウントへ移っていた場合、その間の onNavigate() /
+        // TabObserver の呼び出しは tabsResolving で素通りしている。URL も
+        // タブ index もそれ以上変わらないと再評価の機会が無く、新しいアカウントの
+        // タブ列が未確定のまま止まる (ナビボタンが隠れたまま・グリッドも起動しない)
+        // ため、ここで新しい actor のぶんをすぐやり直す
+        if (!tabsResolved && currentActor && currentActor !== actor) {
+            ensureTabsResolved();
+        }
     }
 }
 
@@ -758,6 +843,27 @@ class NavigationObserver {
 }
 
 /**
+ * タブバー本体を探す。
+ * `[data-testid="profilePager"]` はページ内に 2 個あり、素の querySelector は
+ * ページ全体に相当する外側 (postsFeed を内包する) を返す (SITE_SPEC.md 6.3)。
+ * そちらを監視すると実質 document.body を属性変化まで含めて監視することになる
+ * ため、postsFeed を内包しない方 (タブバーそのもの) を選ぶ。
+ * @returns {Element|null} 見つからなければ null
+ */
+function findTabBar() {
+    const pagers = document.querySelectorAll(EXT_CONFIG.selectors.pager);
+    let fallback = null;
+    for (let i = 0; i < pagers.length; i += 1) {
+        if (!pagers[i].querySelector(EXT_CONFIG.selectors.feed)) {
+            return pagers[i];
+        }
+        fallback = fallback || pagers[i];
+    }
+    // 内側が無い構造になっていても、監視自体を諦めない (外側で従来どおり動く)
+    return fallback;
+}
+
+/**
  * プロフィールのタブバーだけを監視し、選択タブの変化を通知する。
  * 恒久的に張る MutationObserver の対象は必ずタブバー (pager) の subtree に限る。
  * document.body 全体を監視し続けると、投稿の追加のたびに発火して重くなるため。
@@ -771,6 +877,8 @@ class TabObserver {
     constructor(onChange) {
         this.onChange = onChange;
         this.observer = null;
+        /** 監視中のタブバー要素。SPA 遷移で差し替わったことに気づくために持つ */
+        this.pagerEl = null;
         this.lastIndex = -1;
         this.pending = false;
         /** タブバーの出現を待つための body の一時監視。見つけ次第 disconnect する */
@@ -808,17 +916,21 @@ class TabObserver {
                 this.stopWaiting();
                 return;
             }
-            const pager = document.querySelector(EXT_CONFIG.selectors.pager);
+            const pager = findTabBar();
             if (!pager) {
                 this.startWaiting();
                 return;
             }
             this.stopWaiting();
+            this.pagerEl = pager;
             this.observer = new MutationObserver(() => this.check());
+            // 選択タブの下線バーはインラインの style で見分ける (selectors.tabUnderline)
+            // ため、属性は style だけを見る。他の属性 (class など) の変化は要らない
             this.observer.observe(pager, {
                 childList: true,
                 subtree: true,
-                attributes: true
+                attributes: true,
+                attributeFilter: ['style']
             });
             this.check();
         } catch (error) {
@@ -894,8 +1006,21 @@ class TabObserver {
             this.observer.disconnect();
             this.observer = null;
         }
+        this.pagerEl = null;
         this.stopWaiting();
         this.lastIndex = -1;
+    }
+
+    /**
+     * 監視中のタブバーが DOM から外れていたら張り直す。
+     * 外れた要素の監視は二度と発火しないため、自力では気づけない。
+     * タブの押下 (trackTabClicks) のような軽い合図から呼ぶ
+     * @returns {void}
+     */
+    ensureAttached() {
+        if (this.observer && this.pagerEl && !this.pagerEl.isConnected) {
+            this.attach();
+        }
     }
 
     /** 同一フレーム内の連続発火を 1 回にまとめる */
@@ -929,7 +1054,9 @@ class TabObserver {
  * 宣言されていない場合に参照エラーにならないようにするため
  */
 function handleTabChange() {
-    ExtDebug.log('タブ変化', {タブ: getSelectedTabIndex()});
+    if (ExtDebug.enabled) {
+        ExtDebug.log('タブ変化', {タブ: getSelectedTabIndex()});
+    }
     if (navButtonManager) {
         navButtonManager.update();
     }
@@ -951,13 +1078,16 @@ function handleTabChange() {
 async function onNavigate() {
     try {
         const info = getPageInfo();
-        ExtDebug.log('遷移を検知', {
-            url: location.pathname,
-            対象: (info && info.actor) || null,
-            画面: (info && info.view) || null,
-            ライトボックス実体: isLightboxVisible(),
-            ライトボックス履歴フラグ: isLightboxStatePushed()
-        });
+        // 引数の組み立て (isLightboxVisible はレイアウトを起こす) を無効時に走らせない
+        if (ExtDebug.enabled) {
+            ExtDebug.log('遷移を検知', {
+                url: location.pathname,
+                対象: (info && info.actor) || null,
+                画面: (info && info.view) || null,
+                ライトボックス実体: isLightboxVisible(),
+                ライトボックス履歴フラグ: isLightboxStatePushed()
+            });
+        }
         if (!info) {
             currentTabs = [];
             currentActor = null;
@@ -1008,7 +1138,7 @@ function main() {
 
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {parseProfilePath, isLightboxDialog};
+    module.exports = {parseProfilePath, isLightboxDialog, findVisibleLightboxDialog};
 }
 
 // content script としての起動。Node のテストからは document が無いため実行されない

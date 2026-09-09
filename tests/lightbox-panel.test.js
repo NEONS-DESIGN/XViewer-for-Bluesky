@@ -9,13 +9,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {EXT_CONFIG} = require('../config.js');
-const {readViewerState, toggleActionState} = require('../post-actions.js');
+const {readViewerState, toggleActionState, mergeActionKind} = require('../post-actions.js');
 
 // lightbox-panel.js は content script (グローバルスクリプト) として書かれており、
-// revertActionState() は post-actions.js が定義する toggleActionState を
+// revertActionState() は post-actions.js が定義する mergeActionKind を
 // グローバル経由で参照する (両方とも manifest.json の読み込み順でグローバル
 // スコープを共有する前提のため)。テストでも同じ状態を作ってから require する
 global.toggleActionState = toggleActionState;
+global.mergeActionKind = mergeActionKind;
 
 const {
     parsePostUri,
@@ -466,7 +467,7 @@ test('buildPendingKey: 投稿の AT URI が : を含んでも 3 種の間で衝�
     assert.strictEqual(seen.size, uris.length * 3);
 });
 
-test('M1 の破棄ガード: 別の投稿を開いた後の巻き戻しは、前の投稿の URI を持ち込まない', () => {
+test('revertActionState は引数を書き換えない (別の投稿の previous を渡しても、今の状態は汚れない)', () => {
     // runAction() の catch は DOM 依存でここからは呼べないため、ガードが
     // 効いた場合の「触らない」ことだけを状態の形で確かめる。
     // (前の投稿の previous を今の投稿の状態へ revert すると、今の投稿の
@@ -482,4 +483,17 @@ test('M1 の破棄ガード: 別の投稿を開いた後の巻き戻しは、前
     // ガードが効いていれば、今の投稿の状態は手つかずのまま
     assert.strictEqual(currentOfNewPost.likeUri, null);
     assert.strictEqual(currentOfNewPost.liked, false);
+});
+
+test('revertActionState: 設定の ON/OFF で作り直された (押す前と同じ) 状態に掛けても、幽霊のいいねを作らない', () => {
+    const start = readViewerState(null, {reply: 0, repost: 0, like: 5, quote: 0});
+    // いいねを押した (previous = start) が、応答前にパネルが作り直され、
+    // this.state が押す前の viewer から作り直された (= start と同じ中身)
+    const rebuilt = readViewerState(null, {reply: 0, repost: 0, like: 5, quote: 0});
+    // 通信が失敗。トグルで打ち消すと liked: true / likeUri: null の幽霊になるが、
+    // 値で写せば押す前のまま
+    const reverted = revertActionState(rebuilt, 'like', start);
+    assert.strictEqual(reverted.liked, false);
+    assert.strictEqual(reverted.likeUri, null);
+    assert.strictEqual(reverted.counts.like, 5);
 });

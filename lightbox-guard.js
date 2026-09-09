@@ -17,7 +17,7 @@
  * 依存:
  *   config.js  (EXT_CONFIG)
  *   debug.js   (ExtDebug)
- *   content.js (subscribeLightboxVisibility, isLightboxVisible)
+ *   content.js (subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog)
  *
  * **本体 DOM への介入は「目印の属性」と「capture の click リスナー」の 2 つだけ。**
  * どちらも自分が生やしたもので、撤去すれば完全に元へ戻る。当てた要素そのものを
@@ -158,7 +158,9 @@ class LightboxGuard {
         const config = this.config;
         try {
             const stored = await chrome.storage.sync.get([config.storageKey]);
-            this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
+            // setEnabled() と同じく boolean に正規化する (壊れた保存値を真偽値のまま入れない)
+            const saved = stored[config.storageKey];
+            this.enabled = typeof saved === 'boolean' ? saved : config.defaultEnabled;
         } catch (error) {
             console.error('[Bluesky拡張] ライトボックス調整の設定の読み込みに失敗しました', error);
         }
@@ -208,36 +210,23 @@ class LightboxGuard {
     }
 
     /**
-     * 表示中の**画像ライトボックス**のダイアログを探す。
-     *
-     * **同じ目印の要素がページ内に複数あることがある** (SITE_SPEC.md 6.3)。
-     * 投稿情報パネルと同じ要素に触るため、探し方も揃えてある。
-     * 投稿作成モーダルは `isLightboxDialog()` で除く (2026-09-09 実測で、
-     * これが無いと投稿作成モーダルの側に目印を付けてしまう)
-     * @returns {Element|null}
-     */
-    findVisibleDialog() {
-        const nodes = document.querySelectorAll(this.config.dialogSelector);
-        for (let i = 0; i < nodes.length; i += 1) {
-            if (nodes[i].getClientRects().length > 0
-                && isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
-                return nodes[i];
-            }
-        }
-        return null;
-    }
-
-    /**
      * 固定親に目印と click リスナーを付ける。
      * 見つからなければ何もしない (従来どおりの操作に落ちるだけ)。
+     * 相手の探し方は投稿情報パネルと同じ (content.js の findVisibleLightboxDialog())。
      * @returns {void}
      */
     attach() {
         try {
+            // 「見える / 見えない」の変化しか届かないため、閉じて別のライトボックスが
+            // 開いた場合は DOM から外れた古い固定親を掴んだままになる。外れていたら
+            // 先に外して、新しい固定親に付け直す
+            if (this.attachedEl && !this.attachedEl.isConnected) {
+                this.detach();
+            }
             if (!this.enabled || this.attachedEl) {
                 return;
             }
-            const dialog = this.findVisibleDialog();
+            const dialog = findVisibleLightboxDialog(this.config.dialogSelector);
             const parent = dialog && dialog.parentElement;
             if (!parent) {
                 return;
@@ -272,12 +261,16 @@ class LightboxGuard {
 
     /**
      * 判定に使う画像を選ぶ。
-     * クリックされたのが img ならそれを、そうでなければ表示中で最も大きい
-     * img を使う (複数枚の送りで DOM に複数残る場合の保険)。
+     * クリックされたのが img ならそれを、そうでなければクリック位置を矩形に含む
+     * img を使う (複数枚の送りでは隣のスライドの img が同寸で画面外にあるため、
+     * 「最も大きい img」では前のスライドを選びかねない)。
+     * どの矩形にも入らなければ表示中で最も大きい img に落とす (保険)
      * @param {EventTarget|null} target
+     * @param {number} x clientX
+     * @param {number} y clientY
      * @returns {HTMLImageElement|null}
      */
-    resolveImage(target) {
+    resolveImage(target, x, y) {
         if (target && target.tagName === 'IMG') {
             return /** @type {HTMLImageElement} */ (target);
         }
@@ -289,6 +282,9 @@ class LightboxGuard {
         let bestArea = 0;
         for (let i = 0; i < images.length; i += 1) {
             const rect = images[i].getBoundingClientRect();
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                return images[i];
+            }
             const area = rect.width * rect.height;
             if (area > bestArea) {
                 best = images[i];
@@ -315,7 +311,7 @@ class LightboxGuard {
             // **固定親自身は数えない** (実測で tabindex="0" を持つため、
             // 除外しないと全てのクリックが素通しになる)
             const interactive = isInteractiveHit(hit, this.attachedEl);
-            const image = this.resolveImage(target);
+            const image = this.resolveImage(target, event.clientX, event.clientY);
             const rect = image && image.getBoundingClientRect();
             const drawn = image ? computeContainRect(
                 {x: rect.x, y: rect.y, width: rect.width, height: rect.height},

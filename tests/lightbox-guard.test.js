@@ -53,6 +53,14 @@ test('computeContainRect は縦長の画像で左右に余白を作る', () => {
 test('computeContainRect は横長の画像で上下に余白を作る', () => {
     const drawn = computeContainRect(
         {x: 0, y: 0, width: 1000, height: 500},
+        {width: 400, height: 100}
+    );
+    assert.deepEqual(drawn, {x: 0, y: 125, width: 1000, height: 250});
+});
+
+test('computeContainRect は枠と同じ縦横比なら枠いっぱいに描く', () => {
+    const drawn = computeContainRect(
+        {x: 0, y: 0, width: 1000, height: 500},
         {width: 200, height: 100}
     );
     assert.deepEqual(drawn, {x: 0, y: 0, width: 1000, height: 500});

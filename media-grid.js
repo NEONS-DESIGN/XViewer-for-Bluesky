@@ -13,29 +13,30 @@
  * 矩形が 0×0 になるため、素の querySelector で先頭の 1 件を掴むと表示中でない
  * ページを選んでしまい、グリッドが 0×0 に潰れる (実機で確認済み)。
  *
- * そのため、次の優先順で 1 件を選ぶ:
- *   1. 既に自分が .ext-feed-hidden を付けているもの。
- *      隠している間はその要素自身の矩形も 0×0 になるが、組み直し (remount) の
- *      たびに同じページを選び直せるよう、可視判定より優先する
- *   2. 上記が無ければ、getBoundingClientRect().width > 0 (実際に表示中) のもの
+ * そのため getBoundingClientRect().width > 0 (実際に表示中) のものを選ぶ。
+ * 組み直し (remount) のときも、enable() の前に disable() が .ext-feed-hidden を
+ * 剥がしてから来るため、可視判定だけで同じページを選び直せる
  * @returns {{container: Element, feed: Element}|null} 該当なしなら null
  */
 function findFeedParts() {
     try {
         const feeds = document.querySelectorAll(EXT_CONFIG.selectors.feed);
-        const hiddenClass = EXT_CONFIG.mediaGrid.hiddenFeedClass;
 
         let feed = null;
         for (const candidate of feeds) {
-            if (candidate.classList.contains(hiddenClass)) {
+            // offsetParent は position: fixed で null になるため使わない
+            if (candidate.getBoundingClientRect().width > 0) {
                 feed = candidate;
                 break;
             }
         }
         if (!feed) {
+            // 可視なものが無いときの最終手段: 前の content script (拡張機能を
+            // リロードしてタブを再読み込みしなかった開発時) が隠したままの feed を
+            // 選び直して復帰できるようにする
+            const hiddenClass = EXT_CONFIG.mediaGrid.hiddenFeedClass;
             for (const candidate of feeds) {
-                // offsetParent は position: fixed で null になるため使わない
-                if (candidate.getBoundingClientRect().width > 0) {
+                if (candidate.classList.contains(hiddenClass)) {
                     feed = candidate;
                     break;
                 }
@@ -189,16 +190,19 @@ class MediaGrid {
         if (!this.isMounted || !Array.isArray(entries)) {
             return;
         }
+        // 組み直しでは蓄積全件 (数百枚) を一度に描くため、接続済みの listEl へ
+        // 1 個ずつ足さず、fragment にまとめて 1 回で入れる
+        const fragment = document.createDocumentFragment();
         for (let i = this.renderedCount; i < entries.length; i += 1) {
             try {
-                const tile = this.createTile(entries[i]);
-                this.listEl.appendChild(tile);
+                fragment.appendChild(this.createTile(entries[i]));
             } catch (error) {
                 console.error('[Bluesky拡張] タイルの描画に失敗しました', error);
             } finally {
                 this.renderedCount += 1;
             }
         }
+        this.listEl.appendChild(fragment);
     }
 
     /**
@@ -284,10 +288,16 @@ class MediaGrid {
     handleTileClick(event, entry, tile) {
         try {
             const config = EXT_CONFIG.mediaGrid;
-            // 解除が有効なときは二段階を挟まず、1 回目の押下でそのまま開く
+            // 解除が有効なときは二段階を挟まず、1 回目の押下でそのまま開く。
+            // ぼかし中は修飾キー付きでも解除だけにする (二段階を飛ばして開かせない)
             if (!this.unblurEnabled && tile.classList.contains(config.blurClass)) {
                 event.preventDefault();
                 tile.classList.remove(config.blurClass);
+                return;
+            }
+            // 修飾キー付き (新しいタブで開く) は a の href に任せる。
+            // フルリロードになるが別タブなので害は無い
+            if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) {
                 return;
             }
             // a の href は失敗時の行き先として張ったままにしておき、既定動作だけ止める
@@ -340,8 +350,8 @@ class MediaGrid {
         try {
             const config = EXT_CONFIG.mediaGrid;
             callBridge(config.bridge.actions.navigate, {
-                handle: entry.authorHandle,
-                rkey: entry.postId
+                route: config.bridge.routes.post,
+                params: {name: entry.authorHandle, rkey: entry.postId}
             }).then((result) => {
                 if (!result || !result.ok) {
                     window.location.href = entry.postHref;
@@ -442,6 +452,14 @@ class MediaGridController {
         this.lastUrl = null;
         this.lastEnabled = null;
         this.lastTabIndex = null;
+        /**
+         * 前回評価したときの currentTabs (content.js) の参照。タブ列の確定・
+         * リセットのたびに配列の実体が変わるため、参照比較 1 回で
+         * 「確定前に評価した回」を見分けられる。URL・タブ index・設定が変わらなくても
+         * 確定で view が OTHER → MEDIA に変わるので、比較に含めないと
+         * 確定前にメディアタブを押した場合に起動しない
+         */
+        this.lastTabs = null;
 
         /** 起動条件を満たすがセルが未描画で起動できていない状態。このときだけ早期 return を外す */
         this.pendingEnable = false;
@@ -526,12 +544,14 @@ class MediaGridController {
         }
         const tabIndex = getSelectedTabIndex();
         if (this.active && this.enabled && this.isIntact
-            && location.href === this.lastUrl && tabIndex === this.lastTabIndex) {
+            && location.href === this.lastUrl && tabIndex === this.lastTabIndex
+            && currentTabs === this.lastTabs) {
             return;
         }
         if (!this.active && !this.pendingEnable
             && this.enabled === this.lastEnabled
-            && location.href === this.lastUrl && tabIndex === this.lastTabIndex) {
+            && location.href === this.lastUrl && tabIndex === this.lastTabIndex
+            && currentTabs === this.lastTabs) {
             return;
         }
         try {
@@ -556,8 +576,10 @@ class MediaGridController {
             this.lastUrl = location.href;
             this.lastEnabled = this.enabled;
             this.lastTabIndex = tabIndex;
+            this.lastTabs = currentTabs;
 
-            const pageInfo = getPageInfo();
+            // タブ index は上で求めた値を渡し、document 全体のタブ走査を 2 回しない
+            const pageInfo = getPageInfo(tabIndex);
             // ページ情報が取れない場所 (プロフィール以外) では蓄積を捨てない。
             // 対象アカウントが変わったときだけクリアする
             if (pageInfo && pageInfo.actor !== this.lastActor) {
@@ -653,13 +675,15 @@ class MediaGridController {
         }
         this.feedContainer = parts.container;
         this.feedElement = parts.feed;
+        // 組み直しの途中で失敗しても、持ち越しているスクロール位置は捨てない
+        // (次の sync() で組み直しをやり直したときに戻すため)
         if (!this.grid.mount(parts.container)) {
-            this.disable();
+            this.disable(!isRemount);
             return;
         }
         // mount() の戻り値は DOM に置けたことしか保証しない
         if (!document.getElementById(this.config.containerId)) {
-            this.disable();
+            this.disable(!isRemount);
             return;
         }
         // 起動が確実になってから初めてフィードを隠す

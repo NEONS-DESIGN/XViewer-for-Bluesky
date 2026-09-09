@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {EXT_CONFIG} = require('../config.js');
-const {EXT_BRIDGE, checkXrpcRequest} = require('../page-bridge.js');
+const {EXT_BRIDGE, checkXrpcRequest, buildQuery} = require('../page-bridge.js');
 
 /** 検査に使う自分の DID */
 const SELF_DID = 'did:plc:self0000000000000000000';
@@ -58,14 +58,59 @@ test('checkXrpcRequest: 他人の repo への書き込みは落ちる', () => {
     assert.strictEqual(result.reason, 'repo-not-self');
 });
 
-test('checkXrpcRequest: 自分の repo へのいいねは通る', () => {
+test('checkXrpcRequest: 自分の repo へのいいねは通り、body は白名簿のキーだけに組み直される', () => {
+    const record = {$type: 'app.bsky.feed.like', subject: {uri: 'at://x', cid: 'c'}};
     const result = checkXrpcRequest({
         nsid: 'com.atproto.repo.createRecord',
-        body: {repo: SELF_DID, collection: 'app.bsky.feed.like', record: {}}
+        body: {repo: SELF_DID, collection: 'app.bsky.feed.like', record, validate: false}
     }, SELF_DID);
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.rule.target, 'pds');
     assert.strictEqual(result.rule.method, 'POST');
+    assert.deepStrictEqual(result.body, {repo: SELF_DID, collection: 'app.bsky.feed.like', record});
+});
+
+test('checkXrpcRequest: record.$type が collection と違えば落ちる ($type 無しも同じ)', () => {
+    const mismatch = checkXrpcRequest({
+        nsid: 'com.atproto.repo.createRecord',
+        body: {repo: SELF_DID, collection: 'app.bsky.feed.like',
+            record: {$type: 'app.bsky.feed.post', text: 'x'}}
+    }, SELF_DID);
+    assert.strictEqual(mismatch.ok, false);
+    assert.strictEqual(mismatch.reason, 'record-type-mismatch');
+    const untyped = checkXrpcRequest({
+        nsid: 'com.atproto.repo.createRecord',
+        body: {repo: SELF_DID, collection: 'app.bsky.feed.like', record: {}}
+    }, SELF_DID);
+    assert.strictEqual(untyped.ok, false);
+    assert.strictEqual(untyped.reason, 'record-type-mismatch');
+});
+
+test('checkXrpcRequest: deleteRecord は rkey が文字列でなければ落ち、通れば rkey まで写す', () => {
+    const missing = checkXrpcRequest({
+        nsid: 'com.atproto.repo.deleteRecord',
+        body: {repo: SELF_DID, collection: 'app.bsky.feed.like'}
+    }, SELF_DID);
+    assert.strictEqual(missing.ok, false);
+    assert.strictEqual(missing.reason, 'invalid-rkey');
+    const ok = checkXrpcRequest({
+        nsid: 'com.atproto.repo.deleteRecord',
+        body: {repo: SELF_DID, collection: 'app.bsky.feed.like', rkey: 'abc', swapRecord: 'x'}
+    }, SELF_DID);
+    assert.strictEqual(ok.ok, true);
+    assert.deepStrictEqual(ok.body, {repo: SELF_DID, collection: 'app.bsky.feed.like', rkey: 'abc'});
+});
+
+test('checkXrpcRequest: ブックマークは body が白名簿のキーだけになり、GET は body を持たない', () => {
+    const bookmark = checkXrpcRequest({
+        nsid: 'app.bsky.bookmark.createBookmark',
+        body: {uri: 'at://x', cid: 'c', extra: 1}
+    }, SELF_DID);
+    assert.strictEqual(bookmark.ok, true);
+    assert.deepStrictEqual(bookmark.body, {uri: 'at://x', cid: 'c'});
+    const get = checkXrpcRequest({nsid: 'app.bsky.feed.getPosts', params: {uris: []}}, SELF_DID);
+    assert.strictEqual(get.ok, true);
+    assert.strictEqual(get.body, null);
 });
 
 test('checkXrpcRequest: 自分のリポストの削除も通る', () => {
@@ -137,6 +182,23 @@ test('checkXrpcRequest: 白名簿に recordWrite な NSID を追加すると自�
 test('白名簿の値が config.js と page-bridge.js で一致している', () => {
     const nsids = Object.values(EXT_CONFIG.postActions.nsid).sort();
     assert.deepStrictEqual(Object.keys(EXT_BRIDGE.xrpc).sort(), nsids);
+    // 橋渡しの名前 (イベント名・操作名・ルート名・タブの接頭辞) も両方で一致すること
+    assert.strictEqual(EXT_BRIDGE.requestEvent, EXT_CONFIG.mediaGrid.bridge.requestEvent);
+    assert.strictEqual(EXT_BRIDGE.resultEvent, EXT_CONFIG.mediaGrid.bridge.resultEvent);
+    assert.deepStrictEqual(EXT_BRIDGE.actions, EXT_CONFIG.mediaGrid.bridge.actions);
+    assert.deepStrictEqual(
+        EXT_BRIDGE.routeNames.slice().sort(),
+        Object.values(EXT_CONFIG.mediaGrid.bridge.routes).sort()
+    );
+    assert.strictEqual(EXT_BRIDGE.tabTestIdPrefix, EXT_CONFIG.selectors.tabPrefix);
+    // 呼び出し側が分岐に使う失敗理由も、検査が返す文字列と一致すること
+    assert.strictEqual(
+        checkXrpcRequest({
+            nsid: 'com.atproto.repo.createRecord',
+            body: {repo: 'did:plc:other', collection: 'app.bsky.feed.like', record: {}}
+        }, SELF_DID).reason,
+        EXT_CONFIG.postActions.reasons.repoNotSelf
+    );
     assert.deepStrictEqual(
         EXT_BRIDGE.recordCollections.slice().sort(),
         Object.values(EXT_CONFIG.postActions.collections).sort()
@@ -157,4 +219,18 @@ test('白名簿の値が config.js と page-bridge.js で一致している', ()
         EXT_BRIDGE.actions.getSession,
         EXT_CONFIG.mediaGrid.bridge.actions.getSession
     );
+});
+
+test('buildQuery: 配列は同じ名前を繰り返し、null / undefined は落とす', () => {
+    assert.strictEqual(
+        buildQuery({uris: ['at://a', 'at://b'], cursor: null, limit: 1, skip: undefined}),
+        '?uris=at%3A%2F%2Fa&uris=at%3A%2F%2Fb&limit=1'
+    );
+});
+
+test('buildQuery: params が無い・オブジェクトでない・空なら空文字', () => {
+    assert.strictEqual(buildQuery(undefined), '');
+    assert.strictEqual(buildQuery('uris=a'), '');
+    assert.strictEqual(buildQuery({}), '');
+    assert.strictEqual(buildQuery({cursor: null}), '');
 });

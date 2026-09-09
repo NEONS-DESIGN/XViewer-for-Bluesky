@@ -8,11 +8,11 @@
  */
 function buildTabList(profile, context, config) {
     try {
-        // profile が null の場合は例外扱い
         if (!profile) {
-            throw new Error('profile is required');
+            // 制御のために例外を投げない (console.error にスタックトレースのノイズが出る)
+            return postsOnlyTabList(config);
         }
-        const associated = (profile && profile.associated) || {};
+        const associated = profile.associated || {};
         const starterPackCount = associated.starterPacks || 0;
         const listCount = (associated.lists || 0) - starterPackCount;
         const hasLabeler = !!associated.labeler;
@@ -34,15 +34,20 @@ function buildTabList(profile, context, config) {
             .map((tab) => ({name: tab.name, view: tab.view}));
     } catch (error) {
         console.error('[Bluesky拡張] タブ列の組み立てに失敗しました', error);
-        // 壊れていても posts タブだけは返す (config から導出)
-        try {
-            const postsTab = config.profileTabs.find((t) => t.name === 'posts');
-            if (postsTab) {
-                return [{name: postsTab.name, view: postsTab.view}];
-            }
-        } catch (e) {
-            // さらに失敗しても例外を投げない
-        }
+        return postsOnlyTabList(config);
+    }
+}
+
+/**
+ * profile が無い・壊れているときの受け皿。posts タブだけの列を config から導く。
+ * @param {Object} config EXT_CONFIG
+ * @returns {Array<{name: string, view: string|undefined}>} 導けなければ空配列 (例外は投げない)
+ */
+function postsOnlyTabList(config) {
+    try {
+        const postsTab = config.profileTabs.find((t) => t.name === 'posts');
+        return postsTab ? [{name: postsTab.name, view: postsTab.view}] : [];
+    } catch (error) {
         return [];
     }
 }

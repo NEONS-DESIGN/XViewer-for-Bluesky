@@ -9,7 +9,9 @@ const assert = require('node:assert');
 const {
     parseRecordUri,
     readViewerState,
-    toggleActionState
+    toggleActionState,
+    mergeActionKind,
+    isActionApplied
 } = require('../post-actions.js');
 
 /** 反応数の初期値。テストごとに作り直す */
@@ -161,4 +163,61 @@ test('toggleActionState: ブックマークを外すと bookmarked が false に
     const after = toggleActionState(before, 'bookmark');
     assert.strictEqual(after.bookmarked, false);
     assert.deepStrictEqual(after.counts, makeCounts());
+});
+
+test('mergeActionKind: like の結果だけを取り込み、開き直した側のブックマークの状態は保たれる', () => {
+    // 開き直した側の状態 (書き戻し前の viewer から作られ、like は未反応のまま)
+    const reopened = readViewerState({bookmarked: true}, makeCounts());
+    // 飛行中だった like の結果 (URI まで埋まっている)
+    const finished = toggleActionState(readViewerState(null, makeCounts()), 'like');
+    finished.likeUri = 'at://did:plc:me/app.bsky.feed.like/1';
+    const merged = mergeActionKind(reopened, 'like', finished);
+    assert.strictEqual(merged.liked, true);
+    assert.strictEqual(merged.likeUri, 'at://did:plc:me/app.bsky.feed.like/1');
+    assert.strictEqual(merged.counts.like, 101);
+    assert.strictEqual(merged.bookmarked, true);
+    assert.strictEqual(merged.reposted, false);
+    assert.strictEqual(merged.counts.repost, 10);
+    // 元の状態は書き換えない
+    assert.strictEqual(reopened.liked, false);
+    assert.strictEqual(reopened.likeUri, null);
+});
+
+test('mergeActionKind: repost の結果だけを取り込み、like の URI には触れない', () => {
+    const reopened = readViewerState({like: 'at://did:plc:me/app.bsky.feed.like/9'}, makeCounts());
+    const finished = toggleActionState(readViewerState(null, makeCounts()), 'repost');
+    finished.repostUri = 'at://did:plc:me/app.bsky.feed.repost/2';
+    const merged = mergeActionKind(reopened, 'repost', finished);
+    assert.strictEqual(merged.reposted, true);
+    assert.strictEqual(merged.repostUri, 'at://did:plc:me/app.bsky.feed.repost/2');
+    assert.strictEqual(merged.counts.repost, 11);
+    assert.strictEqual(merged.liked, true);
+    assert.strictEqual(merged.likeUri, 'at://did:plc:me/app.bsky.feed.like/9');
+    assert.strictEqual(merged.counts.like, 100);
+});
+
+test('mergeActionKind: bookmark は bookmarked だけを取り込み、counts は元のまま', () => {
+    const reopened = readViewerState(null, makeCounts());
+    const finished = toggleActionState(readViewerState(null, {reply: 0, repost: 0, like: 0, quote: 0}), 'bookmark');
+    const merged = mergeActionKind(reopened, 'bookmark', finished);
+    assert.strictEqual(merged.bookmarked, true);
+    assert.deepStrictEqual(merged.counts, makeCounts());
+});
+
+test('mergeActionKind: 知らない種別は元の状態と同じ中身を返す', () => {
+    const state = readViewerState({bookmarked: true}, makeCounts());
+    const merged = mergeActionKind(state, 'unknown', toggleActionState(state, 'like'));
+    assert.deepStrictEqual(merged, state);
+    assert.notStrictEqual(merged, state);
+});
+
+test('isActionApplied: 引き直した状態が意図どおりなら true、違えば false', () => {
+    const wanted = toggleActionState(readViewerState(null, makeCounts()), 'like');
+    const serverLiked = readViewerState({like: 'at://did:plc:me/app.bsky.feed.like/1'}, makeCounts());
+    const serverNot = readViewerState(null, makeCounts());
+    assert.strictEqual(isActionApplied(serverLiked, 'like', wanted), true);
+    assert.strictEqual(isActionApplied(serverNot, 'like', wanted), false);
+    const wantedBookmark = toggleActionState(readViewerState(null, makeCounts()), 'bookmark');
+    assert.strictEqual(isActionApplied(readViewerState({bookmarked: true}, makeCounts()), 'bookmark', wantedBookmark), true);
+    assert.strictEqual(isActionApplied(serverLiked, 'unknown', wanted), false);
 });

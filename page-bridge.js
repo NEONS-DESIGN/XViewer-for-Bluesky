@@ -29,9 +29,8 @@
          * 2026-09-09 に実機で push() の成功を確認した 3 つだけ
          */
         routeNames: ['PostThread', 'Profile', 'Hashtag'],
-        /** route を省略したときの行き先 (従来の呼び出しとの互換) */
-        defaultRouteName: 'PostThread',
         maxWalkNodes: 60000,
+        /** 子方向の深さの上限。兄弟はループで辿るため、実測 (232 ノード目) より十分に余裕がある */
         maxWalkDepth: 250,
         /**
          * call-xrpc が通す XRPC の白名簿。**config.js の
@@ -46,12 +45,25 @@
             /**
              * recordWrite: true は checkXrpcRequest() が collection / repo の
              * 検査を課す目印。**文字列リテラルで別置きしない (修正ラウンド 1 C1/I2)。**
-             * ここに新しく repo 書き込み系の NSID を足すときは必ず付けること
+             * ここに新しく repo 書き込み系の NSID を足すときは必ず付けること。
+             * bodyKeys は POST の body に通すキーの白名簿。ここに無いキー
+             * (validate / swapCommit など) は落として送る。record を持つものは
+             * record.$type が collection と一致することも要求する
              */
-            'com.atproto.repo.createRecord': {target: 'pds', method: 'POST', recordWrite: true},
-            'com.atproto.repo.deleteRecord': {target: 'pds', method: 'POST', recordWrite: true},
-            'app.bsky.bookmark.createBookmark': {target: 'appview', method: 'POST'},
-            'app.bsky.bookmark.deleteBookmark': {target: 'appview', method: 'POST'}
+            'com.atproto.repo.createRecord': {
+                target: 'pds', method: 'POST', recordWrite: true,
+                bodyKeys: ['repo', 'collection', 'record']
+            },
+            'com.atproto.repo.deleteRecord': {
+                target: 'pds', method: 'POST', recordWrite: true,
+                bodyKeys: ['repo', 'collection', 'rkey']
+            },
+            'app.bsky.bookmark.createBookmark': {
+                target: 'appview', method: 'POST', bodyKeys: ['uri', 'cid']
+            },
+            'app.bsky.bookmark.deleteBookmark': {
+                target: 'appview', method: 'POST', bodyKeys: ['uri']
+            }
         },
         /**
          * createRecord / deleteRecord で触れるコレクション。
@@ -91,21 +103,34 @@
 
             let found = null;
             let visited = 0;
-            const walk = (node, depth) => {
-                if (!node || found || visited > EXT_BRIDGE.maxWalkNodes
-                    || depth > EXT_BRIDGE.maxWalkDepth) {
+            // 兄弟はループで辿る (再帰にすると兄弟の数だけ呼び出しが積まれる)。
+            // 子だけ再帰するため、深さ = ツリーの深さになる
+            const walk = (first, depth) => {
+                if (depth > EXT_BRIDGE.maxWalkDepth) {
                     return;
                 }
-                visited += 1;
-                const value = node.memoizedProps && node.memoizedProps.value;
-                if (value && typeof value === 'object' && predicate(value)) {
-                    found = value;
-                    return;
+                for (let node = first; node && !found; node = node.sibling) {
+                    if (visited > EXT_BRIDGE.maxWalkNodes) {
+                        return;
+                    }
+                    visited += 1;
+                    const value = node.memoizedProps && node.memoizedProps.value;
+                    if (value && typeof value === 'object' && predicate(value)) {
+                        found = value;
+                        return;
+                    }
+                    walk(node.child, depth + 1);
                 }
-                walk(node.child, depth + 1);
-                walk(node.sibling, depth);
             };
-            walk(rootEl[containerKey], 0);
+            // __reactContainer$ が指すのは createRoot 時点の HostRoot fiber で、
+            // React はコミットごとに root.current を 2 本の alternate の間で
+            // 入れ替える。そのまま起点にすると半分の確率で 1 描画前のツリーを
+            // 読む (開いた直後の activeLightbox・切り替え直後のクライアントが古い)。
+            // HostRoot の stateNode (FiberRootNode) の current が常に最新のコミット済みツリー
+            const hostRoot = rootEl[containerKey];
+            const start = (hostRoot && hostRoot.stateNode && hostRoot.stateNode.current)
+                || hostRoot;
+            walk(start, 0);
             return found;
         } catch (error) {
             return null;
@@ -133,27 +158,16 @@
     /**
      * 本体のルーターで SPA 遷移する (history.pushState は使わない)。
      * route は白名簿 (EXT_BRIDGE.routeNames) のものだけを受け付ける。
-     * 省略時は PostThread として扱い、従来の呼び出しとの互換を保つ。
-     * @param {{route?: string, handle?: string, rkey?: string, params?: Object}} payload
+     * @param {{route: string, params: Object}} payload
      * @returns {{ok: boolean, reason: string|null}}
      */
     function navigate(payload) {
-        const route = (payload && payload.route) || EXT_BRIDGE.defaultRouteName;
-        if (EXT_BRIDGE.routeNames.indexOf(route) === -1) {
+        const route = payload && payload.route;
+        if (typeof route !== 'string' || EXT_BRIDGE.routeNames.indexOf(route) === -1) {
             return {ok: false, reason: 'unknown-route'};
         }
-        let params = payload && payload.params;
-        if (!params) {
-            // 従来の呼び出し (handle と rkey を直に渡す形) との互換
-            const handle = payload && payload.handle;
-            const rkey = payload && payload.rkey;
-            if (typeof handle !== 'string' || !handle
-                || typeof rkey !== 'string' || !rkey) {
-                return {ok: false, reason: 'invalid-payload'};
-            }
-            params = {name: handle, rkey};
-        }
-        if (typeof params !== 'object') {
+        const params = payload && payload.params;
+        if (!params || typeof params !== 'object') {
             return {ok: false, reason: 'invalid-payload'};
         }
         for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -314,16 +328,33 @@
     }
 
     /**
-     * ログイン中の DID を読む。**トークンには触らない。**
+     * NSID の白名簿の規則に従って、実際に呼ぶクライアントを選ぶ。
+     * 白名簿に無い NSID なら appview 側を返す (その要求は checkXrpcRequest() が落とす)
      * @param {Object|null} clients findClients() の結果
+     * @param {*} nsid payload.nsid (検査前の値)
+     * @returns {Object|null} {agent} を持つクライアント
+     */
+    function pickClient(clients, nsid) {
+        if (!clients) {
+            return null;
+        }
+        const rule = (typeof nsid === 'string'
+            && Object.prototype.hasOwnProperty.call(EXT_BRIDGE.xrpc, nsid))
+            ? EXT_BRIDGE.xrpc[nsid]
+            : null;
+        return rule && rule.target === 'pds' ? clients.pdsClient : clients.appviewClient;
+    }
+
+    /**
+     * ログイン中の DID を読む。**トークンには触らない。**
+     * repo の検査に使う DID と、書き込みを送る agent が別物にならないよう、
+     * 実際に使うクライアントから読む
+     * @param {Object|null} client pickClient() の結果
      * @returns {string|null} 未ログインなら null
      */
-    function readSessionDid(clients) {
+    function readSessionDid(client) {
         try {
-            const did = clients
-                && clients.appviewClient
-                && clients.appviewClient.agent
-                && clients.appviewClient.agent.did;
+            const did = client && client.agent && client.agent.did;
             return typeof did === 'string' && did ? did : null;
         } catch (error) {
             return null;
@@ -335,8 +366,9 @@
      * NSID の白名簿、レコード書き込みの collection、repo が本人かの 3 段。
      * @param {Object} payload {nsid, params, body}
      * @param {string|null} sessionDid ログイン中の DID
-     * @returns {{ok: true, rule: {target: string, method: string}}
-     *   |{ok: false, reason: string}}
+     * @returns {{ok: true, rule: {target: string, method: string}, body: Object|null}
+     *   |{ok: false, reason: string}} body は白名簿のキーだけを写した送信用の body
+     *   (GET なら null)
      */
     function checkXrpcRequest(payload, sessionDid) {
         if (!payload || typeof payload !== 'object') {
@@ -358,20 +390,46 @@
         // 白名簿 (rule.recordWrite) から導く。文字列リテラルを別置きすると
         // 白名簿に NSID を足しても検査が追随しない事故が起きる (修正ラウンド 1 I2)
         const isRecordWrite = rule.recordWrite === true;
-        if (!isRecordWrite) {
-            return {ok: true, rule};
+        if (rule.method !== 'POST') {
+            return {ok: true, rule, body: null};
         }
         const body = payload.body;
         if (!body || typeof body !== 'object') {
             return {ok: false, reason: 'invalid-body'};
         }
-        if (EXT_BRIDGE.recordCollections.indexOf(body.collection) === -1) {
-            return {ok: false, reason: 'collection-not-allowed'};
+        if (isRecordWrite) {
+            if (EXT_BRIDGE.recordCollections.indexOf(body.collection) === -1) {
+                return {ok: false, reason: 'collection-not-allowed'};
+            }
+            if (!sessionDid || body.repo !== sessionDid) {
+                return {ok: false, reason: 'repo-not-self'};
+            }
         }
-        if (!sessionDid || body.repo !== sessionDid) {
-            return {ok: false, reason: 'repo-not-self'};
+        // 白名簿のキーだけを写して送る (validate: false などの余分な指定を通さない)。
+        // bodyKeys が無い規則は body をそのまま通す (recordWrite の検査は上で済んでいる)
+        if (!Array.isArray(rule.bodyKeys)) {
+            return {ok: true, rule, body};
         }
-        return {ok: true, rule};
+        const sanitized = {};
+        for (let i = 0; i < rule.bodyKeys.length; i += 1) {
+            const key = rule.bodyKeys[i];
+            if (Object.prototype.hasOwnProperty.call(body, key)) {
+                sanitized[key] = body[key];
+            }
+        }
+        if (rule.bodyKeys.indexOf('record') !== -1) {
+            // レコードの $type は collection と一致させる (別コレクション形の
+            // レコードを自分の like コレクションに置けないようにする)
+            const record = sanitized.record;
+            if (!record || typeof record !== 'object' || record.$type !== body.collection) {
+                return {ok: false, reason: 'record-type-mismatch'};
+            }
+        }
+        if (rule.bodyKeys.indexOf('rkey') !== -1
+            && (typeof sanitized.rkey !== 'string' || !sanitized.rkey)) {
+            return {ok: false, reason: 'invalid-rkey'};
+        }
+        return {ok: true, rule, body: sanitized};
     }
 
     /**
@@ -411,13 +469,12 @@
         if (!clients) {
             return {ok: false, reason: 'no-client'};
         }
-        const checked = checkXrpcRequest(payload, readSessionDid(clients));
+        // repo の検査に使う DID は、書き込みを送るのと同じクライアントから読む
+        const client = pickClient(clients, payload && payload.nsid);
+        const checked = checkXrpcRequest(payload, readSessionDid(client));
         if (!checked.ok) {
             return {ok: false, reason: checked.reason};
         }
-        const client = checked.rule.target === 'pds'
-            ? clients.pdsClient
-            : clients.appviewClient;
         const agent = client && client.agent;
         if (!agent || typeof agent.fetchHandler !== 'function') {
             return {ok: false, reason: 'no-agent'};
@@ -431,7 +488,8 @@
             path += buildQuery(payload.params);
         } else {
             init.headers['content-type'] = 'application/json';
-            init.body = JSON.stringify(payload.body || {});
+            // 検査で白名簿のキーだけに組み直した body を送る
+            init.body = JSON.stringify(checked.body || {});
         }
         try {
             const response = await agent.fetchHandler(path, init);
@@ -493,10 +551,17 @@
      * @returns {{ok: boolean, hasSession: boolean, did: string|null}}
      */
     function getSession() {
-        const did = readSessionDid(findClients());
+        const clients = findClients();
+        const did = readSessionDid(clients && clients.appviewClient);
         return {ok: true, hasSession: did !== null, did};
     }
 
+    /**
+     * 分離ワールドへ応答を返す。detail は JSON 文字列 (bridge-client.js が parse する)。
+     * @param {number} id 要求の id
+     * @param {Object} payload {ok, ...}
+     * @returns {void}
+     */
     function reply(id, payload) {
         try {
             document.dispatchEvent(new CustomEvent(EXT_BRIDGE.resultEvent, {
@@ -507,6 +572,13 @@
         }
     }
 
+    /**
+     * 分離ワールドからの要求を 1 件さばく。
+     * **ハンドラが投げても必ず返事をする。** 返事が無いと呼び出し側は
+     * タイムアウト (15 秒) まで解決せず、押下からの経路がそのあいだ固まる
+     * @param {CustomEvent} event ext:bridge-request
+     * @returns {void}
+     */
     function handleRequest(event) {
         let detail = null;
         try {
@@ -517,6 +589,19 @@
         if (!detail || typeof detail.id !== 'number') {
             return;
         }
+        try {
+            dispatchRequest(detail);
+        } catch (error) {
+            reply(detail.id, {ok: false, reason: 'handler-failed'});
+        }
+    }
+
+    /**
+     * action ごとのハンドラを呼び、結果を reply() で返す。
+     * @param {{id: number, action: string, payload: Object}} detail
+     * @returns {void}
+     */
+    function dispatchRequest(detail) {
         if (detail.action === EXT_BRIDGE.actions.openLightbox) {
             reply(detail.id, openLightbox(detail.payload));
             return;

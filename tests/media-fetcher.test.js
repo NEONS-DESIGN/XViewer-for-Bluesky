@@ -10,8 +10,10 @@ const makeEntry = (key) => ({key, postId: key, type: 'image', thumbUrl: 'x', lab
 /** 指定のレスポンスを順に返す偽 fetch を作る */
 const makeFetch = (responses) => {
     const calls = [];
-    const impl = async (url) => {
+    const options = [];
+    const impl = async (url, init) => {
         calls.push(url);
+        options.push(init);
         const next = responses.shift();
         if (!next) {
             throw new Error('呼びすぎです');
@@ -26,8 +28,25 @@ const makeFetch = (responses) => {
         };
     };
     impl.calls = calls;
+    impl.options = options;
     return impl;
 };
+
+/** 動画だけの投稿 (既定の動画除外で entries が 0 件になる) を並べたフィード */
+const videoOnlyFeedBody = (rkeys, cursor) => ({
+    feed: rkeys.map((rkey) => ({
+        post: {
+            uri: `at://did:plc:x/app.bsky.feed.post/${rkey}`,
+            author: {did: 'did:plc:x', handle: 'x.test', labels: []},
+            embed: {
+                $type: 'app.bsky.embed.video#view',
+                playlist: 'p', thumbnail: 't', alt: ''
+            },
+            labels: []
+        }
+    })),
+    cursor
+});
 
 const feedBody = (entries, cursor) => ({
     feed: entries.map((rkey) => ({
@@ -246,4 +265,36 @@ test('旧世代の応答が新世代の進行中フェッチを邪魔しない',
 
     assert.strictEqual(callCount, 2, 'A と B で計 2 回だけ呼ばれる（二重リクエストなし）');
     assert.strictEqual(store.size, 1, 'B の 1 件だけ蓄積');
+});
+
+test('動画だけのページは entries が 0 件でも終端にせず、cursor を進める', async () => {
+    const store = new MediaStore();
+    const impl = makeFetch([{body: videoOnlyFeedBody(['v1', 'v2'], 'cur1')}]);
+    const fetcher = new MediaFetcher(store, config, impl);
+    fetcher.setActor('alice.test');
+    await fetcher.fetchNext();
+    assert.strictEqual(store.size, 0);
+    assert.strictEqual(fetcher.exhausted, false, '動画の除外で 0 件になっただけで終端ではない');
+    assert.strictEqual(fetcher.cursor, 'cur1');
+});
+
+test('feed が空 (0 件) なら cursor があっても終端とみなす', async () => {
+    const store = new MediaStore();
+    const impl = makeFetch([{body: {feed: [], cursor: 'cur1'}}]);
+    const fetcher = new MediaFetcher(store, config, impl);
+    fetcher.setActor('alice.test');
+    await fetcher.fetchNext();
+    assert.strictEqual(fetcher.exhausted, true);
+});
+
+test('fetchNext は 1 回の fetch にタイムアウトの signal を渡す', async () => {
+    const store = new MediaStore();
+    const impl = makeFetch([{body: feedBody(['p1'], 'cur1')}]);
+    const fetcher = new MediaFetcher(store, config, impl);
+    fetcher.setActor('alice.test');
+    await fetcher.fetchNext();
+    assert.strictEqual(impl.options[0].credentials, 'omit');
+    if (typeof AbortSignal.timeout === 'function') {
+        assert.ok(impl.options[0].signal instanceof AbortSignal, 'signal が無い');
+    }
 });

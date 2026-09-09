@@ -11,8 +11,10 @@
  *
  * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) /
  *       bridge-client.js (callBridge) / icons.js (createIcon) /
- *       content.js (subscribeLightboxVisibility, isLightboxVisible) /
- *       post-actions.js (PostActions)
+ *       content.js (subscribeLightboxVisibility, isLightboxVisible,
+ *       findVisibleLightboxDialog) /
+ *       post-actions.js (PostActions, readViewerState, toggleActionState,
+ *       mergeActionKind, isActionApplied)
  */
 
 /**
@@ -92,7 +94,13 @@ function toFacetRange(facet, byteLength, config) {
         return null;
     }
     for (const feature of features) {
-        const mapping = config.facets[feature && feature.$type];
+        // $type は投稿者が自由に書ける値。"constructor" などプロトタイプのキーで
+        // 関数を拾わないよう、自前のキーだけを引く
+        const type = feature && feature.$type;
+        const mapping = (typeof type === 'string'
+            && Object.prototype.hasOwnProperty.call(config.facets, type))
+            ? config.facets[type]
+            : null;
         if (!mapping) {
             continue;
         }
@@ -366,26 +374,20 @@ function syncPostViewer(post, kind, state) {
 }
 
 /**
- * 失敗した操作を、その種別だけ打ち消した新しい状態にする。
- * **他の種別 (別の操作が同時に飛行中でも) には触れない。** もう一度
- * `toggleActionState()` を通すだけで、対象の種別だけが打ち消され、
- * 他の種別が積み重ねた変化はそのまま残る。
- * `toggleActionState()` は方向によらず対象種別の URI を null にするため、
- * **「削除に失敗して元の反応が残った」場合は、ここで元の URI を戻す**
- * (でなければ、まだ存在するレコードの URI をパネルが見失う)
- * @param {ActionState} state 打ち消す元になる、今の状態
+ * 失敗した操作を、その種別だけ押す前へ戻した新しい状態にする。
+ * **他の種別 (別の操作が同時に飛行中でも) には触れない。**
+ * トグルで打ち消すのではなく、`previous` からその種別のフィールドを
+ * **値で写す** (`mergeActionKind()`)。`this.state` が押した時点のものでも、
+ * 設定の ON/OFF や開き直しで `post.viewer` から作り直された古いものでも、
+ * 同じ結果になる (トグルだと作り直された状態を逆に倒し、
+ * 「いいね済みなのに URI が無い」幽霊の反応を作る)
+ * @param {ActionState} state 戻す元になる、今の状態
  * @param {'like'|'repost'|'bookmark'} kind
- * @param {ActionState} previous 押す前の状態。URI の復元に使う
- * @returns {ActionState} 打ち消した後の新しい状態
+ * @param {ActionState} previous 押す前の状態
+ * @returns {ActionState} 戻した後の新しい状態
  */
 function revertActionState(state, kind, previous) {
-    const reverted = toggleActionState(state, kind);
-    if (kind === 'like') {
-        reverted.likeUri = previous.likeUri;
-    } else if (kind === 'repost') {
-        reverted.repostUri = previous.repostUri;
-    }
-    return reverted;
+    return mergeActionKind(state, kind, previous);
 }
 
 /**
@@ -429,6 +431,10 @@ class LightboxPanel {
         this.collapsed = config.defaultCollapsed;
         /** @type {HTMLElement|null} 生成したパネル */
         this.panelEl = null;
+        /** @type {HTMLElement|null} 畳む / 開くボタン (mountPanel() で生える) */
+        this.toggleEl = null;
+        /** @type {HTMLElement|null} 本文の入れ物 (mountPanel() で生える) */
+        this.bodyEl = null;
         /** @type {HTMLElement|null} right を当てた本体の要素。撤去時に戻す相手 */
         this.shrunkEl = null;
         /**
@@ -585,6 +591,15 @@ class LightboxPanel {
             if (!isLightboxVisible()) {
                 return;
             }
+            // 本体のアカウント切り替えはリロードを伴わない。覚えている投稿の
+            // viewer (いいね済みか等) は人ごとに違うため、DID が変わっていたら捨てる
+            const session = await this.actions.refreshSessionDid();
+            if (generation !== this.generation) {
+                return;
+            }
+            if (session.changed) {
+                this.cache.clear();
+            }
 
             const postUri = result.postUri;
             this.mountPanel();
@@ -696,29 +711,6 @@ class LightboxPanel {
     }
 
     /**
-     * `dialogSelector` に一致する要素のうち、実際に見えている**画像ライトボックス**を
-     * 1 件返す。
-     * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の
-     * 方を掴む**ことでこのプロジェクトは 2 回 Critical を踏んでいる
-     * (`postsFeed` / `profilePager`。`SITE_SPEC.md` 6.3)。開閉の判定
-     * (`isLightboxVisible()`) と介入対象を必ず同じ要素にするため、
-     * `querySelectorAll` + `getClientRects().length > 0` に揃える。
-     * **投稿作成モーダルが同時に開いていることがある**ため、
-     * `isLightboxDialog()` で除く
-     * @returns {Element|null}
-     */
-    findVisibleDialog() {
-        const nodes = document.querySelectorAll(this.config.dialogSelector);
-        for (let i = 0; i < nodes.length; i += 1) {
-            if (nodes[i].getClientRects().length > 0
-                && isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
-                return nodes[i];
-            }
-        }
-        return null;
-    }
-
-    /**
      * 本体のダイアログの固定親を狭める。
      * **見つからなければ何もしない** (パネルは重なる表示に落ちる)。
      * **上書きする前に元のインラインの値を控える。** Bluesky 自身が
@@ -728,10 +720,15 @@ class LightboxPanel {
      */
     applyShrink() {
         try {
+            // 閉じて別のライトボックスが開いていた場合、古い固定親を掴んだままだと
+            // 新しい方に right が当たらない。外れていたら先に戻して掴み直す
+            if (this.shrunkEl && !this.shrunkEl.isConnected) {
+                this.releaseShrink();
+            }
             if (this.collapsed || this.shrunkEl) {
                 return;
             }
-            const dialog = this.findVisibleDialog();
+            const dialog = findVisibleLightboxDialog(this.config.dialogSelector);
             const parent = dialog && dialog.parentElement;
             if (!parent) {
                 return;
@@ -1135,12 +1132,22 @@ class LightboxPanel {
     /**
      * 操作を 1 つ実行する。
      *
-     * **楽観的更新。** 押した瞬間に見た目を変え、失敗したら控えておいた
-     * 元の状態へ戻す。飛行中の同じ操作は `buildPendingKey()` のキー
-     * (投稿 + 種別) で弾く (連打でも、閉じて開き直しても、同じレコードが
-     * 2 つできると片方が取り消せなくなるため)。
-     * **失敗したときは覚えている投稿を捨てる** (サーバ側では成功している
-     * ことがあり、不確かなまま覚え込むと次の押下で 2 本目が飛ぶ)。
+     * **楽観的更新。** 押した瞬間に見た目を変え、失敗したら押す前の状態へ戻す。
+     * 飛行中の同じ操作は `buildPendingKey()` のキー (投稿 + 種別) で弾く
+     * (連打でも、閉じて開き直しても、同じレコードが 2 つできると片方が
+     * 取り消せなくなるため)。
+     *
+     * **状態への反映は、成功なら `next` から・失敗なら `previous` から、
+     * その種別のフィールドを値で写す** (`mergeActionKind()`)。`this.state` は
+     * 応答を待つ間に開き直し・設定の ON/OFF で `post.viewer` から作り直される
+     * ことがあり、トグルや URI だけの書き込みでは古い状態と食い違う
+     * (二重いいねの 5 回目の経路。`CHANGELOG.md` `[2.7.0]`)。
+     *
+     * **失敗したときは覚えている投稿を捨て、サーバから引き直す。** 橋渡しは
+     * 15 秒でタイムアウトして失敗を返すが、そのときサーバ側では成功している
+     * ことがある。押す前へ戻しただけだと利用者がもう一度押して 2 本目が飛ぶため、
+     * 印を残したまま引き直し、引けたらその真実で描き直す。引き直しは、この投稿に
+     * 別種の操作が飛行中でないときだけ行う (その結果を上書きしないため)
      * @param {'like'|'repost'|'bookmark'} kind
      * @returns {Promise<void>}
      */
@@ -1149,17 +1156,12 @@ class LightboxPanel {
         // try の外のスコープに出しておく
         let previous = null;
         let post = null;
-        let generation = this.generation;
         let key = null;
         try {
             if (!this.post || !this.state) {
                 return;
             }
             post = this.post;
-            // teardown() で必ず加算される世代。**this.post だけでは
-            // 「閉じて同じ投稿を開き直した」を検知できない**
-            // (this.cache が同じ PanelPost 参照を返すため)
-            generation = this.generation;
             // 投稿と種別の両方で弾く。閉じて開き直しても飛行中は押させない
             key = buildPendingKey(post.postUri, kind, EXT_CONFIG.postActions);
             if (this.pending.has(key)) {
@@ -1172,7 +1174,7 @@ class LightboxPanel {
             this.renderActions();
 
             const result = await this.callAction(kind, post, previous, next);
-            this.pending.delete(key);
+            let refreshed = null;
             if (result.ok) {
                 // createRecord の応答の URI を取り込む。取り込まないと取り消せない
                 if (kind === 'like' && next.liked) {
@@ -1182,53 +1184,64 @@ class LightboxPanel {
                     next.repostUri = result.recordUri;
                 }
                 // 覚えている投稿にも反映する。**この種別のフィールドだけを書く**
-                // (this.pending は投稿と種別の組でしか弾かないため、別種の操作が同時に
-                // 飛行中の場合がある。全フィールドを書くと互いの結果を消し合う)。
-                // 破棄ガードより前で無条件に行う。post はこの呼び出しがローカルに
-                // 掴んでいるキャッシュ内のオブジェクトなので、応答待ちの間に
-                // 閉じられていても書き戻して構わない
+                // (別種の操作が同時に飛行中の場合がある。全フィールドを書くと
+                // 互いの結果を消し合う)。post はこの呼び出しがローカルに掴んでいる
+                // キャッシュ内のオブジェクトなので、応答待ちの間に閉じられていても
+                // 書き戻して構わない
                 syncPostViewer(post, kind, next);
             } else {
-                // **失敗しても「押す前の状態」を覚え込まない。** 橋渡しは 12 秒で
-                // タイムアウトして {ok: false} を返すが、そのときサーバ側では
-                // レコードができていることがある。覚えたままにすると recordUri を
-                // 永久に失い、次の押下で 2 本目のレコードができる。
-                // 覚えている投稿を捨てて、次に開いたときサーバから引き直す。
-                // **今開いているパネルは再取得しない** (下で楽観的更新を巻き戻し、
-                // 表示はそのままにする)。目的は開き直したときに正しくなること
+                // **失敗しても「押す前の状態」を覚え込まない。** サーバ側では
+                // 成功していることがあり、覚えたままにすると recordUri を永久に失い、
+                // 次の押下で 2 本目のレコードができる
                 this.cache.delete(post.postUri);
+                if (!this.hasOtherPending(post.postUri, key)) {
+                    // 印を残したまま、**認証付きの取得だけ**で引き直す (公開 API に
+                    // 落ちると viewer 無しの投稿を覚え込み、開き直しても操作行が
+                    // 出なくなる)。この種別のボタンはこの間押せない
+                    const authed = await this.actions.fetchPost(post.postUri);
+                    refreshed = authed ? parsePostForPanel(authed, this.config) : null;
+                    if (refreshed && refreshed.viewer === null) {
+                        refreshed = null;
+                    }
+                    // 引き直している間に別種の操作が押されていたら、その結果を
+                    // 上書きしないよう引き直した内容は捨てる (renderPost() で
+                    // this.post が差し替わると、後から返る別種の成功が破棄ガードで
+                    // 捨てられ、開き直すと未反応のまま押せて 2 本目が飛ぶ)
+                    if (refreshed && this.hasOtherPending(post.postUri, key)) {
+                        refreshed = null;
+                    }
+                    if (refreshed) {
+                        this.remember(post.postUri, refreshed);
+                    }
+                }
             }
-            // 応答を待つ間に別の投稿へ移った・閉じて開き直されていたら、
-            // 画面への反映は捨てる (書き戻しは上で完了しているので、次に開いたときは
-            // 正しい状態から描かれる)
-            if (this.post !== post || generation !== this.generation) {
-                // **閉じて同じ投稿を開き直された場合でも、ここで描き直さない。**
-                // 開き直したときの this.state は書き戻し前の post.viewer から
-                // 作られているため、描き直すと「未いいね」かつ有効なボタンが
-                // 残り、押すと 2 本目のレコードができる (2.6.6 で足して
-                // 2.6.7 で外した。CHANGELOG.md [2.6.7])。
-                // 残る症状はボタンが disabled のままになることだけで、
-                // もう一度開き直せば書き戻し済みの状態から正しく描かれる
+            this.pending.delete(key);
+
+            // 応答を待つ間に別の投稿へ移った・閉じたままなら、画面への反映は捨てる
+            // (書き戻しは上で完了しているので、次に開いたときは正しい状態から描かれる)
+            if (this.post !== post) {
                 return;
             }
-            if (!result.ok) {
-                // その種別だけを打ち消す。previous へまるごと戻すと、飛行中の
-                // 別種の操作の結果を消してしまう
-                this.state = revertActionState(this.state, kind, previous);
+            // ここから先は同じ投稿を表示中 (閉じて同じ投稿を開き直した場合を含む。
+            // その場合 this.state は書き戻し前の post.viewer から作り直されているが、
+            // 値で写すため結果は同じ)
+            if (result.ok) {
+                this.state = mergeActionKind(this.state, kind, next);
                 this.renderActions();
-                this.showActionError();
                 return;
             }
-            // 足りないのは URI だけ。liked / bookmarked / counts はこの種別の
-            // 楽観的更新が既に生きた状態の連鎖に入っているため、まるごと
-            // 差し替えない (差し替えると、飛行中の別種の操作の結果を消してしまう)
-            if (kind === 'like' && next.liked) {
-                this.state.likeUri = result.recordUri;
+            if (refreshed) {
+                // サーバの真実で描き直す。意図した状態になっていれば、実は成功していた
+                this.renderPost(refreshed);
+                if (!isActionApplied(this.state, kind, next)) {
+                    this.showActionError();
+                }
+                return;
             }
-            if (kind === 'repost' && next.reposted) {
-                this.state.repostUri = result.recordUri;
-            }
+            // 引き直せなかった (または別種が飛行中): その種別だけ押す前へ戻す
+            this.state = revertActionState(this.state, kind, previous);
             this.renderActions();
+            this.showActionError();
         } catch (error) {
             console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
             if (key) {
@@ -1237,17 +1250,33 @@ class LightboxPanel {
             // 成功経路と同じ破棄ガード。**別の投稿を開いた後に例外が来ると、
             // previous (前の投稿の URI) を今の投稿の状態へ書き込んでしまい、
             // 次の押下で別の投稿のいいねを消す**経路になる
-            if (!post || this.post !== post || generation !== this.generation) {
+            if (!post || this.post !== post) {
                 return;
             }
             // 通信していないのに見た目だけ変わったままにしない。その種別だけを
-            // 打ち消す (this.state が既に無ければ何もしない)
+            // 押す前へ戻す (this.state が既に無ければ何もしない)
             if (previous && this.state) {
                 this.state = revertActionState(this.state, kind, previous);
                 this.renderActions();
                 this.showActionError();
             }
         }
+    }
+
+    /**
+     * 同じ投稿に、指定したキー以外の飛行中の操作があるか。
+     * @param {string} postUri
+     * @param {string} ownKey 自分の飛行中の印
+     * @returns {boolean}
+     */
+    hasOtherPending(postUri, ownKey) {
+        const prefix = buildPendingKey(postUri, '', EXT_CONFIG.postActions);
+        for (const pendingKey of this.pending) {
+            if (pendingKey !== ownKey && pendingKey.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

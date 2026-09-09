@@ -50,6 +50,9 @@
 }
 
 #ext-media-grid {
+    /* z-index は position が static だと効かない。
+       #ext-nav-btn-container (9999) より下に置く関係を数値どおりに保つ */
+    position: relative;
     z-index: 9998;
     flex: none;
     padding-top: var(--ext-media-gap);

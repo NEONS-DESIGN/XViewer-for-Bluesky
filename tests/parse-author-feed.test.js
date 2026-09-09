@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {EXT_CONFIG} = require('../config.js');
-const {parseAuthorFeed, extractMediaFromEmbed, toMediaEntries} = require('../media-source.js');
+const {parseAuthorFeed, extractMediaFromEmbed, extractLabels, toMediaEntries} = require('../media-source.js');
 
 const config = EXT_CONFIG.mediaGrid;
 /** 動画除外を切ったときの挙動 (旧仕様) を確かめるための設定 */
@@ -103,12 +103,18 @@ test('cursor を取り出す。無ければ null', () => {
 });
 
 test('feed が配列でなければ ok:false を返す', () => {
-    assert.deepStrictEqual(parseAuthorFeed({}, config),
-        {ok: false, entries: [], cursor: null});
-    assert.deepStrictEqual(parseAuthorFeed(null, config),
-        {ok: false, entries: [], cursor: null});
-    assert.deepStrictEqual(parseAuthorFeed({feed: 'not-array'}, config),
-        {ok: false, entries: [], cursor: null});
+    const failed = {ok: false, entries: [], feedCount: 0, cursor: null};
+    assert.deepStrictEqual(parseAuthorFeed({}, config), failed);
+    assert.deepStrictEqual(parseAuthorFeed(null, config), failed);
+    assert.deepStrictEqual(parseAuthorFeed({feed: 'not-array'}, config), failed);
+});
+
+test('parseAuthorFeed は生のフィード件数 (feedCount) を返す (動画だけでも 0 にならない)', () => {
+    const parsed = parseAuthorFeed(load('feed-video'), config);
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(parsed.entries.length, 0, '動画は除外される');
+    assert.strictEqual(parsed.feedCount, load('feed-video').feed.length);
+    assert.strictEqual(parseAuthorFeed({feed: [], cursor: 'c'}, config).feedCount, 0);
 });
 
 test('未知の embed 形式は 0 件を返す (例外を投げない)', () => {
@@ -209,4 +215,21 @@ test('MediaEntry は postUri と authorDid を持つ', () => {
     assert.equal(entry.authorDid, json.feed[0].post.author.did);
     // postUri は postId (rkey) と整合していること
     assert.ok(entry.postUri.endsWith(`/${entry.postId}`));
+});
+
+test('extractLabels: 投稿と作者のラベルを合流し、重複を除く', () => {
+    const labels = extractLabels({
+        labels: [{val: 'porn'}, {val: 'sexual'}],
+        author: {labels: [{val: 'porn'}, {val: 'nudity'}]}
+    });
+    assert.deepStrictEqual(labels, ['porn', 'sexual', 'nudity']);
+});
+
+test('extractLabels: val が文字列でない要素と null は落とし、labels が無ければ空', () => {
+    assert.deepStrictEqual(
+        extractLabels({labels: [{val: 1}, null, {val: 'porn'}, {}], author: {}}),
+        ['porn']
+    );
+    assert.deepStrictEqual(extractLabels({}), []);
+    assert.deepStrictEqual(extractLabels({labels: 'porn', author: {labels: null}}), []);
 });

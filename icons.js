@@ -2,13 +2,15 @@
  * アイコンを DOM へ起こす役。図形データ (icon-shapes.js) と使う側の間に立つ。
  *
  * UI_DESIGN_KIT.md 5 節の createIcon() を、このプロジェクトの方針に合わせて
- * 2 点だけ変えている:
+ * 3 点だけ変えている:
  * 1. ESM ではなくグローバルスクリプト。config.js を content script と共有する
  *    都合で、このリポジトリのスクリプトはすべてグローバル方式に揃えてある
  * 2. innerHTML を使わず createElementNS + setAttribute で組む。図形データは
  *    定数だけで外部入力が混ざらないため innerHTML でも安全だが、
  *    「マークアップを文字列で組み立てない」(UI_DESIGN_KIT 7 節) をそのまま守れるうえ、
  *    Trusted Types を強制する環境でも例外が出ない
+ * 3. 図形データは markup (SVG 文字列) ではなく path (d 属性の値) を持つ。
+ *    ビルドが無く原本から手で写すため (icon-shapes.js 冒頭)
  *
  * 依存: icon-shapes.js (ICON_SHAPES)
  */

@@ -9,6 +9,23 @@ const EXT_VIEWS = {
     OTHER: 'other'
 };
 
+/**
+ * 複数の設定から参照する共通の値。**同じリテラルを 2 か所に書かない**
+ * (片方だけ変える事故を防ぐ)
+ * @readonly
+ */
+const EXT_SHARED = {
+    /** 公開 API のオリジン。getAuthorFeed / getProfile / getPosts のフォールバックで使う */
+    publicApiOrigin: 'https://public.api.bsky.app',
+    /**
+     * 画像ライトボックスのダイアログを指すセレクタ。投稿情報パネルと操作性の調整が
+     * 同じ相手 (その parentElement) に触るため、値も 1 つにする。要素タイプは書かない
+     */
+    lightboxDialogSelector: '[role="dialog"][aria-modal="true"]',
+    /** タブ要素の data-testid の接頭辞。page-bridge.js の EXT_BRIDGE.tabTestIdPrefix と同じ値 */
+    tabTestIdPrefix: 'profilePager-selector-'
+};
+
 const EXT_CONFIG = {
     /** プロフィールページのパス 1 段目 */
     profilePathRoot: 'profile',
@@ -33,8 +50,8 @@ const EXT_CONFIG = {
 
     selectors: {
         pager: '[data-testid="profilePager"]',
-        tabPrefix: 'profilePager-selector-',
-        tab: '[data-testid^="profilePager-selector-"]',
+        tabPrefix: EXT_SHARED.tabTestIdPrefix,
+        tab: `[data-testid^="${EXT_SHARED.tabTestIdPrefix}"]`,
         /**
          * 選択中タブだけが持つ下線バーのセレクタ。
          * 実機確認済み (Task 7 修正ラウンド 1):
@@ -64,8 +81,10 @@ const EXT_CONFIG = {
 
     /**
      * Bluesky 本体の画像ライトボックス (モーダル) の扱い (content.js)。
-     * 開閉の判定を history.state のフラグだけに頼ると、ブラウザバックで
-     * 閉じたときに取りこぼすため、DOM 上の実体も見る (Task 7 修正ラウンド 5)
+     * **開閉の判定は DOM 上の実体 (isLightboxVisible) だけで行う。**
+     * history.state のフラグは分離ワールドから見ると古い値のまま残り、
+     * いったん立つと下りないため判定に混ぜない (2.3.0 で実機確認した Critical。
+     * 2026-09-08 以降は本体がフラグ自体を立てなくなった。SITE_SPEC.md 2.3)
      */
     lightbox: {
         /**
@@ -138,7 +157,12 @@ const EXT_CONFIG = {
         /** タブバーの出現を確認し直す間隔 (ms)。一時監視と併走し、時間の上限は設けない */
         pollIntervalMs: 2000,
         /** タブ列を確定できなかったときに確定を再試行する間隔 (ms)。時間の上限は設けない */
-        retryIntervalMs: 2000
+        retryIntervalMs: 2000,
+        /**
+         * getProfile が一時的に失敗した (タイムアウト・回線断・5xx) ときに引き直す
+         * 間隔 (ms)。DOM 待ちより長く取り、障害中に 2 秒ごとに叩き続けない
+         */
+        errorRetryIntervalMs: 15000
     },
 
     ui: {
@@ -226,7 +250,7 @@ const EXT_CONFIG = {
             videoBadge: '▶'
         },
         api: {
-            origin: 'https://public.api.bsky.app',
+            origin: EXT_SHARED.publicApiOrigin,
             feedPath: '/xrpc/app.bsky.feed.getAuthorFeed',
             profilePath: '/xrpc/app.bsky.actor.getProfile',
             filter: 'posts_with_media',
@@ -272,7 +296,7 @@ const EXT_CONFIG = {
             /**
              * navigate で行ける先の白名簿。**分離ワールドから任意のルートを
              * 叩けるようにしない。** 2026-09-09 に実機で push() の成功を確認した
-             * 3 つだけを載せる。page-bridge.js の EXT_BRIDGE.routes と同じ値を
+             * 3 つだけを載せる。page-bridge.js の EXT_BRIDGE.routeNames と同じ値を
              * 書いてあるので、片方を変えたら必ず両方直すこと
              */
             routes: {
@@ -338,9 +362,9 @@ const EXT_CONFIG = {
          * 画像ライトボックスのダイアログを指すセレクタ。
          * EXT_CONFIG.lightbox.selector は投稿作成などの別モーダルにも当たる
          * 緩いものだが、こちらは right を当てる相手 (その parentElement) を
-         * 決めるため厳密に指定する。要素タイプは書かない
+         * 決めるため厳密に指定する
          */
-        dialogSelector: '[role="dialog"][aria-modal="true"]',
+        dialogSelector: EXT_SHARED.lightboxDialogSelector,
         /** 日時と数値の表記に使うロケール */
         locale: 'ja-JP',
         /** 投稿日時の表記。本体のフィードは相対表記なので、パネルは絶対表記に徹する */
@@ -379,7 +403,7 @@ const EXT_CONFIG = {
             quoteCount: '引用'
         },
         api: {
-            origin: 'https://public.api.bsky.app',
+            origin: EXT_SHARED.publicApiOrigin,
             postsPath: '/xrpc/app.bsky.feed.getPosts',
             timeoutMs: 12000
         }
@@ -421,6 +445,14 @@ const EXT_CONFIG = {
          * **page-bridge.js の EXT_BRIDGE.composerModes と同じ値**
          */
         composerModes: {reply: 'reply', quote: 'quote'},
+        /**
+         * 橋渡しが返す失敗理由のうち、呼び出し側が分岐に使うもの。
+         * **page-bridge.js の checkXrpcRequest() が返す文字列と同じ値**
+         */
+        reasons: {
+            /** repo が本人の DID でない = 覚えていた DID が古い (アカウント切り替え) */
+            repoNotSelf: 'repo-not-self'
+        },
         /**
          * 飛行中の操作を覚えるキーの区切り。**投稿の AT URI と種別を
          * つなぐだけの内部の値で、DOM にも通信にも出ない。**
@@ -470,11 +502,8 @@ const EXT_CONFIG = {
          * removeAttribute で完全に元へ戻る
          */
         markerAttr: 'data-bsky-ext-lightbox',
-        /**
-         * 画像ライトボックスのダイアログを指すセレクタ。
-         * lightboxPanel と同じ相手 (その parentElement) に触るため値も揃える
-         */
-        dialogSelector: '[role="dialog"][aria-modal="true"]',
+        /** 画像ライトボックスのダイアログを指すセレクタ。lightboxPanel と同じ相手に触る */
+        dialogSelector: EXT_SHARED.lightboxDialogSelector,
         /**
          * クリックを素通しする要素のセレクタ。**この除外は必須。**
          * 左上の「画像オプション」ボタンは実測で (20,20)-(64,64)、画像の描画
@@ -488,5 +517,5 @@ const EXT_CONFIG = {
 
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {EXT_VIEWS, EXT_CONFIG};
+    module.exports = {EXT_VIEWS, EXT_CONFIG, EXT_SHARED};
 }

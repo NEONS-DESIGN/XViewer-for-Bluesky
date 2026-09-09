@@ -69,15 +69,19 @@ test('ポップアップの配色は既定でダーク', () => {
 });
 
 test('保存キーは互いに衝突しない', () => {
+    // chrome.storage.sync に書くキーをすべて列挙する。項目を足したらここにも足す
     const keys = [
         EXT_CONFIG.mediaGrid.storageKey,
         EXT_CONFIG.mediaGrid.unblur.storageKey,
         EXT_CONFIG.debug.storageKey,
         EXT_CONFIG.popup.themeStorageKey,
         EXT_CONFIG.lightboxPanel.storageKey,
-        EXT_CONFIG.lightboxPanel.collapsedStorageKey
+        EXT_CONFIG.lightboxPanel.collapsedStorageKey,
+        EXT_CONFIG.lightboxGuard.storageKey,
+        EXT_CONFIG.postActions.storageKey
     ];
     assert.strictEqual(new Set(keys).size, keys.length);
+    keys.forEach((key) => assert.strictEqual(typeof key, 'string'));
 });
 
 test('ライトボックスのパネルは既定で有効', () => {

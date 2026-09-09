@@ -99,7 +99,7 @@ const SETTING_ITEMS = Object.freeze([
     }),
     Object.freeze({
         role: 'post-actions',
-        icon: 'bookmark',
+        icon: 'favorite',
         label: 'ライトボックスから返信・いいね',
         description: '画像を開いたまま、返信・リポスト・引用・いいね・ブックマークを'
             + '行えるようにします。認証は Bluesky 本体のものをそのまま使います。',
@@ -133,7 +133,9 @@ async function loadSettings() {
     try {
         const stored = await chrome.storage.sync.get(keys);
         SETTING_ITEMS.forEach((item) => {
-            values[item.storageKey] = stored[item.storageKey] ?? item.defaultValue;
+            // 壊れた値 (boolean 以外) は配色と同じく既定へ倒す
+            const saved = stored[item.storageKey];
+            values[item.storageKey] = typeof saved === 'boolean' ? saved : item.defaultValue;
         });
         const savedTheme = stored[EXT_CONFIG.popup.themeStorageKey];
         theme = Object.values(POPUP_THEMES).includes(savedTheme)
@@ -185,7 +187,8 @@ function showAlert(root, text) {
  * @param {Document} doc 対象のドキュメント
  * @param {SettingItem} item 項目の定義
  * @param {boolean} checked 現在の値
- * @param {(item: SettingItem, checked: boolean) => void} onChange 変更時の処理
+ * @param {(item: SettingItem, checked: boolean, input: HTMLInputElement) => void} onChange
+ *   変更時の処理。保存に失敗したとき、その input だけを保存済みの値へ戻すために渡す
  * @returns {HTMLElement} 項目の要素
  */
 function createField(doc, item, checked, onChange) {
@@ -199,7 +202,7 @@ function createField(doc, item, checked, onChange) {
     const input = doc.createElement('input');
     input.type = 'checkbox';
     input.checked = checked;
-    input.addEventListener('change', () => onChange(item, input.checked));
+    input.addEventListener('change', () => onChange(item, input.checked, input));
 
     const text = doc.createElement('span');
     text.textContent = item.label;
@@ -216,14 +219,15 @@ function createField(doc, item, checked, onChange) {
 
 /**
  * ポップアップ全体を組み立てる。
- * 再描画は全部作り直す。現在地 (開いている項目やスクロール) を持たない画面なので、
- * 復元すべき状態は無い。
+ * 再描画は全部作り直す。現在地として復元するのはキーボードのフォーカスだけ
+ * (配色の切り替えボタンを Enter / Space で押したとき、作り直しで消えた
+ * ボタンからフォーカスが body へ落ちないよう、呼び出し側が戻す)。
  * @param {Object} options 設定
  * @param {Document} options.doc 対象のドキュメント
  * @param {HTMLElement} options.root マウント先
  * @param {string} options.theme 現在の配色
  * @param {Object<string, boolean>} options.values 現在の設定値
- * @param {(item: SettingItem, checked: boolean) => void} options.onChangeSetting 設定の変更
+ * @param {(item: SettingItem, checked: boolean, input: HTMLInputElement) => void} options.onChangeSetting 設定の変更
  * @param {(next: string) => void} options.onChangeTheme 配色の変更
  * @returns {{dispose: Function}} 組み立てた画面
  */
@@ -311,11 +315,13 @@ async function initPopup() {
             root,
             theme: state.theme,
             values: state.values,
-            onChangeSetting: async (item, checked) => {
+            onChangeSetting: async (item, checked, input) => {
                 const saved = await saveSetting(item.storageKey, checked);
                 if (!saved) {
-                    // 保存できなかったので、画面を保存済みの値へ戻して食い違いを消す
-                    draw();
+                    // 保存できなかったので、その項目だけを保存済みの値へ戻して
+                    // 食い違いを消す。全部作り直すと、同時に飛行中だった別の項目の
+                    // 保存結果が画面に反映されないまま残る
+                    input.checked = state.values[item.storageKey] === true;
                     showAlert(root, POPUP_TEXT.saveError);
                     return;
                 }
@@ -328,6 +334,13 @@ async function initPopup() {
                 state.theme = next;
                 applyTheme(document, next);
                 draw();
+                // 作り直しで消えた切り替えボタンへフォーカスを戻す (キーボード操作の現在地)
+                const themeButton = root.querySelector(
+                    `[data-role="${POPUP_CONFIG.roles.themeToggle}"]`
+                );
+                if (themeButton) {
+                    themeButton.focus();
+                }
                 const saved = await saveSetting(EXT_CONFIG.popup.themeStorageKey, next);
                 if (!saved) {
                     showAlert(root, POPUP_TEXT.saveError);
@@ -350,6 +363,9 @@ if (typeof module !== 'undefined' && module.exports) {
 // ポップアップとしての起動。Node のテストからは document が無いため実行されない
 if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', () => {
-        initPopup();
+        // 描画で例外が出ても unhandled rejection で黙って空白にしない
+        initPopup().catch((error) => {
+            console.error('[Bluesky拡張] ポップアップの起動に失敗しました', error);
+        });
     });
 }

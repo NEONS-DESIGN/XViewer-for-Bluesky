@@ -125,6 +125,47 @@ function toggleActionState(state, kind) {
 }
 
 /**
+ * ある種別のフィールドだけを `source` から取り込んだ新しい状態を返す。
+ *
+ * 応答を待つ間にライトボックスを閉じて**同じ投稿を開き直した**とき、
+ * 開き直した側の状態は書き戻し前の `viewer` から作られているため、
+ * その種別だけが古い。まるごと差し替えると、開き直した側で飛行中の
+ * 別種の楽観的更新を消してしまうので、対象の種別だけを写す。
+ * **元の状態を書き換えない** (counts も作り直す)。
+ * @param {ActionState} state 開き直した側の今の状態
+ * @param {'like'|'repost'|'bookmark'} kind 取り込む種別
+ * @param {ActionState} source 飛行が終わった側の状態 (URI まで埋まっている)
+ * @returns {ActionState} 新しい状態。知らない種別なら中身の同じものを返す
+ */
+function mergeActionKind(state, kind, source) {
+    const next = {
+        liked: state.liked,
+        likeUri: state.likeUri,
+        reposted: state.reposted,
+        repostUri: state.repostUri,
+        bookmarked: state.bookmarked,
+        counts: {
+            reply: state.counts.reply,
+            repost: state.counts.repost,
+            like: state.counts.like,
+            quote: state.counts.quote
+        }
+    };
+    if (kind === 'like') {
+        next.liked = source.liked;
+        next.likeUri = source.likeUri;
+        next.counts.like = source.counts.like;
+    } else if (kind === 'repost') {
+        next.reposted = source.reposted;
+        next.repostUri = source.repostUri;
+        next.counts.repost = source.counts.repost;
+    } else if (kind === 'bookmark') {
+        next.bookmarked = source.bookmarked;
+    }
+    return next;
+}
+
+/**
  * 投稿操作の呼び出し層。橋渡し (call-xrpc / open-composer / get-session) を
  * 意味のある単位に包む。**DOM を知らない。**
  *
@@ -147,6 +188,40 @@ class PostActions {
          * @type {string|null}
          */
         this.sessionDid = null;
+        /**
+         * refreshSessionDid() が最後に見た DID (未ログインなら null)。
+         * 一度も問い合わせていないあいだは undefined。
+         * アカウントの切り替えを見分けるためだけに持つ
+         * @type {string|null|undefined}
+         */
+        this.knownDid = undefined;
+    }
+
+    /**
+     * ログイン中の DID を問い合わせ直し、前回から変わったかを返す。
+     * **本体のアカウント切り替えはリロードを伴わない**ため、覚えていた DID と
+     * 投稿のキャッシュ (viewer は人ごとに違う) が古くなり得る。ライトボックスを
+     * 開くたびに呼び、変わっていたら呼び出し側がキャッシュを捨てる。
+     * 走査は約 100 ノードで、押下時の問い合わせと同じ程度の負荷
+     * @returns {Promise<{did: string|null, changed: boolean}>} 初回は changed: false
+     */
+    async refreshSessionDid() {
+        const actions = EXT_CONFIG.mediaGrid.bridge.actions;
+        const result = await callBridge(actions.getSession, {});
+        if (!result || !result.ok) {
+            // 橋渡しの一時的な不調は「DID が変わった」とみなさない
+            // (毎回キャッシュを捨てて取得が増えるだけで益が無い)
+            return {did: this.sessionDid, changed: false};
+        }
+        const did = typeof result.did === 'string' ? result.did : null;
+        const previous = this.knownDid;
+        const changed = previous !== undefined && previous !== did;
+        this.knownDid = did;
+        this.sessionDid = did;
+        if (changed) {
+            ExtDebug.log('ログイン中の DID が変わった', {前: previous, 後: did});
+        }
+        return {did, changed};
     }
 
     /**
@@ -185,11 +260,14 @@ class PostActions {
             body: options && options.body
         });
         if (!result || !result.ok) {
-            ExtDebug.log('投稿操作の呼び出しが失敗', {
-                nsid,
-                理由: (result && result.reason) || '応答なし'
-            });
-            return {ok: false, json: null, reason: (result && result.reason) || 'no-result'};
+            const reason = (result && result.reason) || 'no-result';
+            ExtDebug.log('投稿操作の呼び出しが失敗', {nsid, 理由: reason});
+            if (reason === this.config.reasons.repoNotSelf) {
+                // 橋渡しが「本人の repo ではない」と言った = 覚えていた DID が古い
+                // (アカウント切り替え)。次の問い合わせで引き直す
+                this.sessionDid = null;
+            }
+            return {ok: false, json: null, reason};
         }
         return {ok: true, json: result.json || null, reason: null};
     }
@@ -214,27 +292,42 @@ class PostActions {
      * @returns {Promise<{ok: boolean, recordUri: string|null, reason: string|null}>}
      */
     async createRecord(collection, uri, cid) {
-        const did = await this.getSessionDid();
-        if (!did) {
-            return {ok: false, recordUri: null, reason: 'no-session'};
-        }
-        const result = await this.call(this.config.nsid.createRecord, {
-            body: {
-                repo: did,
-                collection,
-                record: {
-                    subject: {uri, cid},
-                    createdAt: new Date().toISOString()
-                }
+        // 覚えていた DID が古かった (repo-not-self) ときだけ、引き直して 1 回やり直す
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const did = await this.getSessionDid();
+            if (!did) {
+                return {ok: false, recordUri: null, reason: 'no-session'};
             }
-        });
-        if (!result.ok) {
-            return {ok: false, recordUri: null, reason: result.reason};
+            const result = await this.call(this.config.nsid.createRecord, {
+                body: {
+                    repo: did,
+                    collection,
+                    record: {
+                        // 本体 (agent.like()) と同じく $type を明示する。橋渡しの検査も
+                        // collection との一致を要求する
+                        $type: collection,
+                        subject: {uri, cid},
+                        createdAt: new Date().toISOString()
+                    }
+                }
+            });
+            if (result.ok) {
+                const recordUri = (result.json && typeof result.json.uri === 'string')
+                    ? result.json.uri
+                    : null;
+                if (recordUri === null) {
+                    // 応答から URI が読めないと、付けた反応を取り消せない。
+                    // 「付いたが URI 不明」を正として覚え込むと次の押下で 2 本目が
+                    // 飛ぶため失敗扱いにし、呼び出し側にサーバから引き直させる
+                    return {ok: false, recordUri: null, reason: 'no-record-uri'};
+                }
+                return {ok: true, recordUri, reason: null};
+            }
+            if (result.reason !== this.config.reasons.repoNotSelf) {
+                return {ok: false, recordUri: null, reason: result.reason};
+            }
         }
-        const recordUri = (result.json && typeof result.json.uri === 'string')
-            ? result.json.uri
-            : null;
-        return {ok: true, recordUri, reason: null};
+        return {ok: false, recordUri: null, reason: this.config.reasons.repoNotSelf};
     }
 
     /**
@@ -248,13 +341,20 @@ class PostActions {
         if (!parsed) {
             return {ok: false, reason: 'invalid-record-uri'};
         }
-        const did = await this.getSessionDid();
-        if (!did) {
-            return {ok: false, reason: 'no-session'};
+        // 覚えていた DID が古かった (repo-not-self) ときだけ、引き直して 1 回やり直す
+        let result = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const did = await this.getSessionDid();
+            if (!did) {
+                return {ok: false, reason: 'no-session'};
+            }
+            result = await this.call(this.config.nsid.deleteRecord, {
+                body: {repo: did, collection: parsed.collection, rkey: parsed.rkey}
+            });
+            if (result.ok || result.reason !== this.config.reasons.repoNotSelf) {
+                break;
+            }
         }
-        const result = await this.call(this.config.nsid.deleteRecord, {
-            body: {repo: did, collection: parsed.collection, rkey: parsed.rkey}
-        });
         return {ok: result.ok, reason: result.reason};
     }
 
@@ -344,7 +444,31 @@ class PostActions {
     }
 }
 
+/**
+ * ある種別について、状態が「意図した反応」になっているか。
+ * 書き込みが失敗扱い (タイムアウトなど) になった後にサーバから引き直した状態と、
+ * 押したときに意図した状態を突き合わせ、実は成功していたかを見分ける
+ * @param {ActionState} state 引き直した (サーバの) 状態
+ * @param {'like'|'repost'|'bookmark'} kind
+ * @param {ActionState} wanted 押したときに意図した状態
+ * @returns {boolean} 知らない種別なら false
+ */
+function isActionApplied(state, kind, wanted) {
+    if (kind === 'like') {
+        return state.liked === wanted.liked;
+    }
+    if (kind === 'repost') {
+        return state.reposted === wanted.reposted;
+    }
+    if (kind === 'bookmark') {
+        return state.bookmarked === wanted.bookmarked;
+    }
+    return false;
+}
+
 // tests から require するためだけの分岐。content script では module が未定義のため何もしない
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = {parseRecordUri, readViewerState, toggleActionState};
+    module.exports = {
+        parseRecordUri, readViewerState, toggleActionState, mergeActionKind, isActionApplied
+    };
 }

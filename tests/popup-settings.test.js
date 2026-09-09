@@ -11,27 +11,30 @@ global.EXT_CONFIG = EXT_CONFIG;
 const {ICON_SHAPES} = require('../icon-shapes.js');
 const {POPUP_THEMES, POPUP_THEME_TOGGLE, SETTING_ITEMS} = require('../popup.js');
 
-test('設定項目は 6 件で、表示順が定義順どおり', () => {
+/**
+ * 設定項目 (role) と、その保存キー・既定値の出どころ (EXT_CONFIG) の対応表。
+ * 配列順が表示順。項目を足したらここに 1 行足す (SETTING_ITEMS と件数を突き合わせる)
+ */
+const EXPECTED_ITEMS = [
+    {role: 'media-grid', source: EXT_CONFIG.mediaGrid},
+    {role: 'nsfw-unblur', source: EXT_CONFIG.mediaGrid.unblur},
+    {role: 'debug', source: EXT_CONFIG.debug},
+    {role: 'lightbox-panel', source: EXT_CONFIG.lightboxPanel},
+    {role: 'lightbox-guard', source: EXT_CONFIG.lightboxGuard},
+    {role: 'post-actions', source: EXT_CONFIG.postActions}
+];
+
+test('設定項目は対応表と同じ件数・同じ順で、保存キーと既定値は EXT_CONFIG と一致する (二重に持たない)', () => {
     assert.deepStrictEqual(
         SETTING_ITEMS.map((item) => item.role),
-        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel', 'lightbox-guard', 'post-actions']
+        EXPECTED_ITEMS.map((expected) => expected.role)
     );
-});
-
-test('設定項目の保存キーと既定値は EXT_CONFIG と一致する (二重に持たない)', () => {
-    const byRole = Object.fromEntries(SETTING_ITEMS.map((item) => [item.role, item]));
-
-    assert.strictEqual(byRole['media-grid'].storageKey, EXT_CONFIG.mediaGrid.storageKey);
-    assert.strictEqual(byRole['media-grid'].defaultValue, EXT_CONFIG.mediaGrid.defaultEnabled);
-
-    assert.strictEqual(byRole['nsfw-unblur'].storageKey, EXT_CONFIG.mediaGrid.unblur.storageKey);
-    assert.strictEqual(byRole['nsfw-unblur'].defaultValue, EXT_CONFIG.mediaGrid.unblur.defaultEnabled);
-
-    assert.strictEqual(byRole.debug.storageKey, EXT_CONFIG.debug.storageKey);
-    assert.strictEqual(byRole.debug.defaultValue, EXT_CONFIG.debug.defaultEnabled);
-
-    assert.strictEqual(byRole['lightbox-panel'].storageKey, EXT_CONFIG.lightboxPanel.storageKey);
-    assert.strictEqual(byRole['lightbox-panel'].defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
+    EXPECTED_ITEMS.forEach((expected, index) => {
+        const item = SETTING_ITEMS[index];
+        assert.strictEqual(item.storageKey, expected.source.storageKey, `${expected.role} の保存キー`);
+        assert.strictEqual(item.defaultValue, expected.source.defaultEnabled, `${expected.role} の既定値`);
+        assert.strictEqual(typeof item.defaultValue, 'boolean', `${expected.role} の既定値の型`);
+    });
 });
 
 test('設定項目にはすべて 1 行の説明が付いている', () => {
@@ -73,29 +76,4 @@ test('アイコンの図形データは Material Symbols の viewBox とパス�
          */
         assert.ok(/^[Mm]/.test(shape.path), `${name} のパスが空か形式違い`);
     });
-});
-
-test('設定項目は 6 件あり、4 件目がライトボックスのパネル', () => {
-    assert.equal(SETTING_ITEMS.length, 6);
-    const item = SETTING_ITEMS[3];
-    assert.equal(item.role, 'lightbox-panel');
-    assert.equal(item.icon, 'viewSidebar');
-    assert.equal(item.storageKey, EXT_CONFIG.lightboxPanel.storageKey);
-    assert.equal(item.defaultValue, EXT_CONFIG.lightboxPanel.defaultEnabled);
-});
-
-test('5 件目がライトボックスの操作性の調整', () => {
-    const item = SETTING_ITEMS[4];
-    assert.equal(item.role, 'lightbox-guard');
-    assert.equal(item.icon, 'lock');
-    assert.equal(item.storageKey, EXT_CONFIG.lightboxGuard.storageKey);
-    assert.equal(item.defaultValue, EXT_CONFIG.lightboxGuard.defaultEnabled);
-});
-
-test('SETTING_ITEMS: 投稿操作のトグルがある', () => {
-    const item = SETTING_ITEMS.find((entry) => entry.role === 'post-actions');
-    assert.ok(item, '投稿操作の項目が無い');
-    assert.strictEqual(item.storageKey, EXT_CONFIG.postActions.storageKey);
-    assert.strictEqual(item.defaultValue, EXT_CONFIG.postActions.defaultEnabled);
-    assert.ok(ICON_SHAPES[item.icon], `未知のアイコン名: ${item.icon}`);
 });

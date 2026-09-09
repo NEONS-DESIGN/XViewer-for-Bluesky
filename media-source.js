@@ -188,12 +188,12 @@ function toMediaEntries(feedItem, config) {
  * ok:false は「このアカウントのフィードは読めない」を意味し、呼び出し側は終端扱いにする。
  * @param {Object|null} json
  * @param {Object} config EXT_CONFIG.mediaGrid
- * @returns {{ok: boolean, entries: MediaEntry[], cursor: string|null}}
+ * @returns {{ok: boolean, entries: MediaEntry[], feedCount: number, cursor: string|null}}
  */
 function parseAuthorFeed(json, config) {
     try {
         if (!json || !Array.isArray(json.feed)) {
-            return {ok: false, entries: [], cursor: null};
+            return {ok: false, entries: [], feedCount: 0, cursor: null};
         }
         const entries = [];
         for (const item of json.feed) {
@@ -202,11 +202,14 @@ function parseAuthorFeed(json, config) {
         return {
             ok: true,
             entries,
+            // 末尾判定に使う生のフィード件数。動画の除外で entries が 0 件になっても
+            // フィード自体が続いていれば終端ではない
+            feedCount: json.feed.length,
             cursor: typeof json.cursor === 'string' ? json.cursor : null
         };
     } catch (error) {
         console.error('[Bluesky拡張] フィードの解析に失敗しました', error);
-        return {ok: false, entries: [], cursor: null};
+        return {ok: false, entries: [], feedCount: 0, cursor: null};
     }
 }
 
@@ -384,7 +387,14 @@ class MediaFetcher {
                 url.searchParams.set('cursor', this.cursor);
             }
 
-            const response = await this.fetchImpl(url.toString(), {credentials: 'omit'});
+            // 応答が返らないまま止まると running が立ったままになり、以後の fetchNext()
+            // がすべて素通りして「読み込み中...」で固まる。必ず時間で打ち切る
+            // (打ち切りは catch → countError() に落ちる)
+            const options = {credentials: 'omit'};
+            if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                options.signal = AbortSignal.timeout(api.timeoutMs);
+            }
+            const response = await this.fetchImpl(url.toString(), options);
 
             // 待っている間に対象が変わっていたら、この応答は丸ごと捨てる。
             // 蓄積にもカーソルにも入れず、失敗にも数えない
@@ -422,8 +432,10 @@ class MediaFetcher {
             }
             this.store.notify(added);
 
-            // 末尾判定の 3 条件
-            if (!parsed.cursor || parsed.cursor === this.cursor || parsed.entries.length === 0) {
+            // 末尾判定の 3 条件。3 つ目は解析後のエントリ数ではなく生のフィード件数を
+            // 見る (動画だけのページは除外で entries が 0 件になるが、cursor が
+            // 続く限りその先に画像投稿があり得る)
+            if (!parsed.cursor || parsed.cursor === this.cursor || parsed.feedCount === 0) {
                 this.exhausted = true;
             } else {
                 this.cursor = parsed.cursor;
