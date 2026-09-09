@@ -317,6 +317,13 @@ class LightboxPanel {
         this.panelEl = null;
         /** @type {HTMLElement|null} right を当てた本体の要素。撤去時に戻す相手 */
         this.shrunkEl = null;
+        /**
+         * right を当てる前に本体が持っていたインラインの値。
+         * **Bluesky 自身が right: 0px をインラインで書いている** (2026-09-09 実測)。
+         * 空文字で消すと本体の値ごと消え、固定親の幅が shrink-to-fit になって
+         * 0 に潰れる。撤去時はここへ戻す
+         */
+        this.shrunkPreviousRight = '';
         /** @type {Map<string, PanelPost>} postUri をキーにした取得済みの投稿 */
         this.cache = new Map();
         /**
@@ -506,6 +513,9 @@ class LightboxPanel {
     /**
      * 本体のダイアログの固定親を狭める。
      * **見つからなければ何もしない** (パネルは重なる表示に落ちる)。
+     * **上書きする前に元のインラインの値を控える。** Bluesky 自身が
+     * right: 0px をインラインで書いているため (2026-09-09 実測)、
+     * 空文字で戻すと本体の指定ごと消えてしまう
      * @returns {void}
      */
     applyShrink() {
@@ -519,6 +529,8 @@ class LightboxPanel {
                 return;
             }
             this.shrunkEl = parent;
+            // 上書きする前に本体の値を控える (空文字で消すと本体の指定ごと消える)
+            this.shrunkPreviousRight = parent.style.right;
             parent.style.right = `${this.config.widthPx}px`;
         } catch (error) {
             console.error('[Bluesky拡張] ライトボックスの幅の調整に失敗しました', error);
@@ -527,17 +539,22 @@ class LightboxPanel {
 
     /**
      * 本体に当てた right を戻す。**保持している参照に対して書く。**
+     * **空文字ではなく、控えておいた元の値に戻す。** Bluesky 自身が
+     * right: 0px をインラインで書いており、空文字にすると right の指定が
+     * どこにも無くなって固定親が shrink-to-fit の幅 (0px) に潰れる
+     * (2026-09-09 実機で確認した Critical)
      * @returns {void}
      */
     releaseShrink() {
         try {
             if (this.shrunkEl) {
-                this.shrunkEl.style.right = '';
+                this.shrunkEl.style.right = this.shrunkPreviousRight;
             }
         } catch (error) {
             console.error('[Bluesky拡張] ライトボックスの幅の復帰に失敗しました', error);
         } finally {
             this.shrunkEl = null;
+            this.shrunkPreviousRight = '';
         }
     }
 
