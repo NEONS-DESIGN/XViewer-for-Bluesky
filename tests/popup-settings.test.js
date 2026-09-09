@@ -11,10 +11,10 @@ global.EXT_CONFIG = EXT_CONFIG;
 const {ICON_SHAPES} = require('../icon-shapes.js');
 const {POPUP_THEMES, POPUP_THEME_TOGGLE, SETTING_ITEMS} = require('../popup.js');
 
-test('設定項目は 5 件で、表示順が定義順どおり', () => {
+test('設定項目は 6 件で、表示順が定義順どおり', () => {
     assert.deepStrictEqual(
         SETTING_ITEMS.map((item) => item.role),
-        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel', 'lightbox-guard']
+        ['media-grid', 'nsfw-unblur', 'debug', 'lightbox-panel', 'lightbox-guard', 'post-actions']
     );
 });
 
@@ -75,8 +75,8 @@ test('アイコンの図形データは Material Symbols の viewBox とパス�
     });
 });
 
-test('設定項目は 5 件あり、4 件目がライトボックスのパネル', () => {
-    assert.equal(SETTING_ITEMS.length, 5);
+test('設定項目は 6 件あり、4 件目がライトボックスのパネル', () => {
+    assert.equal(SETTING_ITEMS.length, 6);
     const item = SETTING_ITEMS[3];
     assert.equal(item.role, 'lightbox-panel');
     assert.equal(item.icon, 'viewSidebar');
@@ -90,4 +90,12 @@ test('5 件目がライトボックスの操作性の調整', () => {
     assert.equal(item.icon, 'lock');
     assert.equal(item.storageKey, EXT_CONFIG.lightboxGuard.storageKey);
     assert.equal(item.defaultValue, EXT_CONFIG.lightboxGuard.defaultEnabled);
+});
+
+test('SETTING_ITEMS: 投稿操作のトグルがある', () => {
+    const item = SETTING_ITEMS.find((entry) => entry.role === 'post-actions');
+    assert.ok(item, '投稿操作の項目が無い');
+    assert.strictEqual(item.storageKey, EXT_CONFIG.postActions.storageKey);
+    assert.strictEqual(item.defaultValue, EXT_CONFIG.postActions.defaultEnabled);
+    assert.ok(ICON_SHAPES[item.icon], `未知のアイコン名: ${item.icon}`);
 });

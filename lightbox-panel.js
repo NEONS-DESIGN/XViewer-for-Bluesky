@@ -344,6 +344,19 @@ class LightboxPanel {
          * (viewer は認証付きの getPosts でしか返らない)
          */
         this.actions = new PostActions(EXT_CONFIG.postActions);
+        /** @type {ActionState|null} 描画中の投稿の反応状態 */
+        this.state = null;
+        /** @type {PanelPost|null} 描画中の投稿 */
+        this.post = null;
+        /**
+         * 飛行中の操作の種別。**連打を弾くために要る。**
+         * createRecord が 2 本飛ぶと、いいねレコードが 2 つできて
+         * 片方が取り消せなくなる
+         * @type {Set<string>}
+         */
+        this.pending = new Set();
+        /** 投稿操作を出すか。ポップアップのトグル */
+        this.actionsEnabled = EXT_CONFIG.postActions.defaultEnabled;
     }
 
     /**
@@ -355,16 +368,30 @@ class LightboxPanel {
         try {
             const stored = await chrome.storage.sync.get([
                 config.storageKey,
-                config.collapsedStorageKey
+                config.collapsedStorageKey,
+                EXT_CONFIG.postActions.storageKey
             ]);
             this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
             this.collapsed = stored[config.collapsedStorageKey] ?? config.defaultCollapsed;
+            this.actionsEnabled = stored[EXT_CONFIG.postActions.storageKey]
+                ?? EXT_CONFIG.postActions.defaultEnabled;
         } catch (error) {
             console.error('[Bluesky拡張] パネルの設定の読み込みに失敗しました', error);
         }
         try {
             chrome.storage.onChanged.addListener((changes, area) => {
-                if (area !== 'sync' || !changes[config.storageKey]) {
+                if (area !== 'sync') {
+                    return;
+                }
+                if (changes[EXT_CONFIG.postActions.storageKey]) {
+                    this.actionsEnabled = changes[EXT_CONFIG.postActions.storageKey].newValue
+                        ?? EXT_CONFIG.postActions.defaultEnabled;
+                    // 描画済みのパネルにその場で反映する (リロードを求めない)
+                    if (this.post) {
+                        this.renderPost(this.post);
+                    }
+                }
+                if (!changes[config.storageKey]) {
                     return;
                 }
                 this.setEnabled(
@@ -478,6 +505,9 @@ class LightboxPanel {
         // 飛行中の取得の応答を捨てる
         this.generation += 1;
         this.releaseShrink();
+        this.post = null;
+        this.state = null;
+        this.pending.clear();
         this.unmountPanel();
     }
 
@@ -739,6 +769,8 @@ class LightboxPanel {
                 return;
             }
             const config = this.config;
+            this.post = post;
+            this.state = readViewerState(post.viewer, post.counts);
             this.bodyEl.textContent = '';
             this.bodyEl.appendChild(this.buildAuthor(post));
 
@@ -758,7 +790,9 @@ class LightboxPanel {
                 this.bodyEl.appendChild(date);
             }
 
-            this.bodyEl.appendChild(this.buildCounts(post));
+            this.bodyEl.appendChild(this.shouldShowActions(post)
+                ? this.buildActions()
+                : this.buildCounts(post));
             this.bodyEl.appendChild(this.buildOpenPost(post));
         } catch (error) {
             console.error('[Bluesky拡張] パネルの描画に失敗しました', error);
@@ -863,6 +897,211 @@ class LightboxPanel {
             row.appendChild(cell);
         }
         return row;
+    }
+
+    /**
+     * 操作ボタンを出せるかどうか。
+     * **viewer が無い取得 (未ログイン・橋渡し失敗) では出さない。**
+     * 出しても押した瞬間に必ず失敗するため、数値の表示に留める
+     * @param {PanelPost} post
+     * @returns {boolean}
+     */
+    shouldShowActions(post) {
+        return this.actionsEnabled === true
+            && post.viewer !== null
+            && post.cid !== '';
+    }
+
+    /**
+     * 押せる操作行を作る。反応数の行 (buildCounts) と入れ替わりで出す。
+     * **0 の項目も出す** (欠けると横並びの位置がずれて読みにくい)。
+     * @returns {HTMLElement}
+     */
+    buildActions() {
+        const config = EXT_CONFIG.postActions;
+        const state = this.state;
+        const row = document.createElement('div');
+        row.className = config.actionsClass;
+        const items = [
+            {
+                kind: 'like',
+                icon: 'favorite',
+                label: state.liked ? config.text.likeUndo : config.text.like,
+                active: state.liked,
+                count: state.counts.like
+            },
+            {
+                kind: 'bookmark',
+                icon: 'bookmark',
+                label: state.bookmarked ? config.text.bookmarkUndo : config.text.bookmark,
+                active: state.bookmarked,
+                count: null
+            }
+        ];
+        for (const item of items) {
+            row.appendChild(this.buildActionButton(item));
+        }
+        return row;
+    }
+
+    /**
+     * 操作ボタンを 1 つ作る。
+     * @param {{kind: string, icon: string, label: string, active: boolean,
+     *   count: number|null}} item
+     * @returns {HTMLElement}
+     */
+    buildActionButton(item) {
+        const config = EXT_CONFIG.postActions;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = item.active
+            ? `${config.actionClass} ${config.activeClass}`
+            : config.actionClass;
+        // アイコンだけでは意味が伝わらないので、読み上げ用と マウス用の両方を付ける
+        button.setAttribute('aria-label', item.label);
+        button.title = item.label;
+        button.disabled = this.pending.has(item.kind);
+        const icon = createIcon(document, item.icon);
+        icon.classList.add(config.actionIconClass);
+        button.appendChild(icon);
+        if (item.count !== null) {
+            const number = document.createElement('span');
+            number.textContent = formatCount(item.count, this.config);
+            button.appendChild(number);
+        }
+        button.addEventListener('click', () => this.runAction(item.kind));
+        return button;
+    }
+
+    /**
+     * 操作を 1 つ実行する。
+     *
+     * **楽観的更新。** 押した瞬間に見た目を変え、失敗したら控えておいた
+     * 元の状態へ戻す。飛行中の同じ操作は弾く (連打で同じレコードが
+     * 2 つできると片方が取り消せなくなる)。
+     * @param {'like'|'repost'|'bookmark'} kind
+     * @returns {Promise<void>}
+     */
+    async runAction(kind) {
+        try {
+            if (!this.post || !this.state || this.pending.has(kind)) {
+                return;
+            }
+            const post = this.post;
+            const previous = this.state;
+            const next = toggleActionState(previous, kind);
+            this.pending.add(kind);
+            this.state = next;
+            this.renderActions();
+
+            const result = await this.callAction(kind, post, previous, next);
+            this.pending.delete(kind);
+            // 応答を待つ間に別の投稿へ移っていたら、その結果は捨てる
+            if (this.post !== post) {
+                return;
+            }
+            if (!result.ok) {
+                this.state = previous;
+                this.renderActions();
+                this.showActionError();
+                return;
+            }
+            // createRecord の応答の URI を取り込む。取り込まないと取り消せない
+            if (kind === 'like' && next.liked) {
+                this.state.likeUri = result.recordUri;
+            }
+            if (kind === 'repost' && next.reposted) {
+                this.state.repostUri = result.recordUri;
+            }
+            this.renderActions();
+        } catch (error) {
+            console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
+            this.pending.delete(kind);
+        }
+    }
+
+    /**
+     * 種別に応じた通信を 1 回行う。
+     * @param {'like'|'repost'|'bookmark'} kind
+     * @param {PanelPost} post
+     * @param {ActionState} previous 押す前の状態 (取り消しの URI を持つ)
+     * @param {ActionState} next 押した後の状態
+     * @returns {Promise<{ok: boolean, recordUri: string|null}>}
+     */
+    async callAction(kind, post, previous, next) {
+        if (kind === 'like') {
+            return next.liked
+                ? this.actions.createLike(post.postUri, post.cid)
+                : Object.assign(
+                    {recordUri: null},
+                    await this.actions.deleteLike(previous.likeUri)
+                );
+        }
+        if (kind === 'repost') {
+            return next.reposted
+                ? this.actions.createRepost(post.postUri, post.cid)
+                : Object.assign(
+                    {recordUri: null},
+                    await this.actions.deleteRepost(previous.repostUri)
+                );
+        }
+        if (kind === 'bookmark') {
+            const result = next.bookmarked
+                ? await this.actions.createBookmark(post.postUri, post.cid)
+                : await this.actions.deleteBookmark(post.postUri);
+            return {ok: result.ok, recordUri: null};
+        }
+        return {ok: false, recordUri: null};
+    }
+
+    /**
+     * 操作行だけを描き直す。**パネル全体は作り直さない**
+     * (本文のスクロール位置と、開いているメニューが失われるため)。
+     * @returns {void}
+     */
+    renderActions() {
+        try {
+            if (!this.bodyEl || !this.state) {
+                return;
+            }
+            const current = this.bodyEl.querySelector(
+                `.${EXT_CONFIG.postActions.actionsClass}`
+            );
+            if (!current) {
+                return;
+            }
+            current.replaceWith(this.buildActions());
+            const stale = this.bodyEl.querySelector(`.${EXT_CONFIG.postActions.errorClass}`);
+            if (stale) {
+                stale.remove();
+            }
+        } catch (error) {
+            console.error('[Bluesky拡張] 操作行の描き直しに失敗しました', error);
+        }
+    }
+
+    /**
+     * 操作の失敗を 1 行で伝える。**alert は使わない**
+     * (ライトボックスの操作が止まるため)。次の操作が成功したら消える
+     * @returns {void}
+     */
+    showActionError() {
+        try {
+            if (!this.bodyEl) {
+                return;
+            }
+            const config = EXT_CONFIG.postActions;
+            let line = this.bodyEl.querySelector(`.${config.errorClass}`);
+            if (!line) {
+                line = document.createElement('p');
+                line.className = config.errorClass;
+                line.setAttribute('role', 'alert');
+                this.bodyEl.appendChild(line);
+            }
+            line.textContent = config.text.failed;
+        } catch (error) {
+            console.error('[Bluesky拡張] 失敗の表示に失敗しました', error);
+        }
     }
 
     /**

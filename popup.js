@@ -96,6 +96,15 @@ const SETTING_ITEMS = Object.freeze([
             + '押せるボタンだけにカーソルの形を残します。周りの暗い部分を押せば閉じます。',
         storageKey: EXT_CONFIG.lightboxGuard.storageKey,
         defaultValue: EXT_CONFIG.lightboxGuard.defaultEnabled
+    }),
+    Object.freeze({
+        role: 'post-actions',
+        icon: 'bookmark',
+        label: 'ライトボックスから返信・いいね',
+        description: '画像を開いたまま、返信・リポスト・引用・いいね・ブックマークを'
+            + '行えるようにします。認証は Bluesky 本体のものをそのまま使います。',
+        storageKey: EXT_CONFIG.postActions.storageKey,
+        defaultValue: EXT_CONFIG.postActions.defaultEnabled
     })
 ]);
 
