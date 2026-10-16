@@ -1,7 +1,11 @@
 # Bluesky-Extension
 
-Bluesky (bsky.app) 向けの Chrome 拡張機能 (Manifest V3)。
-ビルドや依存関係は無く、リポジトリのルートがそのまま拡張機能パッケージになる。
+Bluesky (bsky.app) 向けのブラウザ拡張機能 (Manifest V3)。Chrome 系 (120 以上) と
+Firefox (140 以上) に対応する。
+ソースは `src/` に ES Modules で置き、Node.js (esbuild) でビルドして
+`dist/` (Chrome 系) と `dist-firefox/` (Firefox) に出力する。
+
+Bluesky 公式の拡張機能ではなく、Bluesky Social PBC とは関係が無い。
 
 ## 機能
 
@@ -31,55 +35,87 @@ Bluesky (bsky.app) 向けの Chrome 拡張機能 (Manifest V3)。
 
 ## 設定 (ポップアップ)
 
-ツールバーのアイコンから 6 つを ON/OFF できる。変更はリロードせずその場で反映される。
+ツールバーのアイコンから開く。「設定」と「ライセンス」の 2 つのタブがあり、
+設定はセクションごとにスイッチで ON/OFF できる。変更はリロードせずその場で反映される。
 
-| 項目 | 既定 |
-| --- | --- |
-| メディアグリッド表示 | ON |
-| ライトボックスに投稿情報を表示 | ON |
-| ライトボックスから返信・いいね | ON |
-| 画像のクリックで閉じない | ON |
-| NSFW のぼかしを解除 | OFF |
-| デバッグモードを有効化 | OFF |
+| セクション | 項目 | 既定 |
+| --- | --- | --- |
+| メディアグリッド | メディアグリッド表示 | ON |
+| メディアグリッド | └ NSFWのぼかしを解除 | OFF |
+| ライトボックス | 投稿情報を表示 | ON |
+| ライトボックス | └ 返信・いいね | ON |
+| ライトボックス | 画像のクリックで閉じない | ON |
+| 開発者向け | デバッグモード | OFF |
 
-ポップアップ自体はダーク / ライトを切り替えられる。
+- 「└」の項目は上の項目の子で、親が OFF のあいだは押せない。(押すと理由を表示する)
+  子の設定は保たれ、親を ON に戻すと元の状態に戻る
+- 右上のボタンでポップアップの配色をダーク / ライトに切り替えられる。
+  既定は OS の設定に従う
+- 「設定を初期化」で、確認のうえ全項目と配色を既定に戻す
 
 ## 導入
 
+Node.js 24.2 以上が要る。
+
+```
+npm install
+npm run build
+```
+
+### Chrome 系
+
 1. `chrome://extensions` を開き、デベロッパーモードを ON にする
-2. 「パッケージ化されていない拡張機能を読み込む」でリポジトリのルートを指定する
-3. コードを変更したら、拡張機能カードのリロードボタンを押し、さらに bsky.app の
-   タブも再読み込みする (`page-bridge.js` はページ側のワールドで動くため、
+2. 「パッケージ化されていない拡張機能を読み込む」で **`dist/`** を指定する
+   (リポジトリのルートや `src/` ではない)
+
+### Firefox
+
+1. `about:debugging` を開き、「この Firefox」を選ぶ
+2. 「一時的なアドオンを読み込む」で **`dist-firefox/manifest.json`** を選ぶ
+   (一時的なアドオンは Firefox を閉じると消える)
+
+### コードを変更したら
+
+1. `npm run build` を走らせる (`npm run watch` を走らせておけば JS は自動で
+   ビルドし直される。CSS・HTML・アイコンを変えたときは `npm run build`)
+2. 拡張機能のカードのリロードボタンを押す
+3. bsky.app のタブを再読み込みする (`inject.js` はページ側のワールドで動くため、
    タブを再読み込みしない限り新しい版が入らない)
 
 必要な権限は `storage` (設定の保存) と `https://public.api.bsky.app/*`
 (公開 API の呼び出し) だけ。
 
+## npm scripts
+
+| コマンド | 内容 |
+| --- | --- |
+| `npm run build` | Chrome 系と Firefox の両方をビルドする |
+| `npm run build:chrome` / `build:firefox` | 片方だけビルドする |
+| `npm run watch` | 監視ビルド (JS のみ) |
+| `npm test` | 自動テスト |
+| `npm run build:symbols` | `src/common/icon-shapes.js` を Material Symbols から生成する |
+| `npm run build:icons` | 拡張機能アイコンの PNG を生成する |
+
 ## 自動テスト
 
-Node の組み込みテストランナーだけを使う。ディレクトリ指定は使えないので
-ファイルを直接指定する。
-
 ```
-node --test tests/*.test.js
+npm test
 ```
 
-対象は解析・整形・判定の純関数だけで、DOM 操作・本体レイアウトへの介入・
-橋渡しは実機の bsky.app で確認する。
+Node の組み込みテストランナー (`node:test`) だけを使う。対象は解析・整形・判定の
+純関数、ポップアップ (偽 DOM での描画を含む)、ビルドの道具。content script の
+DOM 操作・本体レイアウトへの介入・橋渡しは実機の bsky.app で確認する。
 
 ## アイコン
 
-`icons/` の PNG 4 枚 (16 / 32 / 48 / 128) がツールバーと拡張機能の管理画面に出る。
-**画像編集ソフトで直接触らず、`tools/generate-icons.mjs` の `GEOMETRY` を直して
-生成しなおすこと。**
+拡張機能アイコン (`src/icons/icon-16.png` / `32` / `48` / `128`) は
+`npm run build:icons` の生成物。**画像編集ソフトで直接触らず、`scripts/icon-svg.mjs`
+の `GEOMETRY` を直して生成しなおすこと。** 地の色はポップアップのアクセント色と同じ。
 
-```
-node tools/generate-icons.mjs
-```
+ポップアップとパネルで使う図形 (`src/common/icon-shapes.js`) は
+`npm run build:symbols` が `@material-symbols/svg-400` から生成する。
 
-生成器は依存関係を持たず、Node の組み込みモジュールだけで PNG を書き出す。
-原本の `icons/icon.svg` も同じ定義から作られる (MV3 のアイコンは PNG のみのため、
-SVG は資料であって `manifest.json` からは参照しない)。
+どちらの生成物もコミットしてあり、通常の `npm run build` では生成しない。
 
 ## 文書
 
@@ -96,7 +132,10 @@ SVG は資料であって `manifest.json` からは参照しない)。
 **取得方法が根本的に違うため、あちらのコードやドキュメントをそのまま持ち込まないこと**
 (詳細は `開発メモ`)。
 
-## 帰属
+## ライセンス
 
-アイコンは Material Symbols (Apache License 2.0) のパスデータを使用している。
-詳細は `NOTICE` を参照。
+この拡張機能は MIT License。(`LICENSE`)
+
+アイコンの図形は Material Symbols (Apache License 2.0) を使用している。
+帰属は `NOTICE`、ライセンス本文は `LICENSES/Apache-2.0.txt` にある。
+どちらもビルドの出力先 (`dist/` / `dist-firefox/`) に同梱される。

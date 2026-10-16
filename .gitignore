@@ -7,3 +7,11 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# ビルド成果物・依存
+node_modules/
+dist/
+dist-firefox/
+*.zip
+*.crx
+*.pem

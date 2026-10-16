@@ -1,0 +1,24 @@
+{
+	"name": "bluesky-extension",
+	"version": "3.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Bluesky (bsky.app) 向けのブラウザ拡張機能 (Chrome 系 / Firefox)",
+	"engines": {
+		"node": ">=24.2"
+	},
+	"scripts": {
+		"build": "node scripts/build.mjs",
+		"build:chrome": "node scripts/build.mjs --target=chrome",
+		"build:firefox": "node scripts/build.mjs --target=firefox",
+		"watch": "node scripts/build.mjs --watch",
+		"build:symbols": "node scripts/build-symbols.mjs",
+		"build:icons": "node scripts/build-icons.mjs",
+		"test": "node --test \"test/**/*.test.js\""
+	},
+	"devDependencies": {
+		"@material-symbols/svg-400": "^0.48.0",
+		"@resvg/resvg-js": "^2.6.2",
+		"esbuild": "^0.28.2"
+	}
+}

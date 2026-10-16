@@ -1,0 +1,37 @@
+{
+	"manifest_version": 3,
+	"name": "Blueskyカスタム拡張機能",
+	"description": "Blueskyのプロフィールのメディア欄をサムネイル格子に置き換え、タブを行き来する固定ボタンを追加します。画像ライトボックスには投稿情報パネルと返信・いいね等の操作、誤クリックで閉じない調整、NSFWぼかしの解除も加えます。",
+	"permissions": ["storage"],
+	"host_permissions": ["https://public.api.bsky.app/*"],
+	"icons": {
+		"16": "icons/icon-16.png",
+		"32": "icons/icon-32.png",
+		"48": "icons/icon-48.png",
+		"128": "icons/icon-128.png"
+	},
+	"action": {
+		"default_popup": "popup/popup.html",
+		"default_title": "Blueskyカスタム拡張機能",
+		"default_icon": {
+			"16": "icons/icon-16.png",
+			"32": "icons/icon-32.png",
+			"48": "icons/icon-48.png",
+			"128": "icons/icon-128.png"
+		}
+	},
+	"content_scripts": [
+		{
+			"matches": ["*://bsky.app/*"],
+			"js": ["content.js"],
+			"css": ["content.css"],
+			"run_at": "document_end"
+		},
+		{
+			"matches": ["*://bsky.app/*"],
+			"js": ["inject.js"],
+			"run_at": "document_end",
+			"world": "MAIN"
+		}
+	]
+}

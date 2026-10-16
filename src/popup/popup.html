@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ja">
+	<head>
+		<meta charset="utf-8" />
+		<title>Blueskyカスタム拡張機能</title>
+		<!-- 配色トークンを先に読み、popup.css がその変数を使う -->
+		<link rel="stylesheet" href="../common/tokens.css" />
+		<link rel="stylesheet" href="popup.css" />
+	</head>
+	<body>
+		<!-- 中身は popup-ui.js が createElement で組み立てる。マークアップを文字列で持たないため、ここは受け皿だけ -->
+		<main class="popup" id="app"></main>
+		<script type="module" src="popup.js"></script>
+	</body>
+</html>

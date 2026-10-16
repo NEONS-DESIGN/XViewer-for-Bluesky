@@ -21,5 +21,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 配布元: https://github.com/google/material-design-icons
-該当箇所: icon-shapes.js の ICON_SHAPES (Rounded / weight 400 / FILL 1 の
-パスデータを、原本 @material-symbols/svg-400 から書き写したもの)
+該当箇所: src/common/icon-shapes.js の ICON_SHAPES (Rounded / weight 400 / FILL 1 の
+パスデータ。npm の @material-symbols/svg-400 から scripts/build-symbols.mjs で
+生成したもの)

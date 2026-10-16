@@ -1,0 +1,117 @@
+/* 配色トークン。ポップアップ (popup.css) が読む。
+   配色はすべてここの変数で決める。個々の規則に色を直書きしないこと。
+   ダークが既定。ライトは data-theme='light' で変数だけを差し替える。
+   data-theme は popup-ui.js が保存値 (と OS の設定) から html 要素に付ける。
+
+   値は Bluesky 本体 (bsky.app) の配色を実測して写してある。変数名の contrast_* は本体のパレット
+   (@bsky.app/alf) の階調名で、primary_500 は --accent に当たる。
+   拡張機能のアイコンの地の色 (scripts/icon-svg.mjs の ICON_BACKGROUND) は --accent と同じ値を使う。
+   画面ごとにしか使わないトークン (設定画面のスイッチと警告色) は popup.css に置いてある */
+:root {
+	/* ブラウザ標準の部品 (チェックボックス、スクロールバー) も配色に追従させる。
+	   これが無いとライトにしても白い面の中に暗い部品が残る */
+	color-scheme: dark;
+	/* 地は本体の body の背景そのもの (contrast_0)。重ねて見たときに浮かないようにする */
+	--bg: #000000;
+	--surface: #111822;
+	--fg: #ffffff;
+	--muted: #a5b2c5;
+	/* 枠と区切りは本体が区切り線に使っている色 (contrast_100)。--backgroundLight と一致する */
+	--border: #232e3e;
+	--divider: #232e3e;
+	--control-bg: #111822;
+	--control-border: #313f54;
+	--control-hover: #19222e;
+	--hover: #111822;
+	/* 本体の主ボタン (新しい投稿) の青 primary_500 そのもの。本体はこの青をテーマで変えない。
+	   拡張機能のアイコンの背景もこの値 */
+	--accent: #006aff;
+	/* var(--accent) で塗りつぶした面に載せる文字色。本体の主ボタンも白文字。
+	   --accent はテーマで変えないので、この値もライトと同じ */
+	--on-accent: #ffffff;
+	/* 取り返しの付かない操作や失敗の枠と文字。本体の negative_600 で、地に対し 4.5:1 以上 */
+	--danger: #f65a7f;
+	/* スクロールバーの太さ */
+	--scrollbar-size: 6px;
+	/* スクロールバー。軌道は下地がうっすら分かる程度、つまみはその上で確実に読める濃さ */
+	--scrollbar-track: rgba(255, 255, 255, 0.07);
+	--scrollbar-thumb: rgba(255, 255, 255, 0.26);
+	--scrollbar-thumb-hover: rgba(255, 255, 255, 0.4);
+	/* フォーカスの輪郭。すべての操作部品で同じ 1 本にする。
+	   --accent を参照するのでテーマごとに書き直さなくてよい */
+	--focus-ring: 2px solid var(--accent);
+	font-family: system-ui, -apple-system, 'Segoe UI', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+}
+
+/* ライトの値。下のメディアクエリの中にも同じ宣言がある。
+   片方だけ直さないこと。(中身が同じであることは test/tokens-css.test.js が見張る)
+   階調は本体のライトテーマ (contrast_0 が白、contrast_100 が #dce2ea) に揃えてある。
+   --accent / --on-accent はライトでも差し替えない。本体の主ボタンの青は両テーマ共通のため */
+:root[data-theme='light'] {
+	color-scheme: light;
+	--bg: #ffffff;
+	--surface: #f9fafb;
+	--fg: #000000;
+	--muted: #405168;
+	--border: #dce2ea;
+	--divider: #dce2ea;
+	--control-bg: #ffffff;
+	--control-border: #c0cad8;
+	--control-hover: #eff2f6;
+	--hover: #f9fafb;
+	--accent: #006aff;
+	--on-accent: #ffffff;
+	--danger: #ca123d;
+	--scrollbar-track: rgba(0, 0, 0, 0.06);
+	--scrollbar-thumb: rgba(0, 0, 0, 0.26);
+	--scrollbar-thumb-hover: rgba(0, 0, 0, 0.4);
+}
+
+/* data-theme は設定を読んだ後 (非同期) に付く。OS がライトのとき、付くまでの最初の描画が
+   ダークだと開くたびに一瞬暗く光る。属性が付く前だけ OS の設定に従ってライトで描く。
+   明示の選択 (data-theme) が付けばこの規則は当たらなくなり、選択が OS より優先される。
+   宣言は上のライトのブロックと同じ内容にする。(CSS では 2 つの条件を 1 つの選択子に
+   まとめられないため、やむを得ず 2 か所に書いている) */
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme]) {
+		color-scheme: light;
+		--bg: #ffffff;
+		--surface: #f9fafb;
+		--fg: #000000;
+		--muted: #405168;
+		--border: #dce2ea;
+		--divider: #dce2ea;
+		--control-bg: #ffffff;
+		--control-border: #c0cad8;
+		--control-hover: #eff2f6;
+		--hover: #f9fafb;
+		--accent: #006aff;
+		--on-accent: #ffffff;
+		--danger: #ca123d;
+		--scrollbar-track: rgba(0, 0, 0, 0.06);
+		--scrollbar-thumb: rgba(0, 0, 0, 0.26);
+		--scrollbar-thumb-hover: rgba(0, 0, 0, 0.4);
+	}
+}
+
+/* スクロールバーは細く、軌道も見せる。どこからどこまで送れるのかが分かるほうが、
+   つまみの位置だけを見せるより読み進めた量が掴みやすい。
+   標準の scrollbar-width / scrollbar-color と混ぜて書くと Chromium は
+   ::-webkit-scrollbar を丸ごと無視するので、こちらだけに寄せる */
+::-webkit-scrollbar {
+	width: var(--scrollbar-size);
+}
+
+::-webkit-scrollbar-track {
+	border-radius: 999px;
+	background: var(--scrollbar-track);
+}
+
+::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: var(--scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--scrollbar-thumb-hover);
+}

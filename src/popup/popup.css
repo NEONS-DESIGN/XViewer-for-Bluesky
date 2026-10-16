@@ -1,0 +1,448 @@
+/* ポップアップの見た目。UI_DESIGN_KIT.md に沿って組んである。
+   配色トークン (--bg / --fg / --accent / --danger / --focus-ring など)、color-scheme、書体、
+   スクロールバーの見た目は common/tokens.css にある。popup.html が popup.css の前に読む。
+   data-theme は popup-ui.js が設定 (popupTheme) と OS の設定から決めて html 要素に付ける。
+   ここにはこの画面でしか使わないトークンだけを置く。個々の規則に色を直書きしないこと。 */
+
+/* スイッチは本体の Switch (ON は primary_500、OFF は contrast_200、ノブは白) に合わせる */
+:root {
+	--switch-on: #006aff;
+	--switch-off: #313f54;
+	--switch-knob: #ffffff;
+	/* 警告の文字。--danger と同値だが役割が違うので分けて持つ (--danger は取り消せない操作専用) */
+	--warning: #f65a7f;
+}
+
+/* ライトの値。下のメディアクエリの中にも同じ宣言がある。片方だけ直さないこと
+   (中身が同じであることは test/popup-css.test.js が見張る) */
+:root[data-theme='light'] {
+	--switch-on: #006aff;
+	--switch-off: #c0cad8;
+	--switch-knob: #ffffff;
+	--warning: #ca123d;
+}
+
+/* data-theme が付く前 (設定を読む前の最初の描画) だけ OS の設定に従ってライトで描く。
+   宣言は上の :root[data-theme='light'] と同じ内容にする */
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme]) {
+		--switch-on: #006aff;
+		--switch-off: #c0cad8;
+		--switch-knob: #ffffff;
+		--warning: #ca123d;
+	}
+}
+
+/* hidden 属性を必ず効かせる。display をクラスで書いた部品 (.panel / 警告の行 / 通知) は
+   UA の [hidden] { display: none } に勝ってしまい、hidden を立てても消えない。
+   部品ごとに書くと、足し忘れた部品だけ隠れなくなるので 1 本にまとめる */
+[hidden] {
+	display: none !important;
+}
+
+body {
+	/* 幅は固定する。中身に合わせると、タブを切り替えるたびに窓の幅が揺れる */
+	width: 320px;
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	/* font-family は tokens.css の :root にあり、html から継承する */
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+/* createIcon() が返す svg は寸法を持たない。固有サイズの無い置換要素は 300x150px で描かれて
+   画面が崩れるため、受け皿に既定を広く当てておき、個別の規則で上書きする。
+   :where() で詳細度を 0,0,1 に落とす。素の #app svg (1,0,1) だと .theme-toggle svg (0,1,1) などの
+   個別の寸法が負けて、すべて 16px になる */
+:where(#app) svg {
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+	fill: currentColor;
+}
+
+.popup {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	box-sizing: border-box;
+	/* Chrome のポップアップの上限。これを超えるとポップアップ自体に縦スクロールが出る。
+	   見出し・通知・タブは固定で、残りをパネル (.panel) が埋めてそこだけスクロールする */
+	max-height: 600px;
+	padding: 12px;
+}
+
+/* --- 見出しの行 ------------------------------------------------------- */
+
+.header {
+	display: flex;
+	flex: none;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+h1 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.theme-toggle {
+	/* 正方形のアイコンボタン。高さは他の操作部品と揃える。
+	   flex: none を落とさないこと。題名の長さに応じてボタンが縮み、右端の位置がずれる */
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	padding: 0;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--muted);
+}
+
+.theme-toggle:hover {
+	background: var(--hover);
+	color: var(--fg);
+}
+
+.theme-toggle svg {
+	width: 18px;
+	height: 18px;
+}
+
+/* --- セクションと項目 ------------------------------------------------- */
+
+.section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* 区切り線はセクションとセクションの間だけ。先頭のセクションには付けない。
+   すぐ上のタブ行が border-bottom を持っているので、付けると線が 2 本並んで見える */
+.section + .section {
+	padding-top: 12px;
+	border-top: 1px solid var(--divider);
+}
+
+.section h2 {
+	margin: 0;
+	color: var(--muted);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	line-height: 1.4;
+}
+
+.field-title {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.4;
+}
+
+.row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	/* クリック領域は 30px を下回らない */
+	min-height: 30px;
+	cursor: pointer;
+}
+
+/* 見出しが伸びてスイッチを右端へ寄せる */
+.label {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+/* 説明文。設定項目には必ず 1 行付ける */
+.description {
+	margin: 0;
+	color: var(--muted);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+/* 子の項目の箱。親に属することが分かるよう、左に線を引いて字下げする */
+.field-children {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 8px;
+	padding-left: 12px;
+	border-left: 2px solid var(--divider);
+}
+
+/* 親が OFF で操作できない項目。中身を薄くし、押せないカーソルにする。
+   警告の行と子の箱 (それぞれが自分でロックを持つ) は薄くしない */
+.field.is-locked > :not(.field-lock-warning, .field-children) {
+	opacity: 0.45;
+}
+
+.field.is-locked > .field-title .row,
+.field.is-locked > .field-title input {
+	cursor: not-allowed;
+}
+
+/* 警告の行。アイコンを添えて色だけに頼らない */
+.field-lock-warning {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin: 4px 0 0;
+	color: var(--warning);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+.field-lock-warning svg {
+	width: 14px;
+	height: 14px;
+}
+
+/* 保存の失敗など。読み上げには role="alert" で届く。
+   やり直せる失敗なので --danger は使わない (--danger は取り消せない操作専用) */
+.notice {
+	flex: none;
+	margin: 0;
+	padding: 8px 12px;
+	border: 1px solid var(--muted);
+	border-radius: 4px;
+	color: var(--fg);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+/* --- 操作部品 --------------------------------------------------------- */
+
+/* 操作部品の高さを揃える */
+button {
+	height: 30px;
+	border: 1px solid var(--control-border);
+	border-radius: 4px;
+	background: var(--control-bg);
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+button:hover {
+	background: var(--control-hover);
+}
+
+/* 取り消せない操作のボタン */
+button.danger {
+	border-color: var(--danger);
+	color: var(--danger);
+}
+
+button.danger:hover {
+	background: color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+/* チェックボックスをスイッチの見た目にする。
+   28x16 の外周のうち 2px は透明な枠で、内側 24x12 の中を 12px のノブが
+   左端と右端 (translateX(12px)) の間を動く */
+input[type='checkbox'] {
+	appearance: none;
+	box-sizing: border-box;
+	position: relative;
+	/* .row は flex。28px より縮ませない */
+	flex: 0 0 auto;
+	width: 28px;
+	height: 16px;
+	margin: 0;
+	border: 2px solid transparent;
+	border-radius: 16px;
+	background: var(--switch-off);
+	cursor: pointer;
+	transition: background-color 0.2s;
+}
+
+input[type='checkbox']::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	background: var(--switch-knob);
+	transition: transform 0.2s;
+}
+
+input[type='checkbox']:checked {
+	background: var(--switch-on);
+}
+
+input[type='checkbox']:checked::after {
+	transform: translateX(12px);
+}
+
+/* 動きを抑える設定なら、色だけ変えて滑らせない */
+@media (prefers-reduced-motion: reduce) {
+	input[type='checkbox'],
+	input[type='checkbox']::after {
+		transition: none;
+	}
+}
+
+/* すべての操作部品に同じ輪郭を出す。1 規則にまとめて出方を 1 種類に保つ。
+   offset は外側 (+2px)。内側にすると 16px のスイッチでは輪郭が本体に埋もれる */
+:is(button, input[type='checkbox'], .panel, .license a):focus-visible {
+	outline: var(--focus-ring);
+	outline-offset: 2px;
+}
+
+/* --- 取り返しの付かない操作の確認 (confirm-row.js) ---------------------- */
+
+.confirm {
+	/* ボタンと確認の行の置き場。縦の flex にして中身を幅一杯に伸ばす */
+	display: flex;
+	flex-direction: column;
+}
+
+.reset {
+	/* 「設定を初期化」の置き場所。設定項目との区切りを入れる */
+	padding-top: 12px;
+	border-top: 1px solid var(--divider);
+}
+
+.confirmation {
+	/* ボタンの場所にそのまま出す確認の行。枠を危険色にして「通常の操作ではない」ことを示す */
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	border: 1px solid var(--danger);
+	border-radius: 4px;
+}
+
+.confirm-buttons {
+	display: flex;
+	gap: 8px;
+}
+
+.confirm-buttons button {
+	flex: 1;
+}
+
+/* --- タブ (tabs.js) ---------------------------------------------------- */
+
+.tabs {
+	display: flex;
+	flex: none;
+	gap: 4px;
+	border-bottom: 1px solid var(--border);
+}
+
+.tab {
+	/* 下線で選択を示すので、ボタンの枠と背景は消す */
+	flex: 1;
+	height: 30px;
+	/* 枠の分だけ下へずらし、選択中の下線が .tabs の境界線に重なるようにする */
+	margin-bottom: -1px;
+	border: none;
+	border-bottom: 2px solid transparent;
+	border-radius: 4px 4px 0 0;
+	background: transparent;
+	color: var(--muted);
+}
+
+.tab:hover {
+	background: var(--hover);
+	color: var(--fg);
+}
+
+/* 選択状態は aria-selected だけで持つ。クラスと二重に持たない */
+.tab[aria-selected='true'] {
+	color: var(--fg);
+	border-bottom-color: var(--accent);
+}
+
+.panel {
+	/* .popup (max-height 600px) の残りを埋め、収まらない分だけスクロールする。
+	   min-height: 0 が無いと flex の子は中身の高さより縮まず、ポップアップからはみ出す */
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 0;
+	overflow-y: auto;
+	/* 端まで来たときに背景ごとスクロールさせない */
+	overscroll-behavior: contain;
+	/* つまみとテキストが触れないよう、右に隙間を空ける */
+	padding-right: 6px;
+}
+
+/* --- 非公式である旨の断り --------------------------------------------- */
+
+.disclaimer-brief {
+	/* 設定タブの末尾に残す 1 行。操作部品と混ざらないよう区切りを入れる */
+	margin: 0;
+	padding-top: 12px;
+	border-top: 1px solid var(--divider);
+	color: var(--muted);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+/* --- ライセンスタブ (license-panel.js) ---------------------------------- */
+
+.license h2 {
+	margin: 0;
+	font-size: 13px;
+}
+
+.license h3 {
+	margin: 0;
+	font-size: 12px;
+}
+
+.license p {
+	margin: 0;
+	font-size: 11px;
+	line-height: 1.6;
+}
+
+.disclaimer {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	color: var(--muted);
+}
+
+/* 地は塗らず枠だけにする。中のリンク (--accent) は --surface の上だと 4.5:1 に届かない
+   (ダーク 3.83:1 / ライト 4.46:1)。--bg の上ならダーク 4.51:1 / ライト 4.66:1 */
+.license-item {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 8px 12px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+}
+
+/* 帰属の文 (英文)。本文と区別するため淡くする */
+.license-attribution {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	color: var(--muted);
+	/* URL は折り返さないと 320px の幅から溢れる */
+	overflow-wrap: anywhere;
+}
+
+.license-url {
+	overflow-wrap: anywhere;
+}
+
+.license a {
+	color: var(--accent);
+	text-decoration: underline;
+}
