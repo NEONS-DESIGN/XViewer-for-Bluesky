@@ -13,7 +13,7 @@ import { ESBUILD_TARGET, MINIMUM_CHROME_VERSION, ESBUILD_TARGET_FIREFOX, FIREFOX
  * **AMO へ一度提出したら変えられない。** storage.sync の保存先もこの ID に紐づくので、変えると設定が引き継がれない。
  * neonsdesign.com の持ち主であることを示す形にしてある。
  */
-export const FIREFOX_ADDON_ID = 'bluesky-extension@neonsdesign.com';
+export const FIREFOX_ADDON_ID = 'xviewer-bluesky@neonsdesign.com';
 
 /**
  * @typedef {object} BrowserTarget

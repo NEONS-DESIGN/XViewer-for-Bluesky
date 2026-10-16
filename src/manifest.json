@@ -1,6 +1,6 @@
 {
 	"manifest_version": 3,
-	"name": "Blueskyカスタム拡張機能",
+	"name": "XViewer for Bluesky",
 	"description": "Blueskyのプロフィールのメディア欄をサムネイル格子に置き換え、タブを行き来する固定ボタンを追加します。画像ライトボックスには投稿情報パネルと返信・いいね等の操作、誤クリックで閉じない調整、NSFWぼかしの解除も加えます。",
 	"permissions": ["storage"],
 	"host_permissions": ["https://public.api.bsky.app/*"],
@@ -12,7 +12,7 @@
 	},
 	"action": {
 		"default_popup": "popup/popup.html",
-		"default_title": "Blueskyカスタム拡張機能",
+		"default_title": "XViewer for Bluesky",
 		"default_icon": {
 			"16": "icons/icon-16.png",
 			"32": "icons/icon-32.png",

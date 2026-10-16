@@ -44,7 +44,7 @@ export function start(steps) {
 		try {
 			run();
 		} catch (error) {
-			console.error('[Bluesky拡張] 起動に失敗しました', name, error);
+			console.error('[XViewer] 起動に失敗しました', name, error);
 		}
 	}
 }

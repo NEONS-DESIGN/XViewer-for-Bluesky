@@ -92,7 +92,7 @@ function trySave(onChange, key, value) {
 	 * @returns {boolean} 常に false (失敗)
 	 */
 	const fail = (error) => {
-		console.error('[Bluesky拡張] ポップアップ設定の保存に失敗しました', key, error);
+		console.error('[XViewer] ポップアップ設定の保存に失敗しました', key, error);
 		return false;
 	};
 	try {

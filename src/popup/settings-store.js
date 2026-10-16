@@ -29,7 +29,7 @@ export const MANAGED_KEYS = Object.freeze([
 ]);
 
 /** ログの接頭辞 */
-const LOG_PREFIX = '[Bluesky拡張]';
+const LOG_PREFIX = '[XViewer]';
 
 /**
  * すべての項目を既定値で埋める。

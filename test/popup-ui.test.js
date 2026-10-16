@@ -71,7 +71,7 @@ test('セクション (h2)・項目 (h3)・スイッチが定義表どおりに�
 		assert.ok(described.some((id) => root.querySelector(byRole(id))?.textContent === f.description));
 	}
 	assert.strictEqual(root.querySelector(byRole('disclaimer-brief')).textContent, 'Bluesky 公式の拡張機能ではありません。');
-	assert.strictEqual(root.querySelector('h1').textContent, 'Blueskyカスタム拡張機能');
+	assert.strictEqual(root.querySelector('h1').textContent, 'XViewer for Bluesky');
 });
 
 test('配色: 保存値が system なら OS に従って html[data-theme] を付ける', () => {

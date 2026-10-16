@@ -1,4 +1,4 @@
-/* ポップアップの見た目。UI_DESIGN_KIT.md に沿って組んである。
+/* ポップアップの見た目。
    配色トークン (--bg / --fg / --accent / --danger / --focus-ring など)、color-scheme、書体、
    スクロールバーの見た目は common/tokens.css にある。popup.html が popup.css の前に読む。
    data-theme は popup-ui.js が設定 (popupTheme) と OS の設定から決めて html 要素に付ける。

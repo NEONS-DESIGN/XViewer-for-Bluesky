@@ -1,4 +1,4 @@
-# Bluesky-Extension
+# XViewer for Bluesky
 
 Bluesky (bsky.app) 向けのブラウザ拡張機能 (Manifest V3)。Chrome 系 (120 以上) と
 Firefox (140 以上) に対応する。
@@ -19,7 +19,7 @@ Bluesky 公式の拡張機能ではなく、Bluesky Social PBC とは関係が�
 3. **NSFW のぼかし解除** — グリッドのタイルに掛かるぼかしと警告文を外す
    (対象はグリッドのタイルだけで、本体が出す警告には触らない)
 4. **デバッグモード** — タブ判定・グリッドの起動と撤去・取得の状況を
-   コンソール (`[Bluesky拡張][debug]`) に出し、内部状態を `html` 要素の
+   コンソール (`[XViewer][debug]`) に出し、内部状態を `html` 要素の
    `data-bsky-ext-state` 属性に書き出す
 5. **ライトボックスの投稿情報パネル** — 画像を開いたとき、右側に本文・投稿日時・
    作者・反応数・「投稿を開く」を出す。グリッド由来に限らず、bsky.app の
@@ -117,20 +117,10 @@ DOM 操作・本体レイアウトへの介入・橋渡しは実機の bsky.app 
 
 どちらの生成物もコミットしてあり、通常の `npm run build` では生成しない。
 
-## 文書
-
-- `開発メモ` — 作業規約と、実機で確認済み / 未確認の項目の一覧
-- `SPEC.md` — 詳細設計 (実装の正)
-- `SITE_SPEC.md` — Bluesky 側の実測 (API・DOM・レイアウト。サイトの事実の正)
-- `UI_DESIGN_KIT.md` — ポップアップなど UI の指示書
-- `CHANGELOG.md` — 変更履歴
-- `docs/design/` — 設計判断の経緯と実装計画
-
 ## 姉妹プロジェクト
 
-`X-Custom-Extension-API` は同じ機能を X (旧 Twitter) 向けに実装したもの。
-**取得方法が根本的に違うため、あちらのコードやドキュメントをそのまま持ち込まないこと**
-(詳細は `開発メモ`)。
+[XViewer for Pixiv](https://github.com/NEONS-DESIGN/XViewer-for-Pixiv) は
+pixiv 向けの拡張機能で、ビルドの方式とポップアップの作りを共通にしている。
 
 ## ライセンス
 

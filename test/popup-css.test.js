@@ -54,7 +54,7 @@ test('popup.html は tokens.css → popup.css → #app → module の順', () =>
 	const positions = order.map((part) => html.indexOf(part));
 	assert.ok(positions.every((p) => p >= 0), `欠けている: ${order.filter((_, i) => positions[i] < 0)}`);
 	assert.deepStrictEqual([...positions].sort((a, b) => a - b), positions);
-	assert.match(html, /<title>Blueskyカスタム拡張機能<\/title>/);
+	assert.match(html, /<title>XViewer for Bluesky<\/title>/);
 });
 
 test('配色切替は汎用の button の枠と地をそのまま使う (XViewer for Pixiv と同じ見た目)', () => {

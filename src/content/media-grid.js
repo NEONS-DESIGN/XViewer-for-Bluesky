@@ -56,7 +56,7 @@ export function findFeedParts() {
 		}
 		return {container: feed.parentElement, feed};
 	} catch (error) {
-		console.error('[Bluesky拡張] マウント先の探索に失敗しました', error);
+		console.error('[XViewer] マウント先の探索に失敗しました', error);
 		return null;
 	}
 }
@@ -126,7 +126,7 @@ export class MediaGrid {
 			window.addEventListener('scroll', this.boundHandleScroll, {passive: true});
 			return true;
 		} catch (error) {
-			console.error('[Bluesky拡張] グリッドのマウントに失敗しました', error);
+			console.error('[XViewer] グリッドのマウントに失敗しました', error);
 			return false;
 		}
 	}
@@ -139,7 +139,7 @@ export class MediaGrid {
 				this.containerEl.remove();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] グリッドの解除に失敗しました', error);
+			console.error('[XViewer] グリッドの解除に失敗しました', error);
 		} finally {
 			this.containerEl = null;
 			this.listEl = null;
@@ -175,7 +175,7 @@ export class MediaGrid {
 				this.unblurEnabled
 			);
 		} catch (error) {
-			console.error('[Bluesky拡張] ぼかし解除の反映に失敗しました', error);
+			console.error('[XViewer] ぼかし解除の反映に失敗しました', error);
 		}
 	}
 
@@ -205,7 +205,7 @@ export class MediaGrid {
 			try {
 				fragment.appendChild(this.createTile(entries[i]));
 			} catch (error) {
-				console.error('[Bluesky拡張] タイルの描画に失敗しました', error);
+				console.error('[XViewer] タイルの描画に失敗しました', error);
 			} finally {
 				this.renderedCount += 1;
 			}
@@ -264,8 +264,7 @@ export class MediaGrid {
 
 	/**
 	 * 複数枚の投稿であることを示すアイコンを生成する。
-	 * 旧 X の複数枚アイコンは現存しないため、重なった 2 枚の四角形で近似する
-	 * (姉妹プロジェクト X-Custom-Extension-API の photo-grid.js の考え方を借りた)。
+	 * 旧 X の複数枚アイコンは現存しないため、重なった 2 枚の四角形で近似する。
 	 * @returns {SVGSVGElement}
 	 */
 	createMultiBadge() {
@@ -337,11 +336,11 @@ export class MediaGrid {
 					this.navigateToPost(entry);
 				}
 			}).catch((error) => {
-				console.error('[Bluesky拡張] ライトボックスの呼び出しに失敗しました', error);
+				console.error('[XViewer] ライトボックスの呼び出しに失敗しました', error);
 				this.navigateToPost(entry);
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] タイル押下の処理に失敗しました', error);
+			console.error('[XViewer] タイル押下の処理に失敗しました', error);
 			// 失敗しても最低限、投稿ページへは落とす
 			if (entry && entry.postHref) {
 				window.location.href = entry.postHref;
@@ -365,11 +364,11 @@ export class MediaGrid {
 					window.location.href = entry.postHref;
 				}
 			}).catch((error) => {
-				console.error('[Bluesky拡張] 投稿ページへの SPA 遷移に失敗しました', error);
+				console.error('[XViewer] 投稿ページへの SPA 遷移に失敗しました', error);
 				window.location.href = entry.postHref;
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] 投稿ページへの遷移処理に失敗しました', error);
+			console.error('[XViewer] 投稿ページへの遷移処理に失敗しました', error);
 			if (entry && entry.postHref) {
 				window.location.href = entry.postHref;
 			}
@@ -403,7 +402,7 @@ export class MediaGrid {
 		try {
 			window.scrollTo(0, top);
 		} catch (error) {
-			console.error('[Bluesky拡張] スクロール位置の復元に失敗しました', error);
+			console.error('[XViewer] スクロール位置の復元に失敗しました', error);
 		}
 	}
 
@@ -428,7 +427,7 @@ export class MediaGrid {
 				this.onNearEnd();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] 末尾判定に失敗しました', error);
+			console.error('[XViewer] 末尾判定に失敗しました', error);
 		}
 	}
 }
@@ -510,7 +509,7 @@ export class MediaGridController {
 			this.enabled = stored[cfg.storageKey] ?? cfg.defaultEnabled;
 			this.grid.setUnblur(stored[cfg.unblur.storageKey] ?? cfg.unblur.defaultEnabled);
 		} catch (error) {
-			console.error('[Bluesky拡張] 設定の読み込みに失敗しました', error);
+			console.error('[XViewer] 設定の読み込みに失敗しました', error);
 		}
 		try {
 			// ポップアップでの変更をリロードなしで反映する
@@ -531,7 +530,7 @@ export class MediaGridController {
 				this.sync();
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] 設定変更の監視開始に失敗しました', error);
+			console.error('[XViewer] 設定変更の監視開始に失敗しました', error);
 		}
 		this.initialized = true;
 		this.sync();
@@ -630,13 +629,13 @@ export class MediaGridController {
 			this.pendingEnable = !this.active;
 			this.publishDebugState(this.active ? '起動中' : 'マウント先待ち', pageInfo, tabIndex);
 		} catch (error) {
-			console.error('[Bluesky拡張] グリッドの状態同期に失敗しました', error);
+			console.error('[XViewer] グリッドの状態同期に失敗しました', error);
 			this.pendingEnable = false;
 			// 握り潰すとフィードが隠れたまま復帰できなくなるため、必ず撤去を試みる
 			try {
 				this.disable();
 			} catch (disableError) {
-				console.error('[Bluesky拡張] グリッドの撤去に失敗しました', disableError);
+				console.error('[XViewer] グリッドの撤去に失敗しました', disableError);
 			}
 		}
 	}
@@ -870,6 +869,6 @@ export function initMediaGrid() {
 
 		window.addEventListener('popstate', () => mediaGridController.sync());
 	} catch (error) {
-		console.error('[Bluesky拡張] メディアグリッドの初期化に失敗しました', error);
+		console.error('[XViewer] メディアグリッドの初期化に失敗しました', error);
 	}
 }

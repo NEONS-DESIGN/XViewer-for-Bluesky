@@ -42,7 +42,7 @@ import {
  *   **本体の投稿作成モーダル (openComposer) に渡すためだけの生データで、
  *   整形しない。** `quote` は完全な PostView を要求し、整形した部分
  *   オブジェクトを渡すと本体の React ツリーがアンマウントされる
- *   (2026-09-09 実機で確認。`SITE_SPEC.md` 7.7 節)
+ *   (2026-09-09 実機で確認)
  * @property {Object|null} viewer getPosts の viewer をそのまま。
  *   **未認証の取得では付かない。** 解釈は post-actions.js の readViewerState() が行う
  * @property {string} handle 作者のハンドル
@@ -74,7 +74,7 @@ export function parsePostUri(uri) {
 		}
 		return {did: matched[1], rkey: matched[2]};
 	} catch (error) {
-		console.error('[Bluesky拡張] 投稿 URI の解析に失敗しました', error);
+		console.error('[XViewer] 投稿 URI の解析に失敗しました', error);
 		return null;
 	}
 }
@@ -173,7 +173,7 @@ export function applyFacets(text, facets, config) {
 		}
 		return segments;
 	} catch (error) {
-		console.error('[Bluesky拡張] 本文の装飾の解析に失敗しました', error);
+		console.error('[XViewer] 本文の装飾の解析に失敗しました', error);
 		// 装飾が落ちても本文は読めるようにする
 		return typeof text === 'string' && text !== ''
 			? [{text, kind: 'text', value: null}]
@@ -237,7 +237,7 @@ export function parsePostForPanel(json, config) {
 			}
 		};
 	} catch (error) {
-		console.error('[Bluesky拡張] 投稿の解析に失敗しました', error);
+		console.error('[XViewer] 投稿の解析に失敗しました', error);
 		return null;
 	}
 }
@@ -261,7 +261,7 @@ export function formatPostDate(iso, config) {
 		}
 		return new Intl.DateTimeFormat(config.locale, config.dateFormat).format(date);
 	} catch (error) {
-		console.error('[Bluesky拡張] 投稿日時の整形に失敗しました', error);
+		console.error('[XViewer] 投稿日時の整形に失敗しました', error);
 		return null;
 	}
 }
@@ -277,7 +277,7 @@ export function formatCount(value, config) {
 	try {
 		return new Intl.NumberFormat(config.locale).format(count);
 	} catch (error) {
-		console.error('[Bluesky拡張] 反応数の整形に失敗しました', error);
+		console.error('[XViewer] 反応数の整形に失敗しました', error);
 		return String(count);
 	}
 }
@@ -330,8 +330,7 @@ export function toSafeLinkHref(uri, config) {
  * `this.pending` は投稿と種別の組でしか操作を弾かないため、別種の操作
  * (例: いいねとブックマーク) が同時に飛行中になり得る。全フィールドを
  * まるごと書き戻すと、後から書き戻った側が先に書き戻した側の結果を
- * 消してしまう (2026-09-09 実機の手前で見つかった Important。
- * `CHANGELOG.md` `[2.6.3]` 参照)。
+ * 消してしまう (2026-09-09 実機の手前で見つかった不具合)。
  * 書き戻す先は自前で作った `PanelPost` (キャッシュに入っているものと
  * 同じ参照) で、本体 DOM にも本体のキャッシュにも触れない。
  * **`post.raw` (本体の openComposer にそのまま渡す生の PostView) にも
@@ -377,7 +376,7 @@ export function syncPostViewer(post, kind, state) {
 			post.raw.viewer = rawViewer;
 		}
 	} catch (error) {
-		console.error('[Bluesky拡張] 投稿の状態の書き戻しに失敗しました', error);
+		console.error('[XViewer] 投稿の状態の書き戻しに失敗しました', error);
 	}
 }
 
@@ -406,7 +405,7 @@ export function revertActionState(state, kind, previous) {
  * がまだ更新前 (`viewer.like === null`) のためボタンが押せる状態で描かれ、
  * 2 本目の `createRecord` が飛ぶ。`viewer.like` は 1 本しか指せないため
  * 1 本目のレコードは孤児になり、パネルからも本体 UI からも取り消せなくなる
- * (2026-09-09 の最終レビューで見つかった Critical。`CHANGELOG.md` `[2.6.6]`)。
+ * (2026-09-09 の最終レビューで見つかった Critical)。
  * 逆に投稿をキーへ含めておけば、**別の**投稿を開いたときのボタンが
  * 巻き添えで `disabled` のまま残ることもない
  * @param {string} postUri 対象の投稿の AT URI
@@ -507,7 +506,7 @@ export class LightboxPanel {
 			this.actionsEnabled = stored[EXT_CONFIG.postActions.storageKey]
 				?? EXT_CONFIG.postActions.defaultEnabled;
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの設定の読み込みに失敗しました', error);
+			console.error('[XViewer] パネルの設定の読み込みに失敗しました', error);
 		}
 		try {
 			chrome.storage.onChanged.addListener((changes, area) => {
@@ -530,7 +529,7 @@ export class LightboxPanel {
 				);
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの設定の購読に失敗しました', error);
+			console.error('[XViewer] パネルの設定の購読に失敗しました', error);
 		}
 		try {
 			subscribeLightboxVisibility((visible) => {
@@ -543,7 +542,7 @@ export class LightboxPanel {
 			// タブを閉じる・遷移で離れるときにも本体の変更を必ず戻す
 			window.addEventListener('pagehide', () => this.teardown());
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの起動に失敗しました', error);
+			console.error('[XViewer] パネルの起動に失敗しました', error);
 		}
 	}
 
@@ -632,7 +631,7 @@ export class LightboxPanel {
 			this.renderPost(post);
 			ExtDebug.log('パネルの取得が終了', {postUri, 本文の長さ: post.text.length});
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの表示に失敗しました', error);
+			console.error('[XViewer] パネルの表示に失敗しました', error);
 		}
 	}
 
@@ -706,12 +705,12 @@ export class LightboxPanel {
 		try {
 			const response = await fetch(url, {signal: controller.signal});
 			if (!response.ok) {
-				console.error('[Bluesky拡張] 投稿の取得に失敗しました', response.status);
+				console.error('[XViewer] 投稿の取得に失敗しました', response.status);
 				return null;
 			}
 			return parsePostForPanel(await response.json(), this.config);
 		} catch (error) {
-			console.error('[Bluesky拡張] 投稿の取得に失敗しました', error);
+			console.error('[XViewer] 投稿の取得に失敗しました', error);
 			return null;
 		} finally {
 			clearTimeout(timer);
@@ -746,7 +745,7 @@ export class LightboxPanel {
 			this.shrunkPreviousRight = parent.style.right;
 			parent.style.right = `${this.config.widthPx}px`;
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックスの幅の調整に失敗しました', error);
+			console.error('[XViewer] ライトボックスの幅の調整に失敗しました', error);
 		}
 	}
 
@@ -764,7 +763,7 @@ export class LightboxPanel {
 				this.shrunkEl.style.right = this.shrunkPreviousRight;
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックスの幅の復帰に失敗しました', error);
+			console.error('[XViewer] ライトボックスの幅の復帰に失敗しました', error);
 		} finally {
 			this.shrunkEl = null;
 			this.shrunkPreviousRight = '';
@@ -815,7 +814,7 @@ export class LightboxPanel {
 				existing.remove();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの撤去に失敗しました', error);
+			console.error('[XViewer] パネルの撤去に失敗しました', error);
 		} finally {
 			this.panelEl = null;
 			this.toggleEl = null;
@@ -843,14 +842,14 @@ export class LightboxPanel {
 				this.applyShrink();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの折り畳みに失敗しました', error);
+			console.error('[XViewer] パネルの折り畳みに失敗しました', error);
 		}
 		try {
 			chrome.storage.sync.set({
 				[this.config.collapsedStorageKey]: this.collapsed
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] 折り畳み状態の保存に失敗しました', error);
+			console.error('[XViewer] 折り畳み状態の保存に失敗しました', error);
 		}
 	}
 
@@ -926,7 +925,7 @@ export class LightboxPanel {
 				: this.buildCounts(post));
 			this.bodyEl.appendChild(this.buildOpenPost(post));
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルの描画に失敗しました', error);
+			console.error('[XViewer] パネルの描画に失敗しました', error);
 			this.renderStatus(this.config.text.error);
 		}
 	}
@@ -1154,7 +1153,7 @@ export class LightboxPanel {
 	 * その種別のフィールドを値で写す** (`mergeActionKind()`)。`this.state` は
 	 * 応答を待つ間に開き直し・設定の ON/OFF で `post.viewer` から作り直される
 	 * ことがあり、トグルや URI だけの書き込みでは古い状態と食い違う
-	 * (二重いいねの 5 回目の経路。`CHANGELOG.md` `[2.7.0]`)。
+	 * (二重いいねの 5 回目の経路)。
 	 *
 	 * **失敗したときは覚えている投稿を捨て、サーバから引き直す。** 橋渡しは
 	 * 15 秒でタイムアウトして失敗を返すが、そのときサーバ側では成功している
@@ -1256,7 +1255,7 @@ export class LightboxPanel {
 			this.renderActions();
 			this.showActionError();
 		} catch (error) {
-			console.error('[Bluesky拡張] 投稿操作に失敗しました', error);
+			console.error('[XViewer] 投稿操作に失敗しました', error);
 			if (key) {
 				this.pending.delete(key);
 			}
@@ -1349,7 +1348,7 @@ export class LightboxPanel {
 				stale.remove();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] 操作行の描き直しに失敗しました', error);
+			console.error('[XViewer] 操作行の描き直しに失敗しました', error);
 		}
 	}
 
@@ -1379,7 +1378,7 @@ export class LightboxPanel {
 				this.showActionError();
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] 投稿作成モーダルを開けませんでした', error);
+			console.error('[XViewer] 投稿作成モーダルを開けませんでした', error);
 		}
 	}
 
@@ -1450,7 +1449,7 @@ export class LightboxPanel {
 				document.addEventListener('click', this.onOutsideClick, true);
 			}, 0);
 		} catch (error) {
-			console.error('[Bluesky拡張] リポストのメニューを開けませんでした', error);
+			console.error('[XViewer] リポストのメニューを開けませんでした', error);
 		}
 	}
 
@@ -1474,7 +1473,7 @@ export class LightboxPanel {
 				this.menuAnchor = null;
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] リポストのメニューを閉じられませんでした', error);
+			console.error('[XViewer] リポストのメニューを閉じられませんでした', error);
 		}
 	}
 
@@ -1498,7 +1497,7 @@ export class LightboxPanel {
 			}
 			line.textContent = config.text.failed;
 		} catch (error) {
-			console.error('[Bluesky拡張] 失敗の表示に失敗しました', error);
+			console.error('[XViewer] 失敗の表示に失敗しました', error);
 		}
 	}
 
@@ -1536,7 +1535,7 @@ export class LightboxPanel {
 			await callBridge(actions.closeLightbox, {});
 			await callBridge(actions.navigate, target);
 		} catch (error) {
-			console.error('[Bluesky拡張] パネルからの遷移に失敗しました', error);
+			console.error('[XViewer] パネルからの遷移に失敗しました', error);
 		} finally {
 			// callBridge は仕様上 reject しないが、finally にしておくことで
 			// 「遷移に失敗したのに right が戻らない」経路を構造的に無くす

@@ -1,7 +1,7 @@
 /**
  * 表示中のタブバーの選び方。
  * SPA で別のプロフィールへ移ると、前のプロフィール画面のタブバーが矩形 0 のまま
- * DOM に残る (SITE_SPEC.md 6.3)。描画されていない方を選ばないことを確かめる。
+ * DOM に残る。描画されていない方を選ばないことを確かめる。
  */
 import test from 'node:test';
 import assert from 'node:assert';

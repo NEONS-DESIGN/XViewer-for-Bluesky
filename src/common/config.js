@@ -86,7 +86,7 @@ export const EXT_CONFIG = {
 	 * **開閉の判定は DOM 上の実体 (isLightboxVisible) だけで行う。**
 	 * history.state のフラグは分離ワールドから見ると古い値のまま残り、
 	 * いったん立つと下りないため判定に混ぜない (2.3.0 で実機確認した Critical。
-	 * 2026-09-08 以降は本体がフラグ自体を立てなくなった。SITE_SPEC.md 2.3)
+	 * 2026-09-08 以降は本体がフラグ自体を立てなくなった)
 	 */
 	lightbox: {
 		/**
@@ -146,7 +146,7 @@ export const EXT_CONFIG = {
 		/** 既定は無効。利用者が明示的に有効にしたときだけ動く */
 		defaultEnabled: false,
 		/** コンソール出力の接頭辞。通常のエラーログと見分けるため [debug] を足す */
-		prefix: '[Bluesky拡張][debug]',
+		prefix: '[XViewer][debug]',
 		/** 内部状態を書き出す html 要素の属性名 */
 		stateAttribute: 'data-bsky-ext-state'
 	},
@@ -334,7 +334,7 @@ export const EXT_CONFIG = {
 		widthPx: 360,
 		/**
 		 * パネルを出す最小のウィンドウ幅 (px)。これ未満では画像が潰れるため出さない。
-		 * SITE_SPEC.md 8.2 の gtMobile (minWidth: 800) に揃えてある。
+		 * 本体の gtMobile (minWidth: 800) に揃えてある。
 		 * **本体が「モバイル幅」と見なす境界と一致させるため、独自の数値を置かない**
 		 */
 		minWindowWidthPx: 800,
@@ -396,8 +396,7 @@ export const EXT_CONFIG = {
 	 *
 	 * **この拡張機能で唯一の書き込み機能。** 認証は本体が持つ
 	 * agent.fetchHandler を橋渡しで借りるだけで、localStorage の accessJwt には
-	 * 触らない (SITE_SPEC.md 5.2 の方針)。設計は
-	 * docs/design/specs/2026-09-09-lightbox-post-actions-design.md
+	 * 触らない。
 	 */
 	postActions: {
 		storageKey: 'postActionsEnabled',
@@ -467,7 +466,7 @@ export const EXT_CONFIG = {
 	 * 子であるためバブリングで閉じてしまう。同じ固定親のクラス r-1loqt21 が
 	 * cursor: pointer だけを持ち、それがライトボックス全域に継承されるため、
 	 * 画像の上も半透明の背景も閉じるボタンも見分けが付かない
-	 * (2026-09-09 実測。SITE_SPEC.md 7.5)
+	 * (2026-09-09 実測)
 	 */
 	lightboxGuard: {
 		storageKey: 'lightboxGuardEnabled',

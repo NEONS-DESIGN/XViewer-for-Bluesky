@@ -35,7 +35,7 @@ import {EXT_CONFIG} from '../common/config.js';
 
 /** ポップアップの文言。描画側に文字列を直書きしない */
 export const POPUP_TEXT = Object.freeze({
-	title: 'Blueskyカスタム拡張機能',
+	title: 'XViewer for Bluesky',
 	tabsLabel: '表示するものの切り替え',
 	loadFailed: '設定を読み込めませんでした。表示は既定値です。',
 	saveFailed: '設定を保存できませんでした。もう一度お試しください。',

@@ -5,7 +5,7 @@
  * おり、画像はその子であるためバブリングで閉じてしまう。同じ固定親に付く
  * クラス r-1loqt21 は中身が cursor: pointer だけで、それがライトボックス
  * 全域に継承されるため、画像の上も半透明の背景も閉じるボタンも見分けが
- * 付かない (2026-09-09 実測。SITE_SPEC.md 7.5)。
+ * 付かない (2026-09-09 実測)。
  *
  * この 2 つを次のように直す:
  *
@@ -22,7 +22,6 @@
  * **本体 DOM への介入は「目印の属性」と「capture の click リスナー」の 2 つだけ。**
  * どちらも自分が生やしたもので、撤去すれば完全に元へ戻る。当てた要素そのものを
  * 参照として保持し、撤去はその参照に対して行う (閉じた後はセレクタで引けない)。
- * 詳細は SPEC.md 5.13 節。
  */
 import {ExtDebug} from '../common/debug.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
@@ -70,7 +69,7 @@ export function computeContainRect(elementRect, naturalSize) {
 			height: drawnHeight
 		};
 	} catch (error) {
-		console.error('[Bluesky拡張] 画像の描画矩形の計算に失敗しました', error);
+		console.error('[XViewer] 画像の描画矩形の計算に失敗しました', error);
 		return null;
 	}
 }
@@ -101,7 +100,7 @@ export function shouldBlockLightboxClick(point, drawnRect, isInteractive) {
 			&& point.y >= drawnRect.y
 			&& point.y <= drawnRect.y + drawnRect.height;
 	} catch (error) {
-		console.error('[Bluesky拡張] クリックの判定に失敗しました', error);
+		console.error('[XViewer] クリックの判定に失敗しました', error);
 		return false;
 	}
 }
@@ -110,7 +109,7 @@ export function shouldBlockLightboxClick(point, drawnRect, isInteractive) {
  * `closest()` のヒットを「押せる要素」とみなしてよいかを決める。
  *
  * **固定親そのものは押せる要素ではない。** Bluesky は固定親に
- * `tabindex="0"` を付けており (2026-09-09 実測。`SITE_SPEC.md` 7.5)、
+ * `tabindex="0"` を付けており (2026-09-09 実測)、
  * `interactiveSelector` の `[tabindex]:not([tabindex="-1"])` に必ずヒットする。
  * これを除外しないと**すべてのクリックが素通しになり、機能そのものが働かない**
  * (実機で実際に踏んだ。閉じるのを止められなかった)。
@@ -126,7 +125,7 @@ export function isInteractiveHit(hit, container) {
 		}
 		return container.contains(hit) === true;
 	} catch (error) {
-		console.error('[Bluesky拡張] 押せる要素の判定に失敗しました', error);
+		console.error('[XViewer] 押せる要素の判定に失敗しました', error);
 		// 判定できないときは素通しに倒す (押せなくなるより閉じるほうがまし)
 		return true;
 	}
@@ -137,7 +136,7 @@ export function isInteractiveHit(hit, container) {
  *
  * 開閉の検知は page.js の subscribeLightboxVisibility() を購読するだけで、
  * **新しい document.body の監視は足していない** (投稿情報パネルと同じ仕組みに
- * 相乗りしている。SPEC.md 5.12)。
+ * 相乗りしている)。
  */
 export class LightboxGuard {
 	/**
@@ -164,7 +163,7 @@ export class LightboxGuard {
 			const saved = stored[config.storageKey];
 			this.enabled = typeof saved === 'boolean' ? saved : config.defaultEnabled;
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックス調整の設定の読み込みに失敗しました', error);
+			console.error('[XViewer] ライトボックス調整の設定の読み込みに失敗しました', error);
 		}
 		try {
 			chrome.storage.onChanged.addListener((changes, area) => {
@@ -176,7 +175,7 @@ export class LightboxGuard {
 				);
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックス調整の設定の購読に失敗しました', error);
+			console.error('[XViewer] ライトボックス調整の設定の購読に失敗しました', error);
 		}
 		try {
 			subscribeLightboxVisibility((visible) => {
@@ -189,7 +188,7 @@ export class LightboxGuard {
 			// タブを閉じる・遷移で離れるときにも本体への介入を必ず戻す
 			window.addEventListener('pagehide', () => this.detach());
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックス調整の起動に失敗しました', error);
+			console.error('[XViewer] ライトボックス調整の起動に失敗しました', error);
 		}
 	}
 
@@ -239,7 +238,7 @@ export class LightboxGuard {
 			parent.addEventListener('click', this.handleClick, true);
 			ExtDebug.log('ライトボックスの調整を適用', {});
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックスの調整の適用に失敗しました', error);
+			console.error('[XViewer] ライトボックスの調整の適用に失敗しました', error);
 		}
 	}
 
@@ -255,7 +254,7 @@ export class LightboxGuard {
 				this.attachedEl.removeEventListener('click', this.handleClick, true);
 			}
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックスの調整の撤去に失敗しました', error);
+			console.error('[XViewer] ライトボックスの調整の撤去に失敗しました', error);
 		} finally {
 			this.attachedEl = null;
 		}
@@ -332,7 +331,7 @@ export class LightboxGuard {
 				y: event.clientY
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックスのクリックの処理に失敗しました', error);
+			console.error('[XViewer] ライトボックスのクリックの処理に失敗しました', error);
 		}
 	}
 }

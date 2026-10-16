@@ -7,5 +7,5 @@ import {main} from './app.js';
 
 void main({doc: document, storage: globalThis.chrome?.storage?.sync ?? null}).catch((error) => {
 	// ここまで来ると画面が空のままなので、原因を残して気づけるようにする
-	console.error('[Bluesky拡張] ポップアップの起動に失敗しました', error);
+	console.error('[XViewer] ポップアップの起動に失敗しました', error);
 });

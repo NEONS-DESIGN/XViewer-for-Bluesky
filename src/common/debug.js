@@ -42,7 +42,7 @@ export const ExtDebug = {
 			const stored = await chrome.storage.sync.get([cfg.storageKey]);
 			this.setEnabled(stored[cfg.storageKey] ?? cfg.defaultEnabled);
 		} catch (error) {
-			console.error('[Bluesky拡張] デバッグ設定の読み込みに失敗しました', error);
+			console.error('[XViewer] デバッグ設定の読み込みに失敗しました', error);
 		}
 		try {
 			chrome.storage.onChanged.addListener((changes, area) => {
@@ -52,7 +52,7 @@ export const ExtDebug = {
 				this.setEnabled(changes[cfg.storageKey].newValue ?? cfg.defaultEnabled);
 			});
 		} catch (error) {
-			console.error('[Bluesky拡張] デバッグ設定の監視開始に失敗しました', error);
+			console.error('[XViewer] デバッグ設定の監視開始に失敗しました', error);
 		}
 	},
 

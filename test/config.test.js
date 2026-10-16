@@ -61,7 +61,7 @@ test('デバッグモードは既定で無効', () => {
 	const debug = EXT_CONFIG.debug;
 	assert.strictEqual(debug.storageKey, 'debugEnabled');
 	assert.strictEqual(debug.defaultEnabled, false);
-	assert.strictEqual(debug.prefix, '[Bluesky拡張][debug]');
+	assert.strictEqual(debug.prefix, '[XViewer][debug]');
 	assert.strictEqual(debug.stateAttribute, 'data-bsky-ext-state');
 });
 
@@ -98,7 +98,7 @@ test('ライトボックスのパネルは既定で有効', () => {
 test('ライトボックスのパネルは寸法と識別子を持つ', () => {
 	const panel = EXT_CONFIG.lightboxPanel;
 	assert.equal(panel.widthPx, 360);
-	// SITE_SPEC.md 8.2 の gtMobile (minWidth: 800) に揃える
+	// 本体の gtMobile (minWidth: 800) に揃える
 	assert.equal(panel.minWindowWidthPx, 800);
 	// #ext-media-grid (9998) < #ext-nav-btn-container (9999) < パネル
 	assert.ok(panel.zIndex > 9999);
@@ -151,7 +151,7 @@ test('操作ボタンは 4 種別ぶんのクラスを持つ', () => {
 });
 
 test('操作ボタンの色は content.css に種別ぶん書いてある', () => {
-	// CSS 側の識別子との対応 (SPEC.md 2 節)。片方を変えたら必ず両方を直す
+	// CSS 側の識別子との対応。片方を変えたら必ず両方を直す
 	const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'content.css'), 'utf8');
 	// 4 種別すべてが色を持つ (返信の水色は 2.8.1 で足した)
 	const colored = ['reply', 'repost', 'like', 'bookmark'];

@@ -158,7 +158,7 @@
  *
  * 配色は Bluesky 本体のテーマに CSS だけで追随する。本体は html 要素に
  * theme--light / theme--dark / theme--dim のいずれかを付け、同じ html 要素に
- * 配色の CSS 変数を出している (2026-09-09 実測。SITE_SPEC.md 6.6)。
+ * 配色の CSS 変数を出している (2026-09-09 実測)。
  *   --background      … body の背景色そのもの (#ffffff / #000000 / #151D28)
  *   --text            … body の文字色 (#000000 / #ffffff / #ffffff)
  *   --backgroundLight … 本体の区切り線と同じ色 (#DCE2EA / #232E3E / #2C3A4E)
@@ -499,7 +499,7 @@
  *
  * Bluesky はダイアログの固定親に cursor: pointer だけを持つクラス
  * (r-1loqt21) を付けており、それがライトボックス全域に継承される
- * (2026-09-09 実測。SITE_SPEC.md 7.5)。そのため画像の上も半透明の背景も
+ * (2026-09-09 実測)。そのため画像の上も半透明の背景も
  * 閉じるボタンも同じ形になり、どこが押せるのか分からない。
  *
  * 起点は lightbox-guard.js が固定親に付ける目印の属性だけで、**本体の

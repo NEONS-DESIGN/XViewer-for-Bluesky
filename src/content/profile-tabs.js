@@ -33,7 +33,7 @@ export function buildTabList(profile, context, config) {
 			.filter((tab) => tab.when(criteria))
 			.map((tab) => ({name: tab.name, view: tab.view}));
 	} catch (error) {
-		console.error('[Bluesky拡張] タブ列の組み立てに失敗しました', error);
+		console.error('[XViewer] タブ列の組み立てに失敗しました', error);
 		return postsOnlyTabList(config);
 	}
 }

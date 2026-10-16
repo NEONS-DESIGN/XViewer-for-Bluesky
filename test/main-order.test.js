@@ -24,5 +24,5 @@ test('起動の失敗は手順の名前を添えて console.error に残す', (t
 	const error = new Error('x');
 	start([['a', () => { throw error; }]]);
 	assert.strictEqual(logged.mock.callCount(), 1);
-	assert.deepStrictEqual(logged.mock.calls[0].arguments, ['[Bluesky拡張] 起動に失敗しました', 'a', error]);
+	assert.deepStrictEqual(logged.mock.calls[0].arguments, ['[XViewer] 起動に失敗しました', 'a', error]);
 });

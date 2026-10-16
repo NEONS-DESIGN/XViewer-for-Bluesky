@@ -62,7 +62,7 @@ export function parseProfilePath(pathname, config) {
 		}
 		return {actor: decodeURIComponent(parts[1])};
 	} catch (error) {
-		console.error('[Bluesky拡張] パスの解析に失敗しました', error);
+		console.error('[XViewer] パスの解析に失敗しました', error);
 		return null;
 	}
 }
@@ -82,7 +82,7 @@ function getOwnHandle() {
 		const parsed = parseProfilePath(href, EXT_CONFIG);
 		return parsed ? parsed.actor : null;
 	} catch (error) {
-		console.error('[Bluesky拡張] 自分のハンドルの取得に失敗しました', error);
+		console.error('[XViewer] 自分のハンドルの取得に失敗しました', error);
 		return null;
 	}
 }
@@ -127,8 +127,8 @@ function hasSession() {
  * この値を論理和に含めていたため、投稿欄で画像を開いた後は
  * 「ライトボックスが開いたまま」と誤認し続け、メディアタブへ移っても
  * グリッドが二度と起動しなくなっていた (リロードでしか直らない)。
- * **2026-09-08 以降、Bluesky はこのフラグを立てなくなり常に false を返す**
- * (SITE_SPEC.md 2.3)。そのため NavigationObserver.checkNavigation() の
+ * **2026-09-08 以降、Bluesky はこのフラグを立てなくなり常に false を返す**。
+ * そのため NavigationObserver.checkNavigation() の
  * 合図としてもこの値は使っていない (2026-09-09 修正、body 直下の要素数に
  * 置き換えた)。この関数は判断にも合図にも使われておらず、デバッグモードの
  * 状態出力 (data-bsky-ext-state の「ライトボックス履歴フラグ」) にだけ
@@ -139,7 +139,7 @@ export function isLightboxStatePushed() {
 	try {
 		return !!(history.state && history.state.lightbox === true);
 	} catch (error) {
-		console.error('[Bluesky拡張] ライトボックスの履歴フラグの判定に失敗しました', error);
+		console.error('[XViewer] ライトボックスの履歴フラグの判定に失敗しました', error);
 		return false;
 	}
 }
@@ -163,7 +163,7 @@ export function isLightboxVisible() {
 		}
 		return false;
 	} catch (error) {
-		console.error('[Bluesky拡張] ライトボックスの表示判定に失敗しました', error);
+		console.error('[XViewer] ライトボックスの表示判定に失敗しました', error);
 		return false;
 	}
 }
@@ -173,8 +173,8 @@ export function isLightboxVisible() {
  * lightbox-panel.js / lightbox-guard.js が介入する相手 (その parentElement) を
  * 決めるのに使う。
  * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の方を掴む**
- * ことでこのプロジェクトは 2 回 Critical を踏んでいる (`postsFeed` / `profilePager`。
- * `SITE_SPEC.md` 6.3)。開閉の判定 (`isLightboxVisible()`) と介入対象を必ず同じ要素に
+ * ことでこのプロジェクトは 2 回 Critical を踏んでいる (`postsFeed` / `profilePager`)。
+ * 開閉の判定 (`isLightboxVisible()`) と介入対象を必ず同じ要素に
  * するため `querySelectorAll` + `getClientRects().length > 0` に揃え、同時に開く
  * ことがある投稿作成モーダルは `isLightboxDialog()` で除く
  * @param {string} selector ダイアログのセレクタ (EXT_CONFIG.lightboxPanel.dialogSelector など)
@@ -190,7 +190,7 @@ export function findVisibleLightboxDialog(selector) {
 			}
 		}
 	} catch (error) {
-		console.error('[Bluesky拡張] ライトボックスのダイアログの探索に失敗しました', error);
+		console.error('[XViewer] ライトボックスのダイアログの探索に失敗しました', error);
 	}
 	return null;
 }
@@ -201,7 +201,7 @@ export function findVisibleLightboxDialog(selector) {
  * **ライトボックスと投稿作成モーダルは同時に開く** (2026-09-09 実測)。
  * 投稿作成モーダルは中に data-testid="composePostView" を持つので、
  * それを含まない方がライトボックスである。**aria-label はロケール依存の
- * ため使わない** (開発メモ)。
+ * ため使わない**。
  * @param {Element|null} dialog 調べるダイアログ
  * @param {Object} config EXT_CONFIG.lightbox
  * @returns {boolean} 読めなければ false (掴まない側に倒す)
@@ -213,7 +213,7 @@ export function isLightboxDialog(dialog, config) {
 		}
 		return dialog.querySelector(config.composerSelector) === null;
 	} catch (error) {
-		console.error('[Bluesky拡張] ダイアログの判別に失敗しました', error);
+		console.error('[XViewer] ダイアログの判別に失敗しました', error);
 		return false;
 	}
 }
@@ -254,7 +254,7 @@ function notifyLightboxVisibility(visible) {
 		try {
 			callback(visible);
 		} catch (error) {
-			console.error('[Bluesky拡張] ライトボックス通知の購読者で失敗しました', error);
+			console.error('[XViewer] ライトボックス通知の購読者で失敗しました', error);
 		}
 	}
 }
@@ -294,7 +294,7 @@ function notifyTabStateChange() {
 		try {
 			callback();
 		} catch (error) {
-			console.error('[Bluesky拡張] タブ状態の購読者で失敗しました', error);
+			console.error('[XViewer] タブ状態の購読者で失敗しました', error);
 		}
 	}
 }
@@ -320,7 +320,7 @@ function isDomReadyForTabResolution() {
 		const navShell = document.querySelector(EXT_CONFIG.selectors.sideNav);
 		return tabCount > 0 && !!navShell;
 	} catch (error) {
-		console.error('[Bluesky拡張] DOM 準備状態の判定に失敗しました', error);
+		console.error('[XViewer] DOM 準備状態の判定に失敗しました', error);
 		return false;
 	}
 }
@@ -341,7 +341,7 @@ export function getSelectedTabIndex() {
 			}
 		}
 	} catch (error) {
-		console.error('[Bluesky拡張] 選択タブの判定に失敗しました', error);
+		console.error('[XViewer] 選択タブの判定に失敗しました', error);
 	}
 	return selectedTabIndex;
 }
@@ -366,7 +366,7 @@ function trackTabClicks() {
 					return;
 				}
 				// 押されたタブが属するタブバーの中で index を数える。document 全体で
-				// 数えると、SPA 遷移で残った前のプロフィールのタブが混ざる (SITE_SPEC.md 6.3)
+				// 数えると、SPA 遷移で残った前のプロフィールのタブが混ざる
 				const bar = tab.closest(EXT_CONFIG.selectors.pager);
 				const tabs = bar
 					? Array.from(bar.querySelectorAll(EXT_CONFIG.selectors.tab))
@@ -409,11 +409,11 @@ function trackTabClicks() {
 					}
 				}
 			} catch (error) {
-				console.error('[Bluesky拡張] タブ押下の追跡に失敗しました', error);
+				console.error('[XViewer] タブ押下の追跡に失敗しました', error);
 			}
 		}, true);
 	} catch (error) {
-		console.error('[Bluesky拡張] タブ押下の購読に失敗しました', error);
+		console.error('[XViewer] タブ押下の購読に失敗しました', error);
 	}
 }
 
@@ -487,13 +487,13 @@ async function resolveTabs(actor) {
 			return null;
 		}
 		if (domCount !== tabs.length) {
-			console.error('[Bluesky拡張] タブ構成が想定と違うため機能を無効にします',
+			console.error('[XViewer] タブ構成が想定と違うため機能を無効にします',
 				{算出: tabs.length, 実際: domCount});
 			return [];
 		}
 		return tabs;
 	} catch (error) {
-		console.error('[Bluesky拡張] タブ列の解決に失敗しました', error);
+		console.error('[XViewer] タブ列の解決に失敗しました', error);
 		return isTransientProfileFailure(null, error) ? TABS_RETRY_LATER : [];
 	}
 }
@@ -659,7 +659,7 @@ class NavButtonManager {
 			this.update();
 			document.body.appendChild(container);
 		} catch (error) {
-			console.error('[Bluesky拡張] ナビボタンの初期化に失敗しました', error);
+			console.error('[XViewer] ナビボタンの初期化に失敗しました', error);
 		}
 	}
 
@@ -717,7 +717,7 @@ class NavButtonManager {
 			this.scrollTopVisible = shouldShow;
 			this.scrollTopButton.classList.toggle(EXT_CONFIG.styles.hiddenClass, !shouldShow);
 		} catch (error) {
-			console.error('[Bluesky拡張] ページ先頭ボタンの更新に失敗しました', error);
+			console.error('[XViewer] ページ先頭ボタンの更新に失敗しました', error);
 		}
 	}
 
@@ -789,7 +789,7 @@ class NavButtonManager {
 
 			this.updateScrollTop();
 		} catch (error) {
-			console.error('[Bluesky拡張] ナビボタンの更新に失敗しました', error);
+			console.error('[XViewer] ナビボタンの更新に失敗しました', error);
 		}
 	}
 }
@@ -803,8 +803,8 @@ class NavButtonManager {
  * 発火しないため、href の比較だけでは検知できない。
  *
  * **かつては合図に history.state.lightbox の変化を使っていたが、Bluesky は
- * 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**
- * (SITE_SPEC.md 2.3)。ライトボックスを開いても URL は変わらないため、
+ * 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**。
+ * ライトボックスを開いても URL は変わらないため、
  * このままでは門番が二度と開かず onNavigate が呼ばれなくなる
  * (ライトボックス表示中もナビボタンが隠れない既知の不具合の原因。
  * 2026-09-09 に投稿情報パネルが出ないという形で再発して特定した)。
@@ -833,7 +833,7 @@ class NavigationObserver {
 			this.observer.observe(document.body, {childList: true, subtree: true});
 			window.addEventListener('popstate', () => this.handlePopState());
 		} catch (error) {
-			console.error('[Bluesky拡張] ナビゲーション監視の開始に失敗しました', error);
+			console.error('[XViewer] ナビゲーション監視の開始に失敗しました', error);
 		}
 	}
 
@@ -850,7 +850,7 @@ class NavigationObserver {
 			this.lastBodyChildren = document.body.childElementCount;
 			this.scheduleNavigate();
 		} catch (error) {
-			console.error('[Bluesky拡張] 戻る/進むの処理に失敗しました', error);
+			console.error('[XViewer] 戻る/進むの処理に失敗しました', error);
 		}
 	}
 
@@ -859,8 +859,8 @@ class NavigationObserver {
 	 * 1 回だけ onNavigate をスケジュールする。
 	 *
 	 * **かつては history.state.lightbox の変化を合図にしていたが、
-	 * Bluesky は 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**
-	 * (SITE_SPEC.md 2.3)。ライトボックスを開いても URL は変わらないため、
+	 * Bluesky は 2026-09-08 の実測でこのフラグを立てなくなり、常に false になった**。
+	 * ライトボックスを開いても URL は変わらないため、
 	 * 門番が二度と開かず onNavigate が走らない状態になっていた
 	 * (ライトボックス表示中もナビボタンが隠れない既知の不具合の原因。
 	 * 2026-09-09 に投稿情報パネルが出ないという形で再発して特定した)。
@@ -885,7 +885,7 @@ class NavigationObserver {
 			this.lastBodyChildren = bodyChildren;
 			this.scheduleNavigate();
 		} catch (error) {
-			console.error('[Bluesky拡張] ナビゲーション検知に失敗しました', error);
+			console.error('[XViewer] ナビゲーション検知に失敗しました', error);
 		}
 	}
 
@@ -923,7 +923,7 @@ export function isRenderedElement(element) {
  * (postsFeed を内包する)。そちらを監視すると実質 document.body を属性変化まで
  * 含めて監視することになるため、postsFeed を内包しない内側を優先する。
  * さらに SPA で別のプロフィールへ移ると前の画面のページャも矩形 0 のまま残る
- * (SITE_SPEC.md 6.3) ため、描画されていないものは選ばない
+ * ため、描画されていないものは選ばない
  * @param {ArrayLike<Element>} pagers ページャの候補 (文書順)
  * @param {string} feedSelector postsFeed のセレクタ
  * @returns {Element|null} 描画中のものが無ければ null
@@ -954,8 +954,8 @@ function findTabBar() {
 
 /**
  * 監視中のタブバーにあるタブ要素を返す。
- * document 全体から数えると、SPA 遷移で残った前のプロフィールのタブが混ざる
- * (SITE_SPEC.md 6.3)。描画中のタブバーは TabObserver が選んで持っているため、
+ * document 全体から数えると、SPA 遷移で残った前のプロフィールのタブが混ざる。
+ * 描画中のタブバーは TabObserver が選んで持っているため、
  * その中だけを数える。レイアウトを起こさないので高頻度の経路から呼んでよい
  * @returns {Element[]} 監視中のタブバーが無ければ空配列
  */
@@ -1001,7 +1001,7 @@ class TabObserver {
 			this.detach();
 			this.tryAttach();
 		} catch (error) {
-			console.error('[Bluesky拡張] タブ監視の開始に失敗しました', error);
+			console.error('[XViewer] タブ監視の開始に失敗しました', error);
 		}
 	}
 
@@ -1038,7 +1038,7 @@ class TabObserver {
 			});
 			this.check();
 		} catch (error) {
-			console.error('[Bluesky拡張] タブ監視の開始に失敗しました', error);
+			console.error('[XViewer] タブ監視の開始に失敗しました', error);
 		}
 	}
 
@@ -1148,7 +1148,7 @@ class TabObserver {
 			try {
 				this.onChange();
 			} catch (error) {
-				console.error('[Bluesky拡張] タブ変化の通知が失敗しました', error);
+				console.error('[XViewer] タブ変化の通知が失敗しました', error);
 			}
 		});
 	}
@@ -1218,7 +1218,7 @@ async function onNavigate() {
 		// scheduleTabsResolveRetry() の低頻度タイマーで再試行される
 		await ensureTabsResolved();
 	} catch (error) {
-		console.error('[Bluesky拡張] ページ遷移の処理に失敗しました', error);
+		console.error('[XViewer] ページ遷移の処理に失敗しました', error);
 	}
 }
 
@@ -1236,6 +1236,6 @@ export function main() {
 
 		onNavigate();
 	} catch (error) {
-		console.error('[Bluesky拡張] 初期化に失敗しました', error);
+		console.error('[XViewer] 初期化に失敗しました', error);
 	}
 }

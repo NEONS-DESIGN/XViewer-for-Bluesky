@@ -94,7 +94,7 @@ function extractAllMediaFromEmbed(embed, config) {
 
 		return [];
 	} catch (error) {
-		console.error('[Bluesky拡張] embed の解析に失敗しました', error);
+		console.error('[XViewer] embed の解析に失敗しました', error);
 		return [];
 	}
 }
@@ -178,7 +178,7 @@ export function toMediaEntries(feedItem, config) {
 			labels
 		}];
 	} catch (error) {
-		console.error('[Bluesky拡張] 投稿の変換に失敗しました', error);
+		console.error('[XViewer] 投稿の変換に失敗しました', error);
 		return [];
 	}
 }
@@ -208,7 +208,7 @@ export function parseAuthorFeed(json, config) {
 			cursor: typeof json.cursor === 'string' ? json.cursor : null
 		};
 	} catch (error) {
-		console.error('[Bluesky拡張] フィードの解析に失敗しました', error);
+		console.error('[XViewer] フィードの解析に失敗しました', error);
 		return {ok: false, entries: [], feedCount: 0, cursor: null};
 	}
 }
@@ -227,7 +227,7 @@ export function shouldBlur(entry, config) {
 		}
 		return entry.labels.some((label) => config.blurLabels.includes(label));
 	} catch (error) {
-		console.error('[Bluesky拡張] ラベル判定に失敗しました', error);
+		console.error('[XViewer] ラベル判定に失敗しました', error);
 		return false;
 	}
 }
@@ -293,7 +293,7 @@ export class MediaStore {
 			try {
 				listener(count);
 			} catch (error) {
-				console.error('[Bluesky拡張] 追加通知のリスナが失敗しました', error);
+				console.error('[XViewer] 追加通知のリスナが失敗しました', error);
 			}
 		}
 	}
@@ -442,7 +442,7 @@ export class MediaFetcher {
 			}
 		} catch (error) {
 			if (generation === this.generation) {
-				console.error('[Bluesky拡張] 取得に失敗しました', error);
+				console.error('[XViewer] 取得に失敗しました', error);
 				this.countError();
 			}
 		} finally {
@@ -452,7 +452,7 @@ export class MediaFetcher {
 					try {
 						this.onBatchEnd();
 					} catch (error) {
-						console.error('[Bluesky拡張] onBatchEnd が失敗しました', error);
+						console.error('[XViewer] onBatchEnd が失敗しました', error);
 					}
 				}
 			}

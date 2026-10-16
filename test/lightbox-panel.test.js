@@ -267,7 +267,7 @@ test('syncPostViewer: like を書き戻すと viewer.like / counts.like だけ�
 // 回帰テスト: raw (openComposer にそのまま渡す生の PostView) はトップレベルの
 // viewer / counts とは別に持っているため、syncPostViewer() が書き戻しを
 // 忘れると、パネルでいいねを付けた直後に同じ投稿を引用したとき composer に
-// 渡る raw が反映前の状態のままになる (2026-09-09 実機で発見。CHANGELOG.md [2.6.9])
+// 渡る raw が反映前の状態のままになる (2026-09-09 実機で発見)
 test('syncPostViewer: like を書き戻すと raw.viewer.like / raw.likeCount も更新され、raw.viewer.bookmarked は変わらない', () => {
 	const post = {
 		postUri: 'at://did:plc:abc/app.bsky.feed.post/3aaa',
@@ -348,7 +348,7 @@ test('syncPostViewer: 壊れた post を渡しても例外を投げない', () =
  * 別種の操作 (いいねとブックマークなど) が同時に飛行中になり得る。
  * syncPostViewer() が全フィールドをまるごと書き戻す実装だと、後から書き戻した
  * 側が先に書き戻した側の結果を消してしまう (2026-09-09、修正ラウンド 3 で
- * 見つかった Important。CHANGELOG.md [2.6.3])。runAction() が実際に組み立てる
+ * 見つかった Important)。runAction() が実際に組み立てる
  * 値の並び (toggleActionState() を種別ごとに重ねがけし、応答の順に
  * syncPostViewer() を呼ぶ) を再現し、両方の結果が残ることを確かめる。
  * この書き戻しが種別を無視して全フィールドを書く実装に戻ると、この

@@ -3,7 +3,7 @@
  *
  * **この拡張機能で唯一の書き込み機能。** 認証は Bluesky 本体が React context に
  * 持つ agent.fetchHandler を橋渡し (call-xrpc) 経由で借りるだけで、
- * localStorage の accessJwt には触らない (SITE_SPEC.md 5.2)。
+ * localStorage の accessJwt には触らない。
  *
  * **DOM を知らない。** 見た目は lightbox-panel.js が持つ。
  *
@@ -47,7 +47,7 @@ export function parseRecordUri(uri) {
 		}
 		return {did: matched[1], collection: matched[2], rkey: matched[3]};
 	} catch (error) {
-		console.error('[Bluesky拡張] レコード URI の解析に失敗しました', error);
+		console.error('[XViewer] レコード URI の解析に失敗しました', error);
 		return null;
 	}
 }

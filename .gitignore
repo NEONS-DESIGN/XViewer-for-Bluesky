@@ -1,3 +1,10 @@
+# 手元の作業文書 (README.md 以外の Markdown はリポジトリに含めない)
+*.md
+!README.md
+
+# ショートカット
+*.lnk
+
 # OS が作る一時ファイル
 Thumbs.db
 desktop.ini

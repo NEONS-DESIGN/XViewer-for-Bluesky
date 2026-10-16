@@ -23,7 +23,7 @@ const SETTINGS_TAB = TABS[0].id;
  * @returns {void}
  */
 function logError(message, ...details) {
-	console.error(`[Bluesky拡張] ${message}`, ...details);
+	console.error(`[XViewer] ${message}`, ...details);
 }
 
 /**

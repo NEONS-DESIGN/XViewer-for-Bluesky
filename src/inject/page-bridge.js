@@ -217,7 +217,7 @@ function openLightbox(payload) {
  * **走査結果をキャッシュしない。** React は状態が変わるたび Context の
  * value オブジェクトを作り直すため、lightboxControls と同じ要領で
  * 覚えておくと古い activeLightbox を返し続ける。実測で到達は 100 ノードなので
- * 毎回歩いて構わない (SITE_SPEC.md 7.3)。
+ * 毎回歩いて構わない。
  * @returns {{ok: boolean, open?: boolean, postUri?: string|null,
  *   postAuthorDid?: string|null, index?: number, count?: number, reason?: string}}
  */
@@ -661,6 +661,6 @@ if (typeof document !== 'undefined') {
 	try {
 		document.addEventListener(EXT_BRIDGE.requestEvent, handleRequest);
 	} catch (error) {
-		console.error('[Bluesky拡張] 橋渡しの起動に失敗しました', error);
+		console.error('[XViewer] 橋渡しの起動に失敗しました', error);
 	}
 }

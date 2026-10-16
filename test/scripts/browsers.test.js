@@ -20,7 +20,7 @@ test('知らない --target は投げる', () => {
 
 test('Firefox の manifest にだけ gecko の id が入る', () => {
 	const base = { manifest_version: 3, name: 'x' };
-	assert.strictEqual(BROWSER_TARGETS.firefox.buildManifest(base, '3.0.0').browser_specific_settings.gecko.id, 'bluesky-extension@neonsdesign.com');
+	assert.strictEqual(BROWSER_TARGETS.firefox.buildManifest(base, '3.0.0').browser_specific_settings.gecko.id, 'xviewer-bluesky@neonsdesign.com');
 	assert.strictEqual(BROWSER_TARGETS.chrome.buildManifest(base, '3.0.0').browser_specific_settings, undefined);
 	assert.strictEqual(BROWSER_TARGETS.chrome.buildManifest(base, '3.0.0').minimum_chrome_version, '120');
 });
