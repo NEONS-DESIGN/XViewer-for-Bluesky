@@ -13,6 +13,29 @@ test('EXT_VIEWS は 4 種のページ種別を持つ', () => {
 	});
 });
 
+/**
+ * 現在地のボタンだけを隠したときに、上から並ぶボタンのラベルを返す。
+ * @param {string} view 現在地 (EXT_VIEWS の値)
+ * @returns {string[]}
+ */
+function visibleNavLabels(view) {
+	return EXT_CONFIG.ui.navButtons
+		.filter((def) => def.view !== view)
+		.map((def) => def.text);
+}
+
+test('ナビボタンは投稿タブで「ビデオへ」が「メディアへ」の上に並ぶ', () => {
+	assert.deepStrictEqual(visibleNavLabels(EXT_VIEWS.POSTS), ['ビデオへ', 'メディアへ']);
+});
+
+test('ナビボタンはメディアタブで「メディアへ」があった位置に「投稿へ」が出る', () => {
+	assert.deepStrictEqual(visibleNavLabels(EXT_VIEWS.MEDIA), ['ビデオへ', '投稿へ']);
+	// 投稿タブとメディアタブを往復するボタンが、同じ段 (一番下) に来ること
+	const postsLabels = visibleNavLabels(EXT_VIEWS.POSTS);
+	const mediaLabels = visibleNavLabels(EXT_VIEWS.MEDIA);
+	assert.strictEqual(postsLabels.indexOf('メディアへ'), mediaLabels.indexOf('投稿へ'));
+});
+
 test('EXT_CONFIG は取得ペースの歯止めを既定値どおり持つ', () => {
 	const api = EXT_CONFIG.mediaGrid.api;
 	assert.strictEqual(api.limit, 100);

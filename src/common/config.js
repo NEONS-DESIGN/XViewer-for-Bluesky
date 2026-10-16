@@ -176,10 +176,14 @@ export const EXT_CONFIG = {
 		containerId: 'ext-nav-btn-container',
 		columnClass: 'ext-nav-btn-column',
 		buttonClass: 'ext-nav-btn',
-		/** 配列順がそのまま表示順になる */
+		/**
+		 * 配列順がそのまま表示順になる (上から)。
+		 * 「メディアへ」と「投稿へ」を隣り合わせて最後に置くことで、投稿タブの
+		 * 「メディアへ」とメディアタブの「投稿へ」が同じ段に出て、往復を同じ位置で押せる
+		 */
 		navButtons: [
-			{id: 'ext-nav-media', text: 'メディアへ', view: EXT_VIEWS.MEDIA},
 			{id: 'ext-nav-videos', text: 'ビデオへ', view: EXT_VIEWS.VIDEOS},
+			{id: 'ext-nav-media', text: 'メディアへ', view: EXT_VIEWS.MEDIA},
 			{id: 'ext-nav-posts', text: '投稿へ', view: EXT_VIEWS.POSTS}
 		],
 		scrollTopButton: {
