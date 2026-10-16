@@ -56,3 +56,17 @@ test('popup.html は tokens.css → popup.css → #app → module の順', () =>
 	assert.deepStrictEqual([...positions].sort((a, b) => a - b), positions);
 	assert.match(html, /<title>Blueskyカスタム拡張機能<\/title>/);
 });
+
+test('配色切替は汎用の button の枠と地をそのまま使う (XViewer for Pixiv と同じ見た目)', () => {
+	const toggle = readBlock(css, '.theme-toggle');
+	assert.ok(toggle, '.theme-toggle の規則が無い');
+	for (const key of ['border', 'border-width', 'border-style', 'border-radius', 'background', 'background-color']) {
+		assert.ok(!(key in toggle), `.theme-toggle が ${key} を打ち消している`);
+	}
+	const hover = readBlock(css, '.theme-toggle:hover');
+	assert.ok(hover && !('background' in hover), '.theme-toggle:hover が button:hover の地を打ち消している');
+	const button = readBlock(css, 'button');
+	assert.strictEqual(button.border, '1px solid var(--control-border)');
+	assert.strictEqual(button.background, 'var(--control-bg)');
+	assert.strictEqual(readBlock(css, 'button:hover').background, 'var(--control-hover)');
+});

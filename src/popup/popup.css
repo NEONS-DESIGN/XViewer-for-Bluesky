@@ -91,21 +91,19 @@ h1 {
 
 .theme-toggle {
 	/* 正方形のアイコンボタン。高さは他の操作部品と揃える。
-	   flex: none を落とさないこと。題名の長さに応じてボタンが縮み、右端の位置がずれる */
+	   flex: none を落とさないこと。題名の長さに応じてボタンが縮み、右端の位置がずれる。
+	   枠・角丸・地・ホバーの地は汎用の button の規則をそのまま使う (XViewer for Pixiv と同じ。
+	   ここで打ち消すと押せる部品に見えなくなる) */
 	display: inline-flex;
 	flex: none;
 	align-items: center;
 	justify-content: center;
 	width: 30px;
 	padding: 0;
-	border: 0;
-	border-radius: 6px;
-	background: transparent;
 	color: var(--muted);
 }
 
 .theme-toggle:hover {
-	background: var(--hover);
 	color: var(--fg);
 }
 
