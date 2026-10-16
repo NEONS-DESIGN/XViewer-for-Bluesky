@@ -271,7 +271,28 @@ function closeLightbox() {
 }
 
 /**
+ * 候補のうち、実際に描画されている (矩形の幅と高さがともに 0 より大きい) 最初の要素を返す。
+ * @param {ArrayLike<Element>} nodes 候補 (文書順)
+ * @returns {Element|null} 描画中のものが無ければ null
+ */
+export function pickRenderedElement(nodes) {
+	for (let i = 0; i < nodes.length; i += 1) {
+		try {
+			const rect = nodes[i].getBoundingClientRect();
+			if (rect.width > 0 && rect.height > 0) {
+				return nodes[i];
+			}
+		} catch (error) {
+			// 読めない要素は飛ばす
+		}
+	}
+	return null;
+}
+
+/**
  * プロフィールのタブを切り替える。
+ * SPA で別のプロフィールへ移ると前の画面のタブも矩形 0 のまま残り、同じ data-testid が
+ * 複数になる。素の querySelector は前の画面のタブを掴むことがあるため、描画中のものを押す
  * @param {{index: number}} payload
  * @returns {{ok: boolean, reason: string|null}}
  */
@@ -281,9 +302,9 @@ function switchTab(payload) {
 		if (typeof index !== 'number' || index < 0) {
 			return {ok: false, reason: 'invalid-payload'};
 		}
-		const tab = document.querySelector(
+		const tab = pickRenderedElement(document.querySelectorAll(
 			`[data-testid="${EXT_BRIDGE.tabTestIdPrefix}${index}"]`
-		);
+		));
 		if (!tab) {
 			return {ok: false, reason: 'no-tab'};
 		}

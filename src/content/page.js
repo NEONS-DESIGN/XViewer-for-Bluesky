@@ -309,12 +309,14 @@ function notifyTabStateChange() {
  * までは「まだ判定できない」として扱う。
  * 左ナビは「コンテナ (nav) 自体」の有無で見る。プロフィールリンクの有無
  * (sideNavProfileLink) で見ると、未ログインで恒久的にリンクが存在しない
- * ケースと、単にまだ描画されていないケースを区別できないため
+ * ケースと、単にまだ描画されていないケースを区別できないため。
+ * タブは描画中のタブバー (TabObserver が監視しているもの) の中だけを数える。
+ * SPA 遷移の直後は新しいタブバーがまだ矩形 0 で、監視が張られるまで待つ
  * @returns {boolean}
  */
 function isDomReadyForTabResolution() {
 	try {
-		const tabCount = document.querySelectorAll(EXT_CONFIG.selectors.tab).length;
+		const tabCount = getCurrentTabElements().length;
 		const navShell = document.querySelector(EXT_CONFIG.selectors.sideNav);
 		return tabCount > 0 && !!navShell;
 	} catch (error) {
@@ -332,7 +334,7 @@ function isDomReadyForTabResolution() {
 export function getSelectedTabIndex() {
 	try {
 		const underlineSelector = EXT_CONFIG.selectors.tabUnderline;
-		const tabs = document.querySelectorAll(EXT_CONFIG.selectors.tab);
+		const tabs = getCurrentTabElements();
 		for (let i = 0; i < tabs.length; i += 1) {
 			if (tabs[i].querySelector(underlineSelector)) {
 				return i;
@@ -356,13 +358,25 @@ function trackTabClicks() {
 	try {
 		document.addEventListener('click', (event) => {
 			try {
-				const tabs = document.querySelectorAll(EXT_CONFIG.selectors.tab);
+				const target = event.target;
+				const tab = target instanceof Element
+					? target.closest(EXT_CONFIG.selectors.tab)
+					: null;
+				if (!tab) {
+					return;
+				}
+				// 押されたタブが属するタブバーの中で index を数える。document 全体で
+				// 数えると、SPA 遷移で残った前のプロフィールのタブが混ざる (SITE_SPEC.md 6.3)
+				const bar = tab.closest(EXT_CONFIG.selectors.pager);
+				const tabs = bar
+					? Array.from(bar.querySelectorAll(EXT_CONFIG.selectors.tab))
+					: getCurrentTabElements();
 				for (let i = 0; i < tabs.length; i += 1) {
-					if (tabs[i].contains(event.target)) {
-						// タブバーが差し替わっていたら監視を張り直す (外れた要素の
-						// 監視は発火しないため、押下を合図にする)
+					if (tabs[i] === tab) {
+						// タブバーが差し替わっていたら監視を張り直す (外れた要素・
+						// 前の画面の要素の監視は発火しないため、押下を合図にする)
 						if (tabObserver) {
-							tabObserver.ensureAttached();
+							tabObserver.ensureAttached(bar);
 						}
 						if (i !== selectedTabIndex) {
 							// selectedTabIndex 自体はここで同期的に更新する
@@ -468,7 +482,7 @@ async function resolveTabs(actor) {
 		// 検算: 算出したタブ数が DOM と食い違うなら、別のタブを乗っ取る危険があるので起動しない。
 		// フェッチ待ちの間に DOM が変化した場合に備え、0 件はここでも「未確定」として扱う
 		// (実機で観測された Critical。フェッチ完了後もタブバーが未描画のことがあった)
-		const domCount = document.querySelectorAll(EXT_CONFIG.selectors.tab).length;
+		const domCount = getCurrentTabElements().length;
 		if (domCount === 0) {
 			return null;
 		}
@@ -889,24 +903,68 @@ class NavigationObserver {
 }
 
 /**
- * タブバー本体を探す。
- * `[data-testid="profilePager"]` はページ内に 2 個あり、素の querySelector は
- * ページ全体に相当する外側 (postsFeed を内包する) を返す (SITE_SPEC.md 6.3)。
- * そちらを監視すると実質 document.body を属性変化まで含めて監視することになる
- * ため、postsFeed を内包しない方 (タブバーそのもの) を選ぶ。
- * @returns {Element|null} 見つからなければ null
+ * 要素が実際に描画されているか (矩形の幅と高さがともに 0 より大きいか)。
+ * 読めない要素は描画されていないとみなす
+ * @param {Element|null} element
+ * @returns {boolean}
  */
-function findTabBar() {
-	const pagers = document.querySelectorAll(EXT_CONFIG.selectors.pager);
+export function isRenderedElement(element) {
+	try {
+		const rect = element.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
+ * ページャの候補から、表示中のタブバー本体を選ぶ。
+ * `[data-testid="profilePager"]` は 1 画面に 2 個あり、外側はページ全体に相当する
+ * (postsFeed を内包する)。そちらを監視すると実質 document.body を属性変化まで
+ * 含めて監視することになるため、postsFeed を内包しない内側を優先する。
+ * さらに SPA で別のプロフィールへ移ると前の画面のページャも矩形 0 のまま残る
+ * (SITE_SPEC.md 6.3) ため、描画されていないものは選ばない
+ * @param {ArrayLike<Element>} pagers ページャの候補 (文書順)
+ * @param {string} feedSelector postsFeed のセレクタ
+ * @returns {Element|null} 描画中のものが無ければ null
+ */
+export function pickTabBar(pagers, feedSelector) {
 	let fallback = null;
 	for (let i = 0; i < pagers.length; i += 1) {
-		if (!pagers[i].querySelector(EXT_CONFIG.selectors.feed)) {
+		if (!isRenderedElement(pagers[i])) {
+			continue;
+		}
+		if (!pagers[i].querySelector(feedSelector)) {
 			return pagers[i];
 		}
+		// 内側が無い構造になっていても、監視自体を諦めない (外側で従来どおり動く)
 		fallback = fallback || pagers[i];
 	}
-	// 内側が無い構造になっていても、監視自体を諦めない (外側で従来どおり動く)
 	return fallback;
+}
+
+/**
+ * 表示中のタブバー本体を探す。
+ * @returns {Element|null} 見つからなければ (まだ描画されていなければ) null
+ */
+function findTabBar() {
+	return pickTabBar(document.querySelectorAll(EXT_CONFIG.selectors.pager),
+		EXT_CONFIG.selectors.feed);
+}
+
+/**
+ * 監視中のタブバーにあるタブ要素を返す。
+ * document 全体から数えると、SPA 遷移で残った前のプロフィールのタブが混ざる
+ * (SITE_SPEC.md 6.3)。描画中のタブバーは TabObserver が選んで持っているため、
+ * その中だけを数える。レイアウトを起こさないので高頻度の経路から呼んでよい
+ * @returns {Element[]} 監視中のタブバーが無ければ空配列
+ */
+function getCurrentTabElements() {
+	const bar = tabObserver && tabObserver.pagerEl;
+	if (!bar || !bar.isConnected) {
+		return [];
+	}
+	return Array.from(bar.querySelectorAll(EXT_CONFIG.selectors.tab));
 }
 
 /**
@@ -1058,13 +1116,18 @@ class TabObserver {
 	}
 
 	/**
-	 * 監視中のタブバーが DOM から外れていたら張り直す。
-	 * 外れた要素の監視は二度と発火しないため、自力では気づけない。
+	 * 監視中のタブバーが DOM から外れていたら、または押されたタブが別のタブバーに
+	 * 属していたら張り直す。外れた要素や、SPA 遷移で残った前の画面の要素の監視は
+	 * 二度と発火しないため、自力では気づけない。
 	 * タブの押下 (trackTabClicks) のような軽い合図から呼ぶ
+	 * @param {Element|null} [pressedBar] 押されたタブが属するタブバー
 	 * @returns {void}
 	 */
-	ensureAttached() {
-		if (this.observer && this.pagerEl && !this.pagerEl.isConnected) {
+	ensureAttached(pressedBar) {
+		if (!this.observer || !this.pagerEl) {
+			return;
+		}
+		if (!this.pagerEl.isConnected || (pressedBar && pressedBar !== this.pagerEl)) {
 			this.attach();
 		}
 	}
