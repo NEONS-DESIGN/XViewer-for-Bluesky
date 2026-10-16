@@ -5,6 +5,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {EXT_CONFIG} from '../src/common/config.js';
 import {
@@ -205,4 +207,35 @@ test('isLightboxDialog: querySelector が投げても false を返す', () => {
 		}
 	};
 	assert.strictEqual(isLightboxDialog(broken, EXT_CONFIG.lightbox), false);
+});
+
+/**
+ * content.css から、選択子がちょうど一致するブロックの本文を返す。
+ * @param {string} css CSS 全文
+ * @param {string} selector 選択子 (そのままの文字)
+ * @returns {string|null} 見つからなければ null
+ */
+function readRuleBody(css, selector) {
+	const start = css.indexOf(selector + ' {');
+	if (start < 0) {
+		return null;
+	}
+	const open = css.indexOf('{', start);
+	return css.slice(open + 1, css.indexOf('}', open));
+}
+
+test('閉じるボタンと画像オプションを並べ替える CSS は目印の属性を起点にする', () => {
+	const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'content.css'), 'utf8');
+	const marker = `[${EXT_CONFIG.lightboxGuard.markerAttr}]`;
+	// ボタン 1 個だけを包む div。前の画像 / 次の画像は画像と同じ親にあるため含まれない
+	const chrome = `${marker} > [role="dialog"] > div > div:has(> button:only-child)`;
+	const closeBody = readRuleBody(css, `${chrome}:not(:has(~ div > button:only-child))`);
+	const menuBody = readRuleBody(css, `${chrome}:has(~ div > button:only-child)`);
+	assert.ok(closeBody, '閉じるボタンの規則が content.css に無い');
+	assert.ok(menuBody, '画像オプションの規則が content.css に無い');
+	for (const body of [closeBody, menuBody]) {
+		// 本体の right: 20px を打ち消さないと左右に引っ張られて幅が潰れる
+		assert.match(body, /right:\s*auto\s*!important/);
+		assert.match(body, /left:\s*[^;]+!important/);
+	}
 });

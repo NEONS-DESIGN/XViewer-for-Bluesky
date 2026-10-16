@@ -529,6 +529,40 @@
 }
 
 /*
+ * 閉じるボタン (x) を左上へ移し、画像オプション (縦の 3 点) をその右に並べる。
+ * 本体は画像オプションを左上 (left: 20px)、閉じるボタンを右上 (right: 20px) に
+ * 置いており、投稿情報パネルを畳むと閉じるボタンがパネルの開くボタンのすぐ隣に
+ * 来て押し間違えやすい。
+ *
+ * 2026-10-16 の実測と本体のソース (Lightbox.web.tsx) で、ダイアログの中の
+ * 1 段目の div の子は「画像 (送りボタンを含む) / ALT 文 (無いこともある) /
+ * 読み上げ用の div (複数枚のときだけ) / 画像オプション / 閉じるボタン /
+ * ページ送りの点 (複数枚のときだけ)」の順に並ぶ。画像オプションと閉じるボタンは
+ * どちらも「ボタン 1 個だけを包む div」で、DOM 順では画像オプションが先に来る。
+ * 送りボタンは画像と同じ親に入るため only-child にならず、ここには掛からない。
+ * **本体のクラス名・ロケール依存の aria-label には依存しない。**
+ * 本体 DOM には触らず、目印を外せば元の位置に戻る
+ */
+[data-bsky-ext-lightbox] {
+	/* 本体と同じ余白・ボタンの大きさ (実測 44x44)・ボタン同士の間隔 */
+	--ext-lb-chrome-offset: 20px;
+	--ext-lb-chrome-size: 44px;
+	--ext-lb-chrome-gap: 8px;
+}
+
+/* 閉じるボタン: 後ろにボタン 1 個だけの div が無いもの */
+[data-bsky-ext-lightbox] > [role="dialog"] > div > div:has(> button:only-child):not(:has(~ div > button:only-child)) {
+	left: var(--ext-lb-chrome-offset) !important;
+	right: auto !important;
+}
+
+/* 画像オプション: 後ろにボタン 1 個だけの div (閉じるボタン) が続くもの */
+[data-bsky-ext-lightbox] > [role="dialog"] > div > div:has(> button:only-child):has(~ div > button:only-child) {
+	left: calc(var(--ext-lb-chrome-offset) + var(--ext-lb-chrome-size) + var(--ext-lb-chrome-gap)) !important;
+	right: auto !important;
+}
+
+/*
  * 投稿作成モーダルを画像ライトボックスの上に出す。
  *
  * 2026-09-09 の実測: 両者は同じスタッキングコンテキストの兄弟で、
