@@ -7,6 +7,11 @@ Firefox (140 以上) に対応する。
 
 Bluesky 公式の拡張機能ではなく、Bluesky Social PBC とは関係が無い。
 
+- 紹介サイト: https://xvbluesky.neonsdesign.com/ (日本語 / 英語。ソースは `site/`)
+- 配布: [GitHub Releases](https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest)
+  の zip (Chrome 系向けにビルドした `dist/`)。展開したフォルダを「パッケージ化されていない
+  拡張機能を読み込む」で指定する
+
 ## 機能
 
 1. **ナビゲーションボタン** — プロフィールページの右下に
@@ -96,6 +101,7 @@ npm run build
 | `npm test` | 自動テスト |
 | `npm run build:symbols` | `src/common/icon-shapes.js` を Material Symbols から生成する |
 | `npm run build:icons` | 拡張機能アイコンの PNG を生成する |
+| `npm run build:site-langs` | 紹介サイトの全ページの言語の一覧 (hreflang / 言語メニュー / フッター) と `site/sitemap.xml` を `scripts/site-langs.mjs` の表から書き直す |
 
 ## 自動テスト
 
@@ -117,6 +123,17 @@ DOM 操作・本体レイアウトへの介入・橋渡しは実機の bsky.app 
 `npm run build:symbols` が `@material-symbols/svg-400` から生成する。
 
 どちらの生成物もコミットしてあり、通常の `npm run build` では生成しない。
+
+## 紹介サイト
+
+`site/` はビルド工程を持たない静的なページで、置いたファイルがそのまま配信される。
+`main` へ push したときに `site/` かワークフローが変わっていれば、
+`.github/workflows/pages.yml` が `site/` の中身だけを GitHub Pages へ公開する。
+手元では `python -m http.server --directory site` などで配信して確かめる。
+(`file://` で開くと `en/` が `en/index.html` に解決されない)
+
+言語の一覧は各ページに直書きせず、`npm run build:site-langs` で書き直す。
+目印 (`<!-- lang:head -->` など) を消さないこと。ずれは `test/scripts/site-langs.test.js` が落とす。
 
 ## 姉妹プロジェクト
 

@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>XViewer for Bluesky - Bluesky のメディアを X のように見るブラウザ拡張機能</title>
+<meta name="description" content="Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能です。Chrome / Brave / Edge に対応しています。">
+<!-- lang:head -->
+<link rel="canonical" href="https://xvbluesky.neonsdesign.com/">
+<link rel="alternate" hreflang="ja" href="https://xvbluesky.neonsdesign.com/">
+<link rel="alternate" hreflang="en" href="https://xvbluesky.neonsdesign.com/en/">
+<link rel="alternate" hreflang="x-default" href="https://xvbluesky.neonsdesign.com/">
+<!-- /lang:head -->
+<link rel="icon" href="assets/img/icon-32.png" sizes="32x32">
+<link rel="icon" href="assets/img/icon-128.png" sizes="128x128">
+<link rel="apple-touch-icon" href="assets/img/icon-128.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="XViewer for Bluesky">
+<meta property="og:title" content="XViewer for Bluesky">
+<meta property="og:description" content="Bluesky のメディアタブをサムネイルの格子にし、画像を開いたまま投稿情報の確認や返信・いいねができるブラウザ拡張機能。Chrome / Brave / Edge に対応。">
+<meta property="og:url" content="https://xvbluesky.neonsdesign.com/">
+<meta property="og:image" content="https://xvbluesky.neonsdesign.com/assets/img/og-lightbox.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1920">
+<meta property="og:image:height" content="917">
+<meta property="og:image:alt" content="Bluesky の画像がライトボックスで開き、右側のパネルに作者・本文・投稿日時・反応数と返信・リポスト・いいね・ブックマークのボタンが並んでいる画面">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="assets/style.css">
+<script>
+	/* 描画前に配色をあてて、切り替え時のちらつきを防ぐ */
+	(function () {
+		/* JS が動く印。先頭へ戻るボタンを描画前から隠しておくのに使う (style.css) */
+		document.documentElement.setAttribute('data-js', '');
+		try {
+			var saved = window.localStorage.getItem('xvbluesky-site-theme');
+			if (saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
+		} catch (error) {
+			/* 保存領域が使えなくても OS の設定で描ける */
+		}
+	})();
+</script>
+<script src="assets/site.js" defer></script>
+<script type="application/ld+json">
+{
+	"@context": "https://schema.org",
+	"@graph": [
+		{
+			"@type": "WebSite",
+			"url": "https://xvbluesky.neonsdesign.com/",
+			"name": "XViewer for Bluesky",
+			"inLanguage": "ja",
+			"description": "Bluesky のプロフィールのメディアをサムネイルの格子で一覧でき、画像を開いたまま投稿情報の確認や返信・いいねができるブラウザ拡張機能の紹介サイト。"
+		},
+		{
+			"@type": "SoftwareApplication",
+			"name": "XViewer for Bluesky",
+			"url": "https://xvbluesky.neonsdesign.com/",
+			"downloadUrl": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest",
+			"applicationCategory": "BrowserApplication",
+			"operatingSystem": "Windows, macOS, Linux, ChromeOS",
+			"softwareRequirements": "Chrome 120 以上の Chromium 系ブラウザ (Chrome / Brave / Edge)",
+			"inLanguage": "ja",
+			"description": "Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能。",
+			"isAccessibleForFree": true,
+			"license": "https://opensource.org/licenses/MIT",
+			"sameAs": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky",
+			"offers": {
+				"@type": "Offer",
+				"price": "0",
+				"priceCurrency": "JPY"
+			},
+			"screenshot": [
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-lightbox.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-grid.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-panel.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-popup.webp"
+			],
+			"featureList": [
+				"プロフィールのメディアタブを正方形のサムネイルの格子に置き換える",
+				"画像を開いたとき、右側に本文・投稿日時・作者・反応数を表示する",
+				"画像を開いたまま返信・リポスト・引用・いいね・ブックマークを行う",
+				"画像そのものを押してもライトボックスを閉じない",
+				"プロフィールのタブを行き来する固定ボタンを表示する",
+				"メディアの格子のタイルに掛かる NSFW のぼかしを外す (任意)"
+			]
+		}
+	]
+}
+</script>
+</head>
+<body id="top">
+
+<a class="skip-link" href="#main">本文へ移動</a>
+
+<!-- アイコンの図形。出典は Material Symbols (Apache-2.0)。フッターに表示している -->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+	<defs>
+		<symbol id="i-open" viewBox="0 -960 960 960"><path d="M180-120q-24 0-42-18t-18-42v-600q0-24 18-42t42-18h249q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H180v600h600v-249q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v249q0 24-18 42t-42 18H180Zm600-617L403-360q-9 9-21 8.5t-21-9.5q-9-9-9-21t9-21l377-377H549q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h261q12.75 0 21.38 8.62Q840-822.75 840-810v261q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63-8.5-8.62-8.5-21.37v-188Z"/></symbol>
+		<symbol id="i-download" viewBox="0 -960 960 960"><path d="M469-327q-5-2-10-7L308-485q-9-9.27-8.5-21.64.5-12.36 9.11-21.36 9.39-9 21.89-9t21.5 9l98 99v-341q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v341l99-99q8.8-9 20.9-8.5 12.1.5 21.49 9.5 8.61 9 8.61 21.5t-9 21.5L501-334q-5 5-10.13 7-5.14 2-11 2-5.87 0-10.87-2ZM220-160q-24 0-42-18t-18-42v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113h520v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113q0 24-18 42t-42 18H220Z"/></symbol>
+		<symbol id="i-grid" viewBox="0 -960 960 960"><path d="M180-510q-24.75 0-42.37-17.63Q120-545.25 120-570v-210q0-24.75 17.63-42.38Q155.25-840 180-840h210q24.75 0 42.38 17.62Q450-804.75 450-780v210q0 24.75-17.62 42.37Q414.75-510 390-510H180Zm0 390q-24.75 0-42.37-17.63Q120-155.25 120-180v-210q0-24.75 17.63-42.38Q155.25-450 180-450h210q24.75 0 42.38 17.62Q450-414.75 450-390v210q0 24.75-17.62 42.37Q414.75-120 390-120H180Zm390-390q-24.75 0-42.37-17.63Q510-545.25 510-570v-210q0-24.75 17.63-42.38Q545.25-840 570-840h210q24.75 0 42.38 17.62Q840-804.75 840-780v210q0 24.75-17.62 42.37Q804.75-510 780-510H570Zm0 390q-24.75 0-42.37-17.63Q510-155.25 510-180v-210q0-24.75 17.63-42.38Q545.25-450 570-450h210q24.75 0 42.38 17.62Q840-414.75 840-390v210q0 24.75-17.62 42.37Q804.75-120 780-120H570Z"/></symbol>
+		<symbol id="i-article" viewBox="0 -960 960 960"><path d="M180-120q-24 0-42-18t-18-42v-600q0-24 18-42t42-18h600q24 0 42 18t18 42v600q0 24-18 42t-42 18H180Zm127-159h215q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Zm0-171h346q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Zm0-171h346q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Z"/></symbol>
+		<symbol id="i-like" viewBox="0 -960 960 960"><path d="M458-144q-11-4-19-12l-53-49Q262-320 171-424.5T80-643q0-90 60.5-150.5T290-854q51 0 101 24.5t89 80.5q44-56 91-80.5t99-24.5q89 0 149.5 60.5T880-643q0 114-91 218.5T574-205l-53 49q-8 8-19 12t-22 4q-11 0-22-4Z"/></symbol>
+		<symbol id="i-click" viewBox="0 -960 960 960"><path d="M480-660q-75 0-127.5 52.5T300-480q0 57 32.5 103.5T419-311q13 5 20 16t3 24q-3 11-12.5 17.5T409-250q-76-23-122.5-87T240-480q0-100 70-170t170-70q79 0 142.5 46.5T709-551q3 11-3 20.5T689-518q-13 4-24-3t-16-20q-19-54-65.5-86.5T480-660Zm0-160q-142 0-241 99t-99 241q0 141 94.5 236T468-141q13 1 21.5 10t8.5 22q0 12-9 20t-21 8q-81-2-151.5-34t-123-86q-52.5-54-83-126T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q163 0 278.5 112.5T879-492q0 12-8 20t-20 9q-13 1-22-7.5T819-492q-10-140-103-234t-236-94Zm302 720L650-231l-35 106q-4 11-15 10.5T586-126l-98-327q-2-9 4-15t15-4l327 98q11 3 11.5 14T835-345l-106 35 132 132q17 17 17 39t-17 39q-17 17-39.5 17T782-100Z"/></symbol>
+		<symbol id="i-swap" viewBox="0 -960 960 960"><path d="M331.5-458.5Q323-467 323-480v-286L223-666q-9 9-21 9t-21-9q-9-9-9-21t9-21l151-151q5-5 10-7t11-2q6 0 11 2t10 7l151 151q9 9 9 21t-9 21q-9 9-21 9t-21-9L383-766v286q0 13-8.5 21.5T353-450q-13 0-21.5-8.5ZM596-94q-5-2-10-7L435-252q-9-9-9-21t9-21q9-9 21-9t21 9l100 100v-286q0-13 8.5-21.5T607-510q13 0 21.5 8.5T637-480v286l100-100q9-9 21-9t21 9q9 9 9 21t-9 21L628-101q-5 5-10 7t-11 2q-6 0-11-2Z"/></symbol>
+		<symbol id="i-eye" viewBox="0 -960 960 960"><path d="M600.5-379.62q49.5-49.62 49.5-120.5T600.38-620.5Q550.76-670 479.88-670T359.5-620.38Q310-570.76 310-499.88t49.62 120.38q49.62 49.5 120.5 49.5t120.38-49.62Zm-200-41.12q-32.5-32.73-32.5-79.5 0-46.76 32.74-79.26 32.73-32.5 79.5-32.5 46.76 0 79.26 32.74 32.5 32.73 32.5 79.5 0 46.76-32.74 79.26-32.73 32.5-79.5 32.5-46.76 0-79.26-32.74ZM234.5-276Q124-352 57-470q-4-7.13-6-14.65-2-7.52-2-15.43 0-7.92 2-15.38 2-7.47 6-14.54 67-118 177.5-194T480-800q135 0 245.5 76T903-530q4 7.12 6 14.65 2 7.52 2 15.43 0 7.92-2 15.38-2 7.47-6 14.54-67 118-177.5 194T480-200q-135 0-245.5-76Z"/></symbol>
+		<symbol id="i-refresh" viewBox="0 -960 960 960"><path d="M480-160q-133 0-226.5-93.5T160-480q0-133 93.5-226.5T480-800q85 0 149 34.5T740-671v-99q0-13 8.5-21.5T770-800q13 0 21.5 8.5T800-770v194q0 13-8.5 21.5T770-546H576q-13 0-21.5-8.5T546-576q0-13 8.5-21.5T576-606h138q-38-60-97-97t-137-37q-109 0-184.5 75.5T220-480q0 109 75.5 184.5T480-220q75 0 140-39.5T717-366q5-11 16.5-16.5t22.5-.5q12 5 16 16.5t-1 23.5q-39 84-117.5 133.5T480-160Z"/></symbol>
+		<symbol id="i-code" viewBox="0 -960 960 960"><path d="M140-160q-24 0-42-18t-18-42v-520q0-24 18-42t42-18h680q24 0 42 18t18 42v520q0 24-18 42t-42 18H140Zm0-60h680v-436H140v436Zm221-218-83-83q-9-9-8.5-21t9.5-21q9-9 21-9t21 9l104 104q9 9 9 21t-9 21L321-313q-9 9-21 9t-21-9q-9-9-9-21t9-21l82-83Zm159 150q-13 0-21.5-8.5T490-318q0-13 8.5-21.5T520-348h160q13 0 21.5 8.5T710-318q0 13-8.5 21.5T680-288H520Z"/></symbol>
+		<symbol id="i-dark" viewBox="0 -960 960 960"><path d="M480-120q-150 0-255-105T120-480q0-135 79.5-229T408-830q20-5 34-1t22 15q8 10 7.5 25t-8.5 35q-9 23-14 47t-5 49q0 90 63 153t153 63q25 0 48.5-4.5T754-461q22-8 38-7t26 9q10 8 13 23t-2 36q-27 121-121 200.5T480-120Z"/></symbol>
+		<symbol id="i-light" viewBox="0 -960 960 960"><path d="M338.5-338.5Q280-397 280-480t58.5-141.5Q397-680 480-680t141.5 58.5Q680-563 680-480t-58.5 141.5Q563-280 480-280t-141.5-58.5ZM70-450q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32Q57.25-510 70-510h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H70Zm720 0q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H790ZM458.5-768.63Q450-777.25 450-790v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63Zm0 720Q450-57.25 450-70v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM240-678l-57-56q-9-9-8.63-21.6.37-12.61 8.53-21.5 8.89-8.9 21.5-8.9 12.6 0 21.6 9l56 57q8 9 8 21t-8 20.5q-8 8.5-20.5 8.5t-21.5-8Zm494 495-56-57q-8-9-8-21.38 0-12.37 8.5-20.62 8.5-9 20.5-9t21 9l57 56q9 9 8.63 21.6-.37 12.61-8.53 21.5-8.89 8.9-21.5 8.9-12.6 0-21.6-9Zm-56-495q-9-9-9-21t9-21l56-57q9-9 21.6-8.63 12.61.37 21.5 8.53 8.9 8.89 8.9 21.5 0 12.6-9 21.6l-57 56q-8 8-20.36 8-12.37 0-21.64-8ZM182.9-182.9q-8.9-8.89-8.9-21.5 0-12.6 9-21.6l57-56q8.8-9 20.9-9 12.1 0 20.71 9 9.39 9 9.39 21t-9 21l-56 57q-9 9-21.6 8.63-12.61-.37-21.5-8.53Z"/></symbol>
+		<symbol id="i-caret" viewBox="0 -960 960 960"><path d="M469-358q-5-2-10-7L261-563q-9-9-8.5-21.5T262-606q9-9 21.5-9t21.5 9l175 176 176-176q9-9 21-8.5t21 9.5q9 9 9 21.5t-9 21.5L501-365q-5 5-10 7t-11 2q-6 0-11-2Z"/></symbol>
+	</defs>
+</svg>
+
+<header class="site-header">
+	<div class="wrap">
+		<a class="brand" href="./">
+			<img src="assets/img/icon-128.png" alt="" width="28" height="28">
+			<span>XViewer for Bluesky</span>
+		</a>
+		<nav class="site-nav" aria-label="ページ内の移動">
+			<a href="#features">機能</a>
+			<a href="#install">導入</a>
+			<a href="#settings">設定</a>
+			<a href="#requirements">動作環境</a>
+			<a href="privacy.html">プライバシー</a>
+		</nav>
+		<div class="header-tools">
+			<!-- lang:menu -->
+			<details class="lang-menu">
+				<summary>
+					<svg class="lang-menu-globe" viewBox="0 -960 960 960" aria-hidden="true"><path d="M323-111.5Q250-143 196-197t-85-127.5Q80-398 80-482t31-156.5Q142-711 196-765t127-84.5Q396-880 480-880t157 30.5Q710-819 764-765t85 126.5Q880-566 880-482t-31 157.5Q818-251 764-197t-127 85.5Q564-80 480-80t-157-31.5ZM480-138q35-36 58.5-82.5T577-331H384q14 60 37.5 108t58.5 85Zm-85-12q-25-38-43-82t-30-99H172q38 71 88 111.5T395-150Zm171-1q72-23 129.5-69T788-331H639q-13 54-30.5 98T566-151ZM152-391h159q-3-27-3.5-48.5T307-482q0-25 1-44.5t4-43.5H152q-7 24-9.5 43t-2.5 45q0 26 2.5 46.5T152-391Zm221 0h215q4-31 5-50.5t1-40.5q0-20-1-38.5t-5-49.5H373q-4 31-5 49.5t-1 38.5q0 21 1 40.5t5 50.5Zm275 0h160q7-24 9.5-44.5T820-482q0-26-2.5-45t-9.5-43H649q3 35 4 53.5t1 34.5q0 22-1.5 41.5T648-391Zm-10-239h150q-33-69-90.5-115T565-810q25 37 42.5 80T638-630Zm-254 0h194q-11-53-37-102.5T480-820q-32 27-54 71t-42 119Zm-212 0h151q11-54 28-96.5t43-82.5q-75 19-131 64t-91 115Z"/></svg>
+					<span class="visually-hidden">表示言語: </span><span>日本語</span>
+					<svg class="lang-menu-caret" viewBox="0 -960 960 960" aria-hidden="true"><path d="M469-358q-5-2-10-7L261-563q-9-9-8.5-21.5T262-606q9-9 21.5-9t21.5 9l175 176 176-176q9-9 21-8.5t21 9.5q9 9 9 21.5t-9 21.5L501-365q-5 5-10 7t-11 2q-6 0-11-2Z"/></svg>
+				</summary>
+				<ul class="lang-menu-list">
+					<li><a href="./" hreflang="ja" lang="ja" aria-current="true">日本語</a></li>
+					<li><a href="en/" hreflang="en" lang="en">English</a></li>
+				</ul>
+			</details>
+			<!-- /lang:menu -->
+			<button type="button" class="theme-toggle" aria-label="配色をライトに切り替える"
+				data-label-light="配色をライトに切り替える" data-label-dark="配色をダークに切り替える">
+				<svg class="icon-moon" aria-hidden="true"><use href="#i-dark"></use></svg>
+				<svg class="icon-sun" aria-hidden="true"><use href="#i-light"></use></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+
+	<section class="hero">
+		<div class="wrap">
+			<p class="eyebrow">Chrome / Brave / Edge 対応</p>
+			<h1><span class="brand-bluesky">Bluesky</span> のメディアを、<wbr><span class="brand-x">X</span> のように見る。</h1>
+			<p class="lede">
+				プロフィールのメディアタブが、正方形のサムネイルを並べた格子に変わります。
+				画像を開けば右側に本文・投稿日時・反応数が並び、そのまま返信・リポスト・いいね・ブックマークまでできます。
+				画像そのものを押しても閉じないので、見ている途中で一覧へ戻されることもありません。
+			</p>
+			<div class="cta-row">
+				<a class="btn btn-primary" href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest" target="_blank" rel="noopener">
+					<svg aria-hidden="true"><use href="#i-download"></use></svg>
+					GitHub Releases からダウンロード
+				</a>
+				<a class="btn btn-secondary" href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky" target="_blank" rel="noopener">
+					<svg aria-hidden="true"><use href="#i-open"></use></svg>
+					GitHub で見る
+				</a>
+			</div>
+			<p class="cta-note">ストアでの配布はまだありません。zip から読み込む手順は <a href="#install">導入</a> にあります。</p>
+			<div class="hero-shot">
+				<img src="assets/img/shot-lightbox.webp" width="1920" height="917" fetchpriority="high" decoding="async"
+					alt="Bluesky の画像がライトボックスで開き、右側のパネルに作者・本文・投稿日時・反応数と返信・リポスト・いいね・ブックマークのボタンが並んでいる画面。閉じるボタンと画像オプションは左上にある">
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="features">
+		<div class="wrap">
+			<div class="section-head center">
+				<h2>一覧も、反応も、その場で</h2>
+				<p>画像を 1 枚ずつ開いては戻り、投稿を確かめるたびに別の画面へ移る。その往復を減らすための拡張機能です。</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-grid"></use></svg></span>メディアを格子で一覧</h3>
+					<p>プロフィールのメディアタブを、正方形のサムネイルを 3 列に並べた格子に置き換えます。1 投稿につき 1 枚で、複数枚の投稿は先頭の画像にアイコンを付けます。動画はビデオタブに任せて並べません。下までスクロールすると続きを読み込みます。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-article"></use></svg></span>投稿情報のパネル</h3>
+					<p>画像を開くと、右側に作者・本文・投稿日時・反応数と「投稿を開く」が並びます。格子に限らず、Bluesky のどこで画像を開いても出ます。本文のリンク・メンション・ハッシュタグも押せます。パネルは畳めます。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-like"></use></svg></span>開いたまま反応する</h3>
+					<p>返信・リポスト・引用・いいね・ブックマークを、画像を閉じずに行えます。押した瞬間に表示が変わり、失敗したときは元に戻して知らせます。認証は Bluesky 本体のものをそのまま使い、ログイン情報には触れません。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-click"></use></svg></span>画像を押しても閉じない</h3>
+					<p>画像そのものを押してもライトボックスを閉じず、押せるボタンの上でだけカーソルが指の形になります。周りの暗い部分を押せば今までどおり閉じます。閉じるボタンは左上に移し、画像オプションをその右に並べます。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-swap"></use></svg></span>タブを行き来するボタン</h3>
+					<p>プロフィールの右下に「ビデオへ / メディアへ / 投稿へ / ページ先頭へ」のボタンを出します。今いるタブのボタンは隠れ、スクロールすると「ページ先頭へ」が出ます。ボタンの位置は変わらないので、同じ場所を押して往復できます。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-eye"></use></svg></span>ぼかしを外す (任意)</h3>
+					<p>設定で有効にすると、格子のタイルに掛かる NSFW のぼかしと警告文を外し、1 回押すだけで開けるようにします。対象は格子のタイルだけで、Bluesky 本体が出す警告には触れません。既定ではオフです。</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="screens">
+		<div class="wrap">
+			<div class="showcase">
+				<div class="showcase-text">
+					<h3>メディアタブを、見渡せる格子に</h3>
+					<p>
+						Bluesky の公開 API から取得した投稿をもとに、画像の付いた投稿を 1 枚ずつ正方形のタイルに並べます。
+						タイルを押すと Bluesky 本体のライトボックスで開くので、拡大や画像の送りは本体と同じ操作です。
+					</p>
+					<ul class="feature-list">
+						<li>続きの取得は下までスクロールしたときだけです。先読みはしません</li>
+						<li>別のアカウントへ移ると、前のアカウントの画像は残りません</li>
+						<li>ラベルの付いた画像は、本体と同じくぼかして表示します。(設定で外せます)</li>
+						<li>投稿タブへ戻れば、いつもの Bluesky の表示に戻ります</li>
+					</ul>
+				</div>
+				<figure>
+					<img src="assets/img/shot-grid.webp" loading="lazy" decoding="async" width="1200" height="796"
+						alt="Bluesky のプロフィールのメディアタブに、正方形のサムネイルが 3 列の格子で並んでいる画面">
+				</figure>
+			</div>
+
+			<div class="showcase reverse">
+				<div class="showcase-text">
+					<h3>画像の横に、投稿の中身を</h3>
+					<p>
+						パネルには作者・本文・投稿日時と、返信・リポスト・いいねの数が並びます。
+						その下のボタンから、画像を開いたまま反応できます。ボタンは種類ごとに色が付き、反応済みの投稿は最初から色が付いて表示されます。
+					</p>
+					<ul class="feature-list">
+						<li>リポストのボタンを押すとメニューが開き、リポストと引用を選べます</li>
+						<li>返信と引用は、Bluesky 本体の投稿画面をライトボックスの上に開きます</li>
+						<li>ログインしていないときは、操作のボタンを出しません</li>
+						<li>「投稿を開く」で、ページを再読み込みせずに投稿の画面へ移ります</li>
+					</ul>
+				</div>
+				<figure class="compact">
+					<img src="assets/img/shot-panel.webp" loading="lazy" decoding="async" width="380" height="400"
+						alt="投稿情報パネルの拡大。作者のアイコンと名前、本文、投稿日時、返信・リポスト・いいねの数とブックマークのボタン、「投稿を開く」のボタンが並んでいる">
+				</figure>
+			</div>
+
+			<div class="showcase">
+				<div class="showcase-text">
+					<h3>拡張機能の設定は、ポップアップから</h3>
+					<p>
+						ツールバーのアイコンから開きます。メディアグリッド、ライトボックス、開発者向けの 3 つに分けて、機能ごとにスイッチでオンとオフを切り替えられます。
+					</p>
+					<ul class="feature-list">
+						<li>変更は、ページを再読み込みせずにその場で反映されます</li>
+						<li>関係する項目は親子にまとめてあり、親がオフの間は子を操作できません</li>
+						<li>ポップアップの配色はダークとライトを切り替えられます。既定は OS の設定に従います</li>
+						<li>「設定を初期化」で、確認のうえすべての設定を既定に戻せます</li>
+					</ul>
+				</div>
+				<figure class="portrait">
+					<img src="assets/img/shot-popup.webp" loading="lazy" decoding="async" width="480" height="1239"
+						alt="拡張機能の設定ポップアップ。メディアグリッド、ライトボックス、開発者向けの区分にスイッチが並び、末尾に設定の初期化ボタンがある">
+				</figure>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="install">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>導入</h2>
+				<p>ストアでの配布はまだありません。GitHub Releases の zip を、ブラウザの拡張機能の画面から読み込んでください。</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-download"></use></svg></span>Chrome / Brave / Edge</h3>
+					<ol class="steps">
+						<li><a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> から <code>XViewer.for.Bluesky_版.zip</code> をダウンロードして展開する</li>
+						<li><code>chrome://extensions</code> を開き、右上の「デベロッパーモード」をオンにする (Brave は <code>brave://extensions</code>、Edge は <code>edge://extensions</code>)</li>
+						<li>「パッケージ化されていない拡張機能を読み込む」を押し、展開したフォルダを選ぶ</li>
+						<li>開いている bsky.app のタブを再読み込みする</li>
+					</ol>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-refresh"></use></svg></span>新しい版にするとき</h3>
+					<ol class="steps">
+						<li>新しい版の zip を、前の版と同じフォルダへ上書きで展開する</li>
+						<li>拡張機能の画面で、XViewer for Bluesky のカードの再読み込みボタンを押す</li>
+						<li>bsky.app のタブを再読み込みする</li>
+					</ol>
+					<p class="card-note">展開したフォルダを消すと、拡張機能も読み込めなくなります。消さずに置いておいてください。</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-code"></use></svg></span>Firefox (試験的)</h3>
+					<ol class="steps">
+						<li>ソースを取得し、Node.js 24.2 以上で <code>npm install</code> と <code>npm run build</code> を走らせる</li>
+						<li><code>about:debugging</code> を開き、「この Firefox」を選ぶ</li>
+						<li>「一時的なアドオンを読み込む」で <code>dist-firefox/manifest.json</code> を選ぶ</li>
+					</ol>
+					<p class="card-note">一時的なアドオンは、Firefox を閉じると外れます。Firefox での動作はまだ十分に確かめていません。</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="settings">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>設定でできること</h2>
+				<p>すべてツールバーのポップアップから変更できます。字下げした項目は上の項目の子で、親の項目がオフの間は操作できません。(子の設定は保たれ、親をオンに戻すと元の状態に戻ります) 設定はブラウザの同期領域に保存され、外部には送信されません。</p>
+			</div>
+			<div class="table-scroll">
+				<table>
+					<thead>
+						<tr>
+							<th scope="col">区分</th>
+							<th scope="col">項目</th>
+							<th scope="col">既定</th>
+							<th scope="col">効果</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>メディアグリッド</td>
+							<td>メディアグリッド表示</td>
+							<td class="default">オン</td>
+							<td>プロフィールのメディアタブを、正方形のサムネイルの格子に置き換えます。オフにすると Bluesky 本体の表示に戻ります</td>
+						</tr>
+						<tr>
+							<td>メディアグリッド</td>
+							<td class="child">NSFW のぼかしを解除</td>
+							<td class="default">オフ</td>
+							<td>格子のタイルに掛かるぼかしと警告文を外します。Bluesky 本体が出す警告には触れません</td>
+						</tr>
+						<tr>
+							<td>ライトボックス</td>
+							<td>投稿情報を表示</td>
+							<td class="default">オン</td>
+							<td>画像を開いたとき、右側に本文・投稿日時・反応数を並べます。格子以外の画像でも動きます。画面の幅が狭いときは出しません</td>
+						</tr>
+						<tr>
+							<td>ライトボックス</td>
+							<td class="child">返信・いいね</td>
+							<td class="default">オン</td>
+							<td>パネルに返信・リポスト・引用・いいね・ブックマークのボタンを出します。オフにするとボタンだけが消え、パネルは残ります</td>
+						</tr>
+						<tr>
+							<td>ライトボックス</td>
+							<td>画像のクリックで閉じない</td>
+							<td class="default">オン</td>
+							<td>画像そのものを押しても閉じないようにし、押せるボタンだけにカーソルの形を残します。閉じるボタンを左上に移し、画像オプションをその右に並べます</td>
+						</tr>
+						<tr>
+							<td>開発者向け</td>
+							<td>デバッグモード</td>
+							<td class="default">オフ</td>
+							<td>タブの判定・格子の起動と撤去・取得の状況をブラウザのコンソールに出し、内部状態を html 要素の属性に書き出します。不具合を報告するときに使います</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="requirements">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>動作環境</h2>
+				<p>Manifest V3 に対応した Chromium 系ブラウザで動作します。</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3>対応ブラウザ</h3>
+					<p>Chrome、Brave、Edge などの Chromium 系ブラウザ。<strong>Chrome 120 以上</strong>が必要です。Firefox (<strong>Firefox 140 以上</strong>) 向けにもビルドできますが、一時的なアドオンとしての読み込みで、動作はまだ十分に確かめていません。Safari には対応していません。</p>
+				</div>
+				<div class="card">
+					<h3>対象ページ</h3>
+					<p><code>https://bsky.app/</code> のページ。格子とタブのボタンはプロフィールで、投稿情報のパネルとライトボックスの調整は bsky.app のどこで画像を開いても動きます。他のサイトや、スマートフォンのアプリでは動作しません。</p>
+				</div>
+				<div class="card">
+					<h3>ライセンス</h3>
+					<p>MIT License で、ソースコードは GitHub で公開しています。免責事項と、同梱している第三者の成果物の表示は、ポップアップのライセンスタブにあります。</p>
+				</div>
+				<div class="card wide">
+					<h3>対応言語</h3>
+					<p>拡張機能の表示 (ポップアップ・パネル・ボタン) は今のところ日本語だけです。Bluesky 本体をどの言語で表示していても動作しますが、拡張機能が足した部分は日本語で表示されます。</p>
+				</div>
+				<div class="card wide">
+					<h3>不具合の報告・ご要望</h3>
+					<p>バグの報告、ご質問、機能のリクエストは <a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/issues" target="_blank" rel="noopener">GitHub の Issues</a> へお寄せください。不具合のときは、ポップアップの「デバッグモード」をオンにしてコンソールに出た内容を添えていただけると、原因を探しやすくなります。</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="privacy">
+		<div class="wrap">
+			<div class="section-head center">
+				<h2>データは、Bluesky の外へ出ません</h2>
+				<p>この拡張機能には作者のサーバーがありません。通信するのは Bluesky の公開 API と、あなたが反応のボタンを押したときの Bluesky 本体の通信だけです。</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3>収集しないもの</h3>
+					<p>閲覧履歴、投稿やアカウントの ID、ログインのトークン、パスワード、個人情報。いずれも取得も保存も送信もしません。認証は Bluesky 本体のものを借りるだけで、トークンそのものには触れません。</p>
+				</div>
+				<div class="card">
+					<h3>保存するもの</h3>
+					<p>あなたが選んだ 6 つのスイッチとポップアップの配色、それに投稿情報パネルを畳んだかどうか。どれもブラウザの中に留まり、外部サーバーへは出ません。</p>
+				</div>
+				<div class="card">
+					<h3>要求する権限</h3>
+					<p><code>storage</code> と <code>https://public.api.bsky.app/*</code> の 2 つだけ。スクリプトが動くのは <code>bsky.app</code> のページだけで、他のサイトへのアクセスは求めません。</p>
+				</div>
+			</div>
+			<p style="text-align:center;margin-block:40px 0">
+				<a class="btn btn-secondary" href="privacy.html">プライバシーポリシーを読む</a>
+			</p>
+		</div>
+	</section>
+
+	<section class="section" style="padding-top:0">
+		<div class="wrap">
+			<div class="notice">
+				<p><strong>これは非公式の拡張機能です。</strong></p>
+				<p>
+					Bluesky Social PBC が作成・配布しているものではありません。
+					同社とは一切関係がなく、提携・支援・推奨を受けたものでもありません。
+				</p>
+				<ul>
+					<li>利用は自己責任でお願いします。本拡張の利用によって生じた損害について、作者および Bluesky Social PBC は責任を負いません</li>
+					<li>いいね・リポスト・ブックマークは、押した分だけあなたのアカウントで Bluesky へ送られます。いいねとリポストは Bluesky 本体から操作したときと同じく公開されます</li>
+					<li>返信と引用は Bluesky 本体の投稿画面で、あなたが送信したときだけ投稿されます。投稿の削除、フォロー、ブロック、DM の送信は拡張機能からは行いません</li>
+					<li>画像を収集する機能はありません。ダウンロードも一括操作の自動化もなく、取得するのはいま見ているプロフィールの投稿だけです</li>
+					<li>Bluesky の仕様変更によって動作しなくなる場合があります</li>
+				</ul>
+			</div>
+		</div>
+	</section>
+
+</main>
+
+<!-- 先頭へ戻るボタン。1 画面分スクロールするまで site.js が隠す。図形は Material Symbols (Apache-2.0) -->
+<a class="to-top" href="#top" aria-label="ページの先頭へ戻る" title="ページの先頭へ戻る">
+	<svg aria-hidden="true"><use href="#i-caret"></use></svg>
+</a>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<div class="footer-grid">
+			<div>
+				<a class="brand" href="./">
+					<img src="assets/img/icon-128.png" alt="" width="28" height="28">
+					<span>XViewer for Bluesky</span>
+				</a>
+			</div>
+			<ul class="footer-links">
+				<li><a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky" target="_blank" rel="noopener">GitHub</a></li>
+				<li><a href="privacy.html">プライバシーポリシー</a></li>
+				<li><a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/issues" target="_blank" rel="noopener">お問い合わせ (Issues)</a></li>
+				<li><a href="https://xviewer.neonsdesign.com/" target="_blank" rel="noopener">XViewer for Pixiv</a></li>
+				<!-- lang:footer -->
+				<li><a href="en/" hreflang="en" lang="en">English</a></li>
+				<!-- /lang:footer -->
+			</ul>
+		</div>
+		<div class="footer-note">
+			<p>Bluesky は Bluesky Social PBC の商標です。本サイトおよび本拡張機能は、Bluesky Social PBC とは一切関係がありません。</p>
+			<p>掲載しているスクリーンショットは、Bluesky 公式アカウント (@bsky.app) の公開プロフィールを、この拡張機能を入れたブラウザで実際に表示した画面です。投稿・画像・反応数には手を加えていません。撮影に使ったアカウントのアイコンと、共通のフォロー中の表示だけは隠しています。投稿と画像の権利は、それぞれの権利者に帰属します。</p>
+			<p>アイコンの図形は Material Symbols (<a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>) を使用しています。</p>
+		</div>
+		<p class="footer-copyright">&copy; 2026 NEONS</p>
+	</div>
+</footer>
+
+</body>
+</html>

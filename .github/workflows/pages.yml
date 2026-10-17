@@ -1,0 +1,46 @@
+# site/ の紹介サイトを GitHub Pages へ公開する。
+# 拡張機能のソース (src/ test/) は成果物に含めない。
+name: Deploy site to Pages
+
+on:
+  # 既定ブランチへの push のうち、サイトかこのワークフロー自身が変わったときだけ動かす
+  push:
+    branches: ["main"]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+
+  # Actions タブから手動でも動かせるようにする
+  workflow_dispatch:
+
+# GITHUB_TOKEN に Pages への公開を許可する
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 公開は同時に 1 つだけ。待ち行列に溜まった古い実行は捨てるが、
+# 実行中のものは最後まで走らせる (途中で切ると公開物が壊れる)
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Pages
+        uses: actions/configure-pages@v6
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          # site/ の中身だけを公開する。リポジトリ全体を上げない
+          path: "site"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

@@ -14,6 +14,7 @@
 		"watch": "node scripts/build.mjs --watch",
 		"build:symbols": "node scripts/build-symbols.mjs",
 		"build:icons": "node scripts/build-icons.mjs",
+		"build:site-langs": "node scripts/site-langs.mjs",
 		"test": "node --test \"test/**/*.test.js\""
 	},
 	"devDependencies": {

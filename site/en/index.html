@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<title>XViewer for Bluesky - A browser extension to browse Bluesky media like X</title>
+<meta name="description" content="An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text and counts and reply, repost, like or bookmark without closing the image. Works on Chrome, Brave and Edge.">
+<!-- lang:head -->
+<link rel="canonical" href="https://xvbluesky.neonsdesign.com/en/">
+<link rel="alternate" hreflang="ja" href="https://xvbluesky.neonsdesign.com/">
+<link rel="alternate" hreflang="en" href="https://xvbluesky.neonsdesign.com/en/">
+<link rel="alternate" hreflang="x-default" href="https://xvbluesky.neonsdesign.com/">
+<!-- /lang:head -->
+<link rel="icon" href="../assets/img/icon-32.png" sizes="32x32">
+<link rel="icon" href="../assets/img/icon-128.png" sizes="128x128">
+<link rel="apple-touch-icon" href="../assets/img/icon-128.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="XViewer for Bluesky">
+<meta property="og:title" content="XViewer for Bluesky">
+<meta property="og:description" content="A browser extension that turns Bluesky's Media tab into a thumbnail grid and lets you read post details, reply and like without closing the image. Works on Chrome, Brave and Edge.">
+<meta property="og:url" content="https://xvbluesky.neonsdesign.com/en/">
+<meta property="og:image" content="https://xvbluesky.neonsdesign.com/assets/img/og-lightbox.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1920">
+<meta property="og:image:height" content="917">
+<meta property="og:image:alt" content="A Bluesky image open in the lightbox, with a panel on the right showing the author, text, date, counts, and reply, repost, like and bookmark buttons">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="../assets/style.css">
+<script>
+	/* 描画前に配色をあてて、切り替え時のちらつきを防ぐ */
+	(function () {
+		/* JS が動く印。先頭へ戻るボタンを描画前から隠しておくのに使う (style.css) */
+		document.documentElement.setAttribute('data-js', '');
+		try {
+			var saved = window.localStorage.getItem('xvbluesky-site-theme');
+			if (saved === 'dark' || saved === 'light') document.documentElement.setAttribute('data-theme', saved);
+		} catch (error) {
+			/* 保存領域が使えなくても OS の設定で描ける */
+		}
+	})();
+</script>
+<script src="../assets/site.js" defer></script>
+<script type="application/ld+json">
+{
+	"@context": "https://schema.org",
+	"@graph": [
+		{
+			"@type": "WebSite",
+			"url": "https://xvbluesky.neonsdesign.com/en/",
+			"name": "XViewer for Bluesky",
+			"inLanguage": "en",
+			"description": "The website of a browser extension that shows a Bluesky profile's media as a thumbnail grid and lets you read post details, reply and like without closing the image."
+		},
+		{
+			"@type": "SoftwareApplication",
+			"name": "XViewer for Bluesky",
+			"url": "https://xvbluesky.neonsdesign.com/en/",
+			"downloadUrl": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest",
+			"applicationCategory": "BrowserApplication",
+			"operatingSystem": "Windows, macOS, Linux, ChromeOS",
+			"softwareRequirements": "A Chromium-based browser (Chrome / Brave / Edge), Chrome 120 or later",
+			"inLanguage": "ja",
+			"description": "An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text and counts and reply, repost, quote, like or bookmark without closing the image. The extension's interface is in Japanese.",
+			"isAccessibleForFree": true,
+			"license": "https://opensource.org/licenses/MIT",
+			"sameAs": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky",
+			"offers": {
+				"@type": "Offer",
+				"price": "0",
+				"priceCurrency": "USD"
+			},
+			"screenshot": [
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-lightbox.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-grid.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-panel.webp",
+				"https://xvbluesky.neonsdesign.com/assets/img/shot-popup.webp"
+			],
+			"featureList": [
+				"Replaces a profile's Media tab with a grid of square thumbnails",
+				"Shows the post's text, date, author and counts next to an opened image",
+				"Reply, repost, quote, like and bookmark without closing the image",
+				"Keeps the lightbox open when you click the image itself",
+				"Adds fixed buttons to move between a profile's tabs",
+				"Removes the NSFW blur from tiles in the media grid (optional)"
+			]
+		}
+	]
+}
+</script>
+</head>
+<body id="top">
+
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<!-- アイコンの図形。出典は Material Symbols (Apache-2.0)。フッターに表示している -->
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+	<defs>
+		<symbol id="i-open" viewBox="0 -960 960 960"><path d="M180-120q-24 0-42-18t-18-42v-600q0-24 18-42t42-18h249q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H180v600h600v-249q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v249q0 24-18 42t-42 18H180Zm600-617L403-360q-9 9-21 8.5t-21-9.5q-9-9-9-21t9-21l377-377H549q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h261q12.75 0 21.38 8.62Q840-822.75 840-810v261q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63-8.5-8.62-8.5-21.37v-188Z"/></symbol>
+		<symbol id="i-download" viewBox="0 -960 960 960"><path d="M469-327q-5-2-10-7L308-485q-9-9.27-8.5-21.64.5-12.36 9.11-21.36 9.39-9 21.89-9t21.5 9l98 99v-341q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v341l99-99q8.8-9 20.9-8.5 12.1.5 21.49 9.5 8.61 9 8.61 21.5t-9 21.5L501-334q-5 5-10.13 7-5.14 2-11 2-5.87 0-10.87-2ZM220-160q-24 0-42-18t-18-42v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113h520v-113q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v113q0 24-18 42t-42 18H220Z"/></symbol>
+		<symbol id="i-grid" viewBox="0 -960 960 960"><path d="M180-510q-24.75 0-42.37-17.63Q120-545.25 120-570v-210q0-24.75 17.63-42.38Q155.25-840 180-840h210q24.75 0 42.38 17.62Q450-804.75 450-780v210q0 24.75-17.62 42.37Q414.75-510 390-510H180Zm0 390q-24.75 0-42.37-17.63Q120-155.25 120-180v-210q0-24.75 17.63-42.38Q155.25-450 180-450h210q24.75 0 42.38 17.62Q450-414.75 450-390v210q0 24.75-17.62 42.37Q414.75-120 390-120H180Zm390-390q-24.75 0-42.37-17.63Q510-545.25 510-570v-210q0-24.75 17.63-42.38Q545.25-840 570-840h210q24.75 0 42.38 17.62Q840-804.75 840-780v210q0 24.75-17.62 42.37Q804.75-510 780-510H570Zm0 390q-24.75 0-42.37-17.63Q510-155.25 510-180v-210q0-24.75 17.63-42.38Q545.25-450 570-450h210q24.75 0 42.38 17.62Q840-414.75 840-390v210q0 24.75-17.62 42.37Q804.75-120 780-120H570Z"/></symbol>
+		<symbol id="i-article" viewBox="0 -960 960 960"><path d="M180-120q-24 0-42-18t-18-42v-600q0-24 18-42t42-18h600q24 0 42 18t18 42v600q0 24-18 42t-42 18H180Zm127-159h215q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Zm0-171h346q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Zm0-171h346q12.75 0 21.38-8.68 8.62-8.67 8.62-21.5 0-12.82-8.62-21.32-8.63-8.5-21.38-8.5H307q-12.75 0-21.37 8.68-8.63 8.67-8.63 21.5 0 12.82 8.63 21.32 8.62 8.5 21.37 8.5Z"/></symbol>
+		<symbol id="i-like" viewBox="0 -960 960 960"><path d="M458-144q-11-4-19-12l-53-49Q262-320 171-424.5T80-643q0-90 60.5-150.5T290-854q51 0 101 24.5t89 80.5q44-56 91-80.5t99-24.5q89 0 149.5 60.5T880-643q0 114-91 218.5T574-205l-53 49q-8 8-19 12t-22 4q-11 0-22-4Z"/></symbol>
+		<symbol id="i-click" viewBox="0 -960 960 960"><path d="M480-660q-75 0-127.5 52.5T300-480q0 57 32.5 103.5T419-311q13 5 20 16t3 24q-3 11-12.5 17.5T409-250q-76-23-122.5-87T240-480q0-100 70-170t170-70q79 0 142.5 46.5T709-551q3 11-3 20.5T689-518q-13 4-24-3t-16-20q-19-54-65.5-86.5T480-660Zm0-160q-142 0-241 99t-99 241q0 141 94.5 236T468-141q13 1 21.5 10t8.5 22q0 12-9 20t-21 8q-81-2-151.5-34t-123-86q-52.5-54-83-126T80-480q0-83 31.5-156T197-763q54-54 127-85.5T480-880q163 0 278.5 112.5T879-492q0 12-8 20t-20 9q-13 1-22-7.5T819-492q-10-140-103-234t-236-94Zm302 720L650-231l-35 106q-4 11-15 10.5T586-126l-98-327q-2-9 4-15t15-4l327 98q11 3 11.5 14T835-345l-106 35 132 132q17 17 17 39t-17 39q-17 17-39.5 17T782-100Z"/></symbol>
+		<symbol id="i-swap" viewBox="0 -960 960 960"><path d="M331.5-458.5Q323-467 323-480v-286L223-666q-9 9-21 9t-21-9q-9-9-9-21t9-21l151-151q5-5 10-7t11-2q6 0 11 2t10 7l151 151q9 9 9 21t-9 21q-9 9-21 9t-21-9L383-766v286q0 13-8.5 21.5T353-450q-13 0-21.5-8.5ZM596-94q-5-2-10-7L435-252q-9-9-9-21t9-21q9-9 21-9t21 9l100 100v-286q0-13 8.5-21.5T607-510q13 0 21.5 8.5T637-480v286l100-100q9-9 21-9t21 9q9 9 9 21t-9 21L628-101q-5 5-10 7t-11 2q-6 0-11-2Z"/></symbol>
+		<symbol id="i-eye" viewBox="0 -960 960 960"><path d="M600.5-379.62q49.5-49.62 49.5-120.5T600.38-620.5Q550.76-670 479.88-670T359.5-620.38Q310-570.76 310-499.88t49.62 120.38q49.62 49.5 120.5 49.5t120.38-49.62Zm-200-41.12q-32.5-32.73-32.5-79.5 0-46.76 32.74-79.26 32.73-32.5 79.5-32.5 46.76 0 79.26 32.74 32.5 32.73 32.5 79.5 0 46.76-32.74 79.26-32.73 32.5-79.5 32.5-46.76 0-79.26-32.74ZM234.5-276Q124-352 57-470q-4-7.13-6-14.65-2-7.52-2-15.43 0-7.92 2-15.38 2-7.47 6-14.54 67-118 177.5-194T480-800q135 0 245.5 76T903-530q4 7.12 6 14.65 2 7.52 2 15.43 0 7.92-2 15.38-2 7.47-6 14.54-67 118-177.5 194T480-200q-135 0-245.5-76Z"/></symbol>
+		<symbol id="i-refresh" viewBox="0 -960 960 960"><path d="M480-160q-133 0-226.5-93.5T160-480q0-133 93.5-226.5T480-800q85 0 149 34.5T740-671v-99q0-13 8.5-21.5T770-800q13 0 21.5 8.5T800-770v194q0 13-8.5 21.5T770-546H576q-13 0-21.5-8.5T546-576q0-13 8.5-21.5T576-606h138q-38-60-97-97t-137-37q-109 0-184.5 75.5T220-480q0 109 75.5 184.5T480-220q75 0 140-39.5T717-366q5-11 16.5-16.5t22.5-.5q12 5 16 16.5t-1 23.5q-39 84-117.5 133.5T480-160Z"/></symbol>
+		<symbol id="i-code" viewBox="0 -960 960 960"><path d="M140-160q-24 0-42-18t-18-42v-520q0-24 18-42t42-18h680q24 0 42 18t18 42v520q0 24-18 42t-42 18H140Zm0-60h680v-436H140v436Zm221-218-83-83q-9-9-8.5-21t9.5-21q9-9 21-9t21 9l104 104q9 9 9 21t-9 21L321-313q-9 9-21 9t-21-9q-9-9-9-21t9-21l82-83Zm159 150q-13 0-21.5-8.5T490-318q0-13 8.5-21.5T520-348h160q13 0 21.5 8.5T710-318q0 13-8.5 21.5T680-288H520Z"/></symbol>
+		<symbol id="i-dark" viewBox="0 -960 960 960"><path d="M480-120q-150 0-255-105T120-480q0-135 79.5-229T408-830q20-5 34-1t22 15q8 10 7.5 25t-8.5 35q-9 23-14 47t-5 49q0 90 63 153t153 63q25 0 48.5-4.5T754-461q22-8 38-7t26 9q10 8 13 23t-2 36q-27 121-121 200.5T480-120Z"/></symbol>
+		<symbol id="i-light" viewBox="0 -960 960 960"><path d="M338.5-338.5Q280-397 280-480t58.5-141.5Q397-680 480-680t141.5 58.5Q680-563 680-480t-58.5 141.5Q563-280 480-280t-141.5-58.5ZM70-450q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32Q57.25-510 70-510h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H70Zm720 0q-12.75 0-21.37-8.68-8.63-8.67-8.63-21.5 0-12.82 8.63-21.32 8.62-8.5 21.37-8.5h100q12.75 0 21.38 8.68 8.62 8.67 8.62 21.5 0 12.82-8.62 21.32-8.63 8.5-21.38 8.5H790ZM458.5-768.63Q450-777.25 450-790v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63Zm0 720Q450-57.25 450-70v-100q0-12.75 8.68-21.38 8.67-8.62 21.5-8.62 12.82 0 21.32 8.62 8.5 8.63 8.5 21.38v100q0 12.75-8.68 21.37-8.67 8.63-21.5 8.63-12.82 0-21.32-8.63ZM240-678l-57-56q-9-9-8.63-21.6.37-12.61 8.53-21.5 8.89-8.9 21.5-8.9 12.6 0 21.6 9l56 57q8 9 8 21t-8 20.5q-8 8.5-20.5 8.5t-21.5-8Zm494 495-56-57q-8-9-8-21.38 0-12.37 8.5-20.62 8.5-9 20.5-9t21 9l57 56q9 9 8.63 21.6-.37 12.61-8.53 21.5-8.89 8.9-21.5 8.9-12.6 0-21.6-9Zm-56-495q-9-9-9-21t9-21l56-57q9-9 21.6-8.63 12.61.37 21.5 8.53 8.9 8.89 8.9 21.5 0 12.6-9 21.6l-57 56q-8 8-20.36 8-12.37 0-21.64-8ZM182.9-182.9q-8.9-8.89-8.9-21.5 0-12.6 9-21.6l57-56q8.8-9 20.9-9 12.1 0 20.71 9 9.39 9 9.39 21t-9 21l-56 57q-9 9-21.6 8.63-12.61-.37-21.5-8.53Z"/></symbol>
+		<symbol id="i-caret" viewBox="0 -960 960 960"><path d="M469-358q-5-2-10-7L261-563q-9-9-8.5-21.5T262-606q9-9 21.5-9t21.5 9l175 176 176-176q9-9 21-8.5t21 9.5q9 9 9 21.5t-9 21.5L501-365q-5 5-10 7t-11 2q-6 0-11-2Z"/></symbol>
+	</defs>
+</svg>
+
+<header class="site-header">
+	<div class="wrap">
+		<a class="brand" href="./">
+			<img src="../assets/img/icon-128.png" alt="" width="28" height="28">
+			<span>XViewer for Bluesky</span>
+		</a>
+		<nav class="site-nav" aria-label="On this page">
+			<a href="#features">Features</a>
+			<a href="#install">Install</a>
+			<a href="#settings">Settings</a>
+			<a href="#requirements">Requirements</a>
+			<a href="privacy.html">Privacy</a>
+		</nav>
+		<div class="header-tools">
+			<!-- lang:menu -->
+			<details class="lang-menu">
+				<summary>
+					<svg class="lang-menu-globe" viewBox="0 -960 960 960" aria-hidden="true"><path d="M323-111.5Q250-143 196-197t-85-127.5Q80-398 80-482t31-156.5Q142-711 196-765t127-84.5Q396-880 480-880t157 30.5Q710-819 764-765t85 126.5Q880-566 880-482t-31 157.5Q818-251 764-197t-127 85.5Q564-80 480-80t-157-31.5ZM480-138q35-36 58.5-82.5T577-331H384q14 60 37.5 108t58.5 85Zm-85-12q-25-38-43-82t-30-99H172q38 71 88 111.5T395-150Zm171-1q72-23 129.5-69T788-331H639q-13 54-30.5 98T566-151ZM152-391h159q-3-27-3.5-48.5T307-482q0-25 1-44.5t4-43.5H152q-7 24-9.5 43t-2.5 45q0 26 2.5 46.5T152-391Zm221 0h215q4-31 5-50.5t1-40.5q0-20-1-38.5t-5-49.5H373q-4 31-5 49.5t-1 38.5q0 21 1 40.5t5 50.5Zm275 0h160q7-24 9.5-44.5T820-482q0-26-2.5-45t-9.5-43H649q3 35 4 53.5t1 34.5q0 22-1.5 41.5T648-391Zm-10-239h150q-33-69-90.5-115T565-810q25 37 42.5 80T638-630Zm-254 0h194q-11-53-37-102.5T480-820q-32 27-54 71t-42 119Zm-212 0h151q11-54 28-96.5t43-82.5q-75 19-131 64t-91 115Z"/></svg>
+					<span class="visually-hidden">Language: </span><span>English</span>
+					<svg class="lang-menu-caret" viewBox="0 -960 960 960" aria-hidden="true"><path d="M469-358q-5-2-10-7L261-563q-9-9-8.5-21.5T262-606q9-9 21.5-9t21.5 9l175 176 176-176q9-9 21-8.5t21 9.5q9 9 9 21.5t-9 21.5L501-365q-5 5-10 7t-11 2q-6 0-11-2Z"/></svg>
+				</summary>
+				<ul class="lang-menu-list">
+					<li><a href="../" hreflang="ja" lang="ja">日本語</a></li>
+					<li><a href="./" hreflang="en" lang="en" aria-current="true">English</a></li>
+				</ul>
+			</details>
+			<!-- /lang:menu -->
+			<button type="button" class="theme-toggle" aria-label="Switch to light theme"
+				data-label-light="Switch to light theme" data-label-dark="Switch to dark theme">
+				<svg class="icon-moon" aria-hidden="true"><use href="#i-dark"></use></svg>
+				<svg class="icon-sun" aria-hidden="true"><use href="#i-light"></use></svg>
+			</button>
+		</div>
+	</div>
+</header>
+
+<main id="main">
+
+	<section class="hero">
+		<div class="wrap">
+			<p class="eyebrow">For Chrome / Brave / Edge</p>
+			<h1>See <span class="brand-bluesky">Bluesky</span> media the way you see it on <span class="brand-x">X</span>.</h1>
+			<p class="lede">
+				A profile's Media tab becomes a grid of square thumbnails.
+				Open an image and the post's text, date and counts appear on the right, where you can reply, repost, like or bookmark right away.
+				Clicking the image itself no longer closes it, so you won't be thrown back to the list halfway through.
+			</p>
+			<div class="cta-row">
+				<a class="btn btn-primary" href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest" target="_blank" rel="noopener">
+					<svg aria-hidden="true"><use href="#i-download"></use></svg>
+					Download from GitHub Releases
+				</a>
+				<a class="btn btn-secondary" href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky" target="_blank" rel="noopener">
+					<svg aria-hidden="true"><use href="#i-open"></use></svg>
+					View on GitHub
+				</a>
+			</div>
+			<p class="cta-note">Not available on any extension store yet. See <a href="#install">Install</a> for how to load the zip. The extension's interface is in Japanese only.</p>
+			<div class="hero-shot">
+				<img src="../assets/img/shot-lightbox.webp" width="1920" height="917" fetchpriority="high" decoding="async"
+					alt="A Bluesky image open in the lightbox, with a panel on the right showing the author, text, date, counts, and reply, repost, like and bookmark buttons. The close button and image options sit at the top left">
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="features">
+		<div class="wrap">
+			<div class="section-head center">
+				<h2>Browse and react, right where you are</h2>
+				<p>Opening images one at a time, going back, and jumping to another screen just to check a post. This extension cuts down on that back and forth.</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-grid"></use></svg></span>Media as a grid</h3>
+					<p>Replaces a profile's Media tab with a three-column grid of square thumbnails. One tile per post; posts with several images get an icon on the first image. Videos are left to the Videos tab. Scroll to the bottom to load more.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-article"></use></svg></span>Post details panel</h3>
+					<p>When you open an image, the author, text, date, counts and an "Open post" button appear on the right. It works wherever you open an image on Bluesky, not only from the grid. Links, mentions and hashtags in the text work too. The panel can be collapsed.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-like"></use></svg></span>React without closing</h3>
+					<p>Reply, repost, quote, like and bookmark without closing the image. The button changes the moment you press it, and if the request fails it goes back and tells you. It uses Bluesky's own sign-in as is and never touches your login credentials.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-click"></use></svg></span>Clicking the image keeps it open</h3>
+					<p>Clicking the image itself no longer closes the lightbox, and the pointer turns into a hand only over buttons you can press. Click the dark area around it to close as before. The close button moves to the top left, with the image options next to it.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-swap"></use></svg></span>Buttons to switch tabs</h3>
+					<p>Adds "Videos / Media / Posts / Back to top" buttons at the bottom right of a profile. The button for the tab you are on is hidden, and "Back to top" appears once you scroll. The buttons stay in place, so you can go back and forth by pressing the same spot.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-eye"></use></svg></span>Remove the blur (optional)</h3>
+					<p>When turned on in the settings, removes the NSFW blur and warning text from tiles in the grid so a single click opens them. Only grid tiles are affected; warnings shown by Bluesky itself are left alone. Off by default.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="screens">
+		<div class="wrap">
+			<div class="showcase">
+				<div class="showcase-text">
+					<h3>The Media tab, as a grid you can scan</h3>
+					<p>
+						Using posts fetched from Bluesky's public API, it lays out each post with images as one square tile.
+						Clicking a tile opens Bluesky's own lightbox, so zooming and moving between images work just like they do in Bluesky.
+					</p>
+					<ul class="feature-list">
+						<li>More posts are fetched only when you scroll to the bottom. Nothing is prefetched</li>
+						<li>Moving to another account leaves none of the previous account's images behind</li>
+						<li>Labeled images are blurred, just like in Bluesky. (You can remove this in the settings)</li>
+						<li>Go back to the Posts tab and Bluesky looks the way it always does</li>
+					</ul>
+				</div>
+				<figure>
+					<img src="../assets/img/shot-grid.webp" loading="lazy" decoding="async" width="1200" height="796"
+						alt="The Media tab of a Bluesky profile, with square thumbnails laid out in a three-column grid">
+				</figure>
+			</div>
+
+			<div class="showcase reverse">
+				<div class="showcase-text">
+					<h3>What the post says, next to the image</h3>
+					<p>
+						The panel shows the author, text and date, along with the number of replies, reposts and likes.
+						The buttons below let you react without closing the image. Each kind of button has its own color, and posts you have already reacted to show that color from the start.
+					</p>
+					<ul class="feature-list">
+						<li>The repost button opens a menu to choose between repost and quote</li>
+						<li>Reply and quote open Bluesky's own composer on top of the lightbox</li>
+						<li>The action buttons are not shown when you are signed out</li>
+						<li>"Open post" takes you to the post without reloading the page</li>
+					</ul>
+				</div>
+				<figure class="compact">
+					<img src="../assets/img/shot-panel.webp" loading="lazy" decoding="async" width="380" height="400"
+						alt="A close-up of the post details panel: the author's avatar and name, the text, the date, the reply, repost and like counts with a bookmark button, and an Open post button. The labels are in Japanese">
+				</figure>
+			</div>
+
+			<div class="showcase">
+				<div class="showcase-text">
+					<h3>Settings live in the popup</h3>
+					<p>
+						Open it from the toolbar icon. Grouped into Media grid, Lightbox and Developer, each feature has its own on/off switch.
+					</p>
+					<ul class="feature-list">
+						<li>Changes take effect right away, without reloading the page</li>
+						<li>Related options are nested; a child can't be changed while its parent is off</li>
+						<li>The popup can switch between dark and light. By default it follows your OS</li>
+						<li>"Reset settings" restores every setting to its default after a confirmation</li>
+					</ul>
+				</div>
+				<figure class="portrait">
+					<img src="../assets/img/shot-popup.webp" loading="lazy" decoding="async" width="480" height="1239"
+						alt="The extension's settings popup, in Japanese. Switches are grouped under Media grid, Lightbox and Developer, with a reset button at the bottom">
+				</figure>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="install">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>Install</h2>
+				<p>The extension is not on any store yet. Load the zip from GitHub Releases on your browser's extensions page.</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-download"></use></svg></span>Chrome / Brave / Edge</h3>
+					<ol class="steps">
+						<li>Download <code>XViewer.for.Bluesky_version.zip</code> from <a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> and unzip it</li>
+						<li>Open <code>chrome://extensions</code> and turn on "Developer mode" at the top right (<code>brave://extensions</code> on Brave, <code>edge://extensions</code> on Edge)</li>
+						<li>Click "Load unpacked" and choose the unzipped folder</li>
+						<li>Reload any open bsky.app tabs</li>
+					</ol>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-refresh"></use></svg></span>Updating to a new version</h3>
+					<ol class="steps">
+						<li>Unzip the new version over the previous one, into the same folder</li>
+						<li>On the extensions page, press the reload button on the XViewer for Bluesky card</li>
+						<li>Reload your bsky.app tabs</li>
+					</ol>
+					<p class="card-note">If you delete the unzipped folder, the extension can no longer be loaded. Keep it where it is.</p>
+				</div>
+				<div class="card">
+					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-code"></use></svg></span>Firefox (experimental)</h3>
+					<ol class="steps">
+						<li>Get the source and run <code>npm install</code> and <code>npm run build</code> with Node.js 24.2 or later</li>
+						<li>Open <code>about:debugging</code> and choose "This Firefox"</li>
+						<li>Click "Load Temporary Add-on" and choose <code>dist-firefox/manifest.json</code></li>
+					</ol>
+					<p class="card-note">Temporary add-ons are removed when Firefox closes. It has not yet been tested much on Firefox.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="settings">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>What you can change</h2>
+				<p>Everything is set from the toolbar popup. Indented options belong to the option above them and can't be changed while the parent is off. (A child keeps its setting, and comes back as it was when the parent is turned on again) Settings are kept in your browser's sync storage and are never sent anywhere else. The popup shows these options in Japanese.</p>
+			</div>
+			<div class="table-scroll">
+				<table>
+					<thead>
+						<tr>
+							<th scope="col">Group</th>
+							<th scope="col">Option</th>
+							<th scope="col">Default</th>
+							<th scope="col">What it does</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>Media grid</td>
+							<td>Show media grid</td>
+							<td class="default">On</td>
+							<td>Replaces a profile's Media tab with a grid of square thumbnails. Turn it off to get Bluesky's own view back</td>
+						</tr>
+						<tr>
+							<td>Media grid</td>
+							<td class="child">Remove NSFW blur</td>
+							<td class="default">Off</td>
+							<td>Removes the blur and warning text from grid tiles. Warnings shown by Bluesky itself are left alone</td>
+						</tr>
+						<tr>
+							<td>Lightbox</td>
+							<td>Show post details</td>
+							<td class="default">On</td>
+							<td>Shows the text, date and counts on the right when you open an image. Works for images outside the grid too. Not shown when the window is narrow</td>
+						</tr>
+						<tr>
+							<td>Lightbox</td>
+							<td class="child">Reply and like</td>
+							<td class="default">On</td>
+							<td>Adds reply, repost, quote, like and bookmark buttons to the panel. When off, only the buttons go away and the panel stays</td>
+						</tr>
+						<tr>
+							<td>Lightbox</td>
+							<td>Don't close on image click</td>
+							<td class="default">On</td>
+							<td>Keeps the lightbox open when you click the image itself, and leaves the hand pointer only on buttons. Moves the close button to the top left, with the image options next to it</td>
+						</tr>
+						<tr>
+							<td>Developer</td>
+							<td>Debug mode</td>
+							<td class="default">Off</td>
+							<td>Logs tab detection, the grid starting and stopping, and fetching to the browser console, and writes the internal state to an attribute on the html element. Useful when reporting a bug</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="requirements">
+		<div class="wrap">
+			<div class="section-head">
+				<h2>Requirements</h2>
+				<p>Works on Chromium-based browsers that support Manifest V3.</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3>Browsers</h3>
+					<p>Chromium-based browsers such as Chrome, Brave and Edge. <strong>Chrome 120 or later</strong> is required. It can also be built for Firefox (<strong>Firefox 140 or later</strong>), but only as a temporary add-on, and it has not yet been tested much there. Safari is not supported.</p>
+				</div>
+				<div class="card">
+					<h3>Where it works</h3>
+					<p>Pages on <code>https://bsky.app/</code>. The grid and tab buttons appear on profiles; the post details panel and lightbox tweaks work wherever you open an image on bsky.app. It does nothing on other sites or in the mobile apps.</p>
+				</div>
+				<div class="card">
+					<h3>License</h3>
+					<p>MIT License, with the source code on GitHub. The disclaimer and notices for bundled third-party work are in the License tab of the popup.</p>
+				</div>
+				<div class="card wide">
+					<h3>Languages</h3>
+					<p>The extension's interface (popup, panel and buttons) is currently <strong>Japanese only</strong>. It works whatever language you use Bluesky in, but the parts the extension adds are shown in Japanese.</p>
+				</div>
+				<div class="card wide">
+					<h3>Bug reports and requests</h3>
+					<p>Please send bug reports, questions and feature requests to <a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/issues" target="_blank" rel="noopener">GitHub Issues</a>. You are welcome to write in English. For a bug, turning on "Debug mode" in the popup and including what it prints to the console makes the cause much easier to find.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<hr class="divider">
+
+	<section class="section" id="privacy">
+		<div class="wrap">
+			<div class="section-head center">
+				<h2>Your data stays with Bluesky</h2>
+				<p>This extension has no server of its own. The only traffic is to Bluesky's public API, and Bluesky's own requests when you press a reaction button.</p>
+			</div>
+			<div class="card-grid">
+				<div class="card">
+					<h3>What it does not collect</h3>
+					<p>Browsing history, post or account IDs, login tokens, passwords, or personal information. None of these are read, stored or sent. It only borrows Bluesky's own sign-in and never touches the tokens themselves.</p>
+				</div>
+				<div class="card">
+					<h3>What it stores</h3>
+					<p>The six switches you choose, the popup's theme, and whether the post details panel is collapsed. All of it stays in your browser and is never sent to an outside server.</p>
+				</div>
+				<div class="card">
+					<h3>Permissions</h3>
+					<p>Just two: <code>storage</code> and <code>https://public.api.bsky.app/*</code>. Its scripts run only on <code>bsky.app</code> pages, and it asks for no access to other sites.</p>
+				</div>
+			</div>
+			<p style="text-align:center;margin-block:40px 0">
+				<a class="btn btn-secondary" href="privacy.html">Read the privacy policy</a>
+			</p>
+		</div>
+	</section>
+
+	<section class="section" style="padding-top:0">
+		<div class="wrap">
+			<div class="notice">
+				<p><strong>This is an unofficial extension.</strong></p>
+				<p>
+					It is not made or distributed by Bluesky Social PBC.
+					It has no connection with the company and is not partnered with, supported or endorsed by it.
+				</p>
+				<ul>
+					<li>Use it at your own risk. Neither the author nor Bluesky Social PBC is responsible for any damage caused by using this extension</li>
+					<li>Each like, repost or bookmark you press is sent to Bluesky from your account. Likes and reposts are public, just as when you use Bluesky directly</li>
+					<li>Replies and quotes are posted only when you send them from Bluesky's own composer. The extension never deletes posts, follows, blocks or sends DMs</li>
+					<li>It has no way to collect images. There is no downloading and no bulk automation; it only fetches the posts of the profile you are viewing</li>
+					<li>Changes on Bluesky's side may stop it from working</li>
+				</ul>
+			</div>
+		</div>
+	</section>
+
+</main>
+
+<!-- 先頭へ戻るボタン。1 画面分スクロールするまで site.js が隠す。図形は Material Symbols (Apache-2.0) -->
+<a class="to-top" href="#top" aria-label="Back to top" title="Back to top">
+	<svg aria-hidden="true"><use href="#i-caret"></use></svg>
+</a>
+
+<footer class="site-footer">
+	<div class="wrap">
+		<div class="footer-grid">
+			<div>
+				<a class="brand" href="./">
+					<img src="../assets/img/icon-128.png" alt="" width="28" height="28">
+					<span>XViewer for Bluesky</span>
+				</a>
+			</div>
+			<ul class="footer-links">
+				<li><a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky" target="_blank" rel="noopener">GitHub</a></li>
+				<li><a href="privacy.html">Privacy policy</a></li>
+				<li><a href="https://github.com/NEONS-DESIGN/XViewer-for-Bluesky/issues" target="_blank" rel="noopener">Contact (Issues)</a></li>
+				<li><a href="https://xviewer.neonsdesign.com/en/" target="_blank" rel="noopener">XViewer for Pixiv</a></li>
+				<!-- lang:footer -->
+				<li><a href="../" hreflang="ja" lang="ja">日本語</a></li>
+				<!-- /lang:footer -->
+			</ul>
+		</div>
+		<div class="footer-note">
+			<p>Bluesky is a trademark of Bluesky Social PBC. This website and this extension have no connection with Bluesky Social PBC.</p>
+			<p>The screenshots are real screens of the public profile of Bluesky's official account (@bsky.app), shown in a browser with this extension installed. The posts, images and counts are unedited; only the avatar of the account used to take them and the "followed by" line were hidden. Rights to the posts and images belong to their respective owners.</p>
+			<p>Icon shapes are from Material Symbols (<a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>).</p>
+		</div>
+		<p class="footer-copyright">&copy; 2026 NEONS</p>
+	</div>
+</footer>
+
+</body>
+</html>
