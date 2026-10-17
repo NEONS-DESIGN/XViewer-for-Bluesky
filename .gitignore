@@ -1,6 +1,7 @@
-# 手元の作業文書 (README.md 以外の Markdown はリポジトリに含めない)
+# 手元の作業文書 (README.md と README.en.md 以外の Markdown はリポジトリに含めない)
 *.md
 !README.md
+!README.en.md
 
 # ショートカット
 *.lnk
