@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>XViewer for Bluesky - Bluesky のメディアを X のように見るブラウザ拡張機能</title>
-<meta name="description" content="Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能です。Chrome / Brave / Edge に対応しています。">
+<meta name="description" content="Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数、返信の一覧を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能です。Chrome / Brave / Edge に対応しています。">
 <!-- lang:head -->
 <link rel="canonical" href="https://xvbluesky.neonsdesign.com/">
 <link rel="alternate" hreflang="ja" href="https://xvbluesky.neonsdesign.com/">
@@ -19,7 +19,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="XViewer for Bluesky">
 <meta property="og:title" content="XViewer for Bluesky">
-<meta property="og:description" content="Bluesky のメディアタブをサムネイルの格子にし、画像を開いたまま投稿情報の確認や返信・いいねができるブラウザ拡張機能。Chrome / Brave / Edge に対応。">
+<meta property="og:description" content="Bluesky のメディアタブをサムネイルの格子にし、画像を開いたまま投稿情報や返信の一覧の確認、返信・いいねができるブラウザ拡張機能。Chrome / Brave / Edge に対応。">
 <meta property="og:url" content="https://xvbluesky.neonsdesign.com/">
 <meta property="og:image" content="https://xvbluesky.neonsdesign.com/assets/img/og-lightbox.jpg">
 <meta property="og:image:type" content="image/jpeg">
@@ -52,7 +52,7 @@
 			"url": "https://xvbluesky.neonsdesign.com/",
 			"name": "XViewer for Bluesky",
 			"inLanguage": "ja",
-			"description": "Bluesky のプロフィールのメディアをサムネイルの格子で一覧でき、画像を開いたまま投稿情報の確認や返信・いいねができるブラウザ拡張機能の紹介サイト。"
+			"description": "Bluesky のプロフィールのメディアをサムネイルの格子で一覧でき、画像を開いたまま投稿情報や返信の一覧の確認、返信・いいねができるブラウザ拡張機能の紹介サイト。"
 		},
 		{
 			"@type": "SoftwareApplication",
@@ -63,7 +63,7 @@
 			"operatingSystem": "Windows, macOS, Linux, ChromeOS",
 			"softwareRequirements": "Chrome 120 以上の Chromium 系ブラウザ (Chrome / Brave / Edge)",
 			"inLanguage": "ja",
-			"description": "Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能。",
+			"description": "Bluesky のプロフィールのメディアタブを正方形のサムネイルの格子に置き換え、画像を開いたまま本文や反応数、返信の一覧を確かめて、返信・リポスト・いいね・ブックマークまでできる非公式のブラウザ拡張機能。",
 			"isAccessibleForFree": true,
 			"license": "https://opensource.org/licenses/MIT",
 			"sameAs": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky",
@@ -82,6 +82,7 @@
 				"プロフィールのメディアタブを正方形のサムネイルの格子に置き換える",
 				"画像を開いたとき、右側に本文・投稿日時・作者・反応数を表示する",
 				"画像を開いたまま返信・リポスト・引用・いいね・ブックマークを行う",
+				"パネルの下に返信の一覧を出し、その場で返信を書いて送る。自分の返信は消せる",
 				"画像そのものを押してもライトボックスを閉じない",
 				"プロフィールのタブを行き来する固定ボタンを表示する",
 				"メディアの格子のタイルに掛かる NSFW のぼかしを外す (任意)"
@@ -158,7 +159,7 @@
 			<h1><span class="brand-bluesky">Bluesky</span> のメディアを、<wbr><span class="brand-x">X</span> のように見る。</h1>
 			<p class="lede">
 				プロフィールのメディアタブが、正方形のサムネイルを並べた格子に変わります。
-				画像を開けば右側に本文・投稿日時・反応数が並び、そのまま返信・リポスト・いいね・ブックマークまでできます。
+				画像を開けば右側に本文・投稿日時・反応数と返信の一覧が並び、そのまま返信・リポスト・いいね・ブックマークまでできます。
 				画像そのものを押しても閉じないので、見ている途中で一覧へ戻されることもありません。
 			</p>
 			<div class="cta-row">
@@ -194,11 +195,11 @@
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-article"></use></svg></span>投稿情報のパネル</h3>
-					<p>画像を開くと、右側に作者・本文・投稿日時・反応数と「投稿を開く」が並びます。格子に限らず、Bluesky のどこで画像を開いても出ます。本文のリンク・メンション・ハッシュタグも押せます。パネルは畳めます。</p>
+					<p>画像を開くと、右側に作者・本文・投稿日時・反応数と「投稿を開く」が並び、その下に返信の一覧が新しい順に出ます。格子に限らず、Bluesky のどこで画像を開いても出ます。本文のリンク・メンション・ハッシュタグも押せます。パネルは畳めます。</p>
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-like"></use></svg></span>開いたまま反応する</h3>
-					<p>返信・リポスト・引用・いいね・ブックマークを、画像を閉じずに行えます。押した瞬間に表示が変わり、失敗したときは元に戻して知らせます。認証は Bluesky 本体のものをそのまま使い、ログイン情報には触れません。</p>
+					<p>返信・リポスト・引用・いいね・ブックマークを、画像を閉じずに行えます。返信はパネルの入力欄から書いて送れ、自分の返信は消すこともできます。いいねなどは押した瞬間に表示が変わり、失敗したときは元に戻して知らせます。認証は Bluesky 本体のものをそのまま使い、ログイン情報には触れません。</p>
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-click"></use></svg></span>画像を押しても閉じない</h3>
@@ -249,7 +250,8 @@
 					</p>
 					<ul class="feature-list">
 						<li>リポストのボタンを押すとメニューが開き、リポストと引用を選べます</li>
-						<li>返信と引用は、Bluesky 本体の投稿画面をライトボックスの上に開きます</li>
+						<li>パネルの下には返信が新しい順に並び、「返信を表示」で返信への返信も開けます</li>
+						<li>返信はパネルの入力欄からその場で送れます。引用は、Bluesky 本体の投稿画面をライトボックスの上に開きます</li>
 						<li>ログインしていないときは、操作のボタンを出しません</li>
 						<li>「投稿を開く」で、ページを再読み込みせずに投稿の画面へ移ります</li>
 					</ul>
@@ -366,6 +368,12 @@
 						</tr>
 						<tr>
 							<td>ライトボックス</td>
+							<td class="child">返信の一覧</td>
+							<td class="default">オン</td>
+							<td>画像を開いたとき、パネルの下に返信の一覧を出します。「返信・いいね」もオンなら、その場で返信を書いたり、自分の返信を消したりできます</td>
+						</tr>
+						<tr>
+							<td>ライトボックス</td>
 							<td>画像のクリックで閉じない</td>
 							<td class="default">オン</td>
 							<td>画像そのものを押しても閉じないようにし、押せるボタンだけにカーソルの形を残します。閉じるボタンを左上に移し、画像オプションをその右に並べます</td>
@@ -421,7 +429,7 @@
 		<div class="wrap">
 			<div class="section-head center">
 				<h2>データは、Bluesky の外へ出ません</h2>
-				<p>この拡張機能には作者のサーバーがありません。通信するのは Bluesky の公開 API と、あなたが反応のボタンを押したときの Bluesky 本体の通信だけです。</p>
+				<p>この拡張機能には作者のサーバーがありません。通信するのは Bluesky の公開 API と、返信の一覧の読み込みやあなたが押した反応・返信のために借りる Bluesky 本体の通信だけです。</p>
 			</div>
 			<div class="card-grid">
 				<div class="card">
@@ -430,7 +438,7 @@
 				</div>
 				<div class="card">
 					<h3>保存するもの</h3>
-					<p>あなたが選んだ 6 つのスイッチとポップアップの配色、それに投稿情報パネルを畳んだかどうか。どれもブラウザの中に留まり、外部サーバーへは出ません。</p>
+					<p>あなたが選んだ 7 つのスイッチとポップアップの配色、それに投稿情報パネルを畳んだかどうか。どれもブラウザの中に留まり、外部サーバーへは出ません。</p>
 				</div>
 				<div class="card">
 					<h3>要求する権限</h3>
@@ -453,8 +461,9 @@
 				</p>
 				<ul>
 					<li>利用は自己責任でお願いします。本拡張の利用によって生じた損害について、作者および Bluesky Social PBC は責任を負いません</li>
-					<li>いいね・リポスト・ブックマークは、押した分だけあなたのアカウントで Bluesky へ送られます。いいねとリポストは Bluesky 本体から操作したときと同じく公開されます</li>
-					<li>返信と引用は Bluesky 本体の投稿画面で、あなたが送信したときだけ投稿されます。投稿の削除、フォロー、ブロック、DM の送信は拡張機能からは行いません</li>
+					<li>いいね・リポスト・ブックマーク・返信は、押した分だけあなたのアカウントで Bluesky へ送られます。いいね・リポスト・返信は Bluesky 本体から操作したときと同じく公開されます</li>
+					<li>返信は、パネルの入力欄であなたが「送信」か Ctrl+Enter (Mac は Cmd+Enter) を押したときだけ投稿されます。引用は Bluesky 本体の投稿画面で、あなたが送信したときだけ投稿されます</li>
+					<li>拡張機能から消せるのは、返信の一覧にある自分の返信だけで、「削除」に続けて「本当に削除？」を押したときに限ります。返信ではない投稿の作成や削除、フォロー、ブロック、DM の送信は拡張機能からは行いません</li>
 					<li>画像を収集する機能はありません。ダウンロードも一括操作の自動化もなく、取得するのはいま見ているプロフィールの投稿だけです</li>
 					<li>Bluesky の仕様変更によって動作しなくなる場合があります</li>
 				</ul>

@@ -10,12 +10,13 @@ const EXPECTED = {
 	'nsfw-unblur': EXT_CONFIG.mediaGrid.unblur,
 	'lightbox-panel': EXT_CONFIG.lightboxPanel,
 	'post-actions': EXT_CONFIG.postActions,
+	'lightbox-replies': EXT_CONFIG.lightboxReplies,
 	'lightbox-guard': EXT_CONFIG.lightboxGuard,
 	'debug': EXT_CONFIG.debug
 };
 
 test('全項目の保存キーと既定値が EXT_CONFIG と一致する', () => {
-	assert.strictEqual(ALL_FIELDS.length, 6);
+	assert.strictEqual(ALL_FIELDS.length, 7);
 	for (const f of ALL_FIELDS) {
 		assert.ok(EXPECTED[f.role], `${f.role} が対応表に無い`);
 		assert.strictEqual(f.key, EXPECTED[f.role].storageKey, `${f.role} の保存キー`);
@@ -32,6 +33,8 @@ test('子の requires は親の key を指す', () => {
 	// 親の children に入っていること (requires と入れ子の位置が食い違わない)
 	assert.ok(byRole['media-grid'].children.includes(byRole['nsfw-unblur']));
 	assert.ok(byRole['lightbox-panel'].children.includes(byRole['post-actions']));
+	assert.strictEqual(byRole['lightbox-replies'].requires, EXT_CONFIG.lightboxPanel.storageKey);
+	assert.ok(byRole['lightbox-panel'].children.includes(byRole['lightbox-replies']));
 	// requires を持つ項目はすべて、実在する項目の key を指す
 	const keys = new Set(ALL_FIELDS.map((f) => f.key));
 	for (const f of ALL_FIELDS) {
@@ -62,7 +65,8 @@ test('セクションの並びと見出しは設計どおり', () => {
 test('ALL_FIELDS は親の直後に子が並ぶ平らな一覧', () => {
 	assert.deepStrictEqual(
 		ALL_FIELDS.map((f) => f.role),
-		['media-grid', 'nsfw-unblur', 'lightbox-panel', 'post-actions', 'lightbox-guard', 'debug']
+		['media-grid', 'nsfw-unblur', 'lightbox-panel', 'post-actions', 'lightbox-replies',
+				'lightbox-guard', 'debug']
 	);
 });
 

@@ -29,6 +29,11 @@ export const EXT_BRIDGE = {
 	/** 子方向の深さの上限。兄弟はループで辿るため、実測 (232 ノード目) より十分に余裕がある */
 	maxWalkDepth: 250,
 	/**
+	 * ライトボックスを閉じた後、本体が履歴を戻し終える (popstate) のを待つ上限。
+	 * 実測では閉じてから約 0.3 秒で戻った (2026-10-18)
+	 */
+	lightboxHistoryTimeoutMs: 1500,
+	/**
 	 * call-xrpc が通す XRPC の白名簿。キーの NSID は BRIDGE_PROTOCOL.nsid から取る。
 	 *
 	 * ここを緩めると、この橋渡しは「本体のセッションで任意の XRPC を
@@ -37,6 +42,7 @@ export const EXT_BRIDGE = {
 	 */
 	xrpc: {
 		[NSID.getPosts]: {target: 'appview', method: 'GET'},
+		[NSID.getPostThread]: {target: 'appview', method: 'GET'},
 		/**
 		 * recordWrite: true は checkXrpcRequest() が collection / repo の
 		 * 検査を課す目印。**文字列リテラルで別置きしない。**
@@ -62,10 +68,14 @@ export const EXT_BRIDGE = {
 	},
 	/**
 	 * createRecord / deleteRecord で触れるコレクション。
-	 * ここに無いものは通さないため、投稿・削除・フォロー・ブロックは
-	 * この橋渡しでは行えない
+	 * ここに無いものは通さないため、フォロー・ブロックはこの橋渡しでは行えない。
+	 * 投稿 (postCollection) は返信だけを通す (checkPostRecord / isReplyPostResponse)
 	 */
 	recordCollections: Object.freeze(Object.values(BRIDGE_PROTOCOL.collections)),
+	postCollection: BRIDGE_PROTOCOL.collections.post,
+	postRecord: BRIDGE_PROTOCOL.postRecord,
+	/** 返信の root / parent に置ける投稿の AT URI */
+	postUriPattern: /^at:\/\/[^/]+\/app\.bsky\.feed\.post\/[^/]+$/,
 	/** open-composer が受け付けるモード */
 	composerModes: Object.freeze(Object.values(BRIDGE_PROTOCOL.composerModes))
 };
@@ -245,6 +255,62 @@ function getLightbox() {
 }
 
 /**
+ * ライトボックスを閉じた後、本体がライトボックスの履歴を戻し終えるのを待つ。
+ *
+ * 本体は画像を開くと history.state に {lightbox: true} を積み、closeLightbox() の後で
+ * history.back() を呼ぶ (2026-10-18 実測)。戻りは非同期で、終わる前に次の遷移
+ * (pushState) を入れると、戻りの完了 (popstate) で本体のルーターが元の URL へ
+ * 書き戻し、遷移が打ち消される。閉じる前に履歴が積まれていたときだけ、popstate を待つ
+ * @param {Window} win popstate を受ける window
+ * @param {boolean} hadLightboxHistory 閉じる前に history.state.lightbox が立っていたか
+ * @param {number} timeoutMs 待つ上限。来なければ諦める (遷移は試みる)
+ * @returns {Promise<boolean>} popstate を見届けたら true
+ */
+export function waitForLightboxHistory(win, hadLightboxHistory, timeoutMs) {
+	if (!hadLightboxHistory) {
+		return Promise.resolve(false);
+	}
+	return new Promise((resolve) => {
+		let timer = null;
+		const finish = (value) => {
+			clearTimeout(timer);
+			win.removeEventListener('popstate', onPopState);
+			resolve(value);
+		};
+		const onPopState = () => finish(true);
+		win.addEventListener('popstate', onPopState);
+		timer = setTimeout(() => finish(false), timeoutMs);
+	});
+}
+
+/**
+ * history.state にライトボックスの履歴が積まれているか。
+ * @returns {boolean}
+ */
+function hasLightboxHistory() {
+	try {
+		const state = window.history.state;
+		return !!state && typeof state === 'object' && state.lightbox === true;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
+ * ライトボックスを閉じ、本体が履歴を戻し終えるまで待ってから返す。
+ * 返事の後に遷移 (navigate) が来ても打ち消されないようにするため
+ * @returns {Promise<{ok: boolean, reason: string|null}>}
+ */
+async function closeLightboxAndSettle() {
+	const hadHistory = hasLightboxHistory();
+	const result = closeLightbox();
+	if (result.ok) {
+		await waitForLightboxHistory(window, hadHistory, EXT_BRIDGE.lightboxHistoryTimeoutMs);
+	}
+	return result;
+}
+
+/**
  * ライトボックスを閉じる。遷移の前に確実に畳むために使う。
  * @returns {{ok: boolean, reason: string|null}}
  */
@@ -374,13 +440,133 @@ function readSessionDid(client) {
 }
 
 /**
+ * 返信の root / parent の 1 つが {uri: 投稿の AT URI, cid: 空でない文字列} の形か。
+ * @param {*} ref
+ * @returns {boolean}
+ */
+function isPostStrongRef(ref) {
+	return !!ref && typeof ref === 'object'
+		&& typeof ref.uri === 'string' && EXT_BRIDGE.postUriPattern.test(ref.uri)
+		&& typeof ref.cid === 'string' && ref.cid.length > 0;
+}
+
+/**
+ * facets の feature 1 つが、返信欄が作る 3 種 (リンク・メンション・タグ) の
+ * 正しい形か。リンクは http(s) だけ、メンションは DID だけを通す
+ * (本文と行き先の違う隠しリンクや javascript: を作らせない)
+ * @param {*} feature
+ * @returns {boolean}
+ */
+function isAllowedFacetFeature(feature) {
+	if (!feature || typeof feature !== 'object') {
+		return false;
+	}
+	switch (feature.$type) {
+		case 'app.bsky.richtext.facet#link':
+			return typeof feature.uri === 'string' && /^https?:\/\/\S+$/.test(feature.uri);
+		case 'app.bsky.richtext.facet#mention':
+			return typeof feature.did === 'string' && /^did:[a-z]+:\S+$/.test(feature.did);
+		case 'app.bsky.richtext.facet#tag':
+			return typeof feature.tag === 'string' && feature.tag.length > 0;
+		default:
+			return false;
+	}
+}
+
+/**
+ * record.facets が、本文の範囲に収まる正しい形の facet だけでできているか。
+ * @param {*} facets
+ * @param {number} textBytes 本文の UTF-8 のバイト数
+ * @returns {boolean}
+ */
+function areAllowedFacets(facets, textBytes) {
+	if (!Array.isArray(facets) || facets.length > EXT_BRIDGE.postRecord.maxFacets) {
+		return false;
+	}
+	return facets.every((facet) => {
+		const index = facet && typeof facet === 'object' ? facet.index : null;
+		return !!index && typeof index === 'object'
+			&& Number.isInteger(index.byteStart) && Number.isInteger(index.byteEnd)
+			&& index.byteStart >= 0 && index.byteStart < index.byteEnd
+			&& index.byteEnd <= textBytes
+			&& Array.isArray(facet.features) && facet.features.length > 0
+			&& facet.features.every(isAllowedFacetFeature);
+	});
+}
+
+/**
+ * 橋渡しから作ってよい投稿 (返信) の record かを検査する。
+ * **返信でない投稿と、embed などを持つ投稿は通さない。** 作れる投稿を
+ * 「本文だけの返信」に絞ることで、ページ上の誰かがこの橋渡しを撃っても
+ * 単独の投稿や画像付きの投稿を作れないようにする
+ * @param {*} record createRecord の body.record
+ * @returns {{ok: true}|{ok: false, reason: string}}
+ */
+export function checkPostRecord(record) {
+	const reasons = BRIDGE_PROTOCOL.reasons;
+	const rule = EXT_BRIDGE.postRecord;
+	if (!record || typeof record !== 'object' || Array.isArray(record)) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	const keys = Object.keys(record);
+	for (let i = 0; i < keys.length; i += 1) {
+		if (rule.allowedKeys.indexOf(keys[i]) === -1) {
+			return {ok: false, reason: reasons.postRecordNotAllowed};
+		}
+	}
+	const reply = record.reply;
+	if (!reply || typeof reply !== 'object'
+		|| !isPostStrongRef(reply.root) || !isPostStrongRef(reply.parent)) {
+		return {ok: false, reason: reasons.postNotReply};
+	}
+	const textBytes = typeof record.text === 'string'
+		? new TextEncoder().encode(record.text).length
+		: -1;
+	if (textBytes < 0 || textBytes > rule.maxTextBytes) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	if (typeof record.createdAt !== 'string') {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	if (record.langs !== undefined && (!Array.isArray(record.langs)
+		|| record.langs.length > rule.maxLangs
+		|| record.langs.some((lang) => typeof lang !== 'string'))) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	if (record.facets !== undefined && !areAllowedFacets(record.facets, textBytes)) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	return {ok: true};
+}
+
+/**
+ * getPosts の応答から、指定の投稿が返信 (record.reply を持つ) かを読む。
+ * 投稿の削除の前に受け手側で確かめるために使う
+ * @param {*} json getPosts の応答
+ * @param {string} uri 消そうとしている投稿の AT URI
+ * @returns {boolean} 見つからない・形が違うときは false
+ */
+export function isReplyPostResponse(json, uri) {
+	try {
+		const posts = json && Array.isArray(json.posts) ? json.posts : [];
+		const post = posts.find((item) => item && item.uri === uri);
+		const reply = post && post.record && post.record.reply;
+		return !!reply && typeof reply === 'object';
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
  * call-xrpc の要求を検査する。**通らないものはここで落とす。**
  * NSID の白名簿、レコード書き込みの collection、repo が本人かの 3 段。
+ * 投稿の作成は返信の record だけを通し、投稿の削除には needsReplyCheck を
+ * 付けて返す (消す相手が返信であることの確認は通信を伴うため callXrpc() が行う)
  * @param {Object} payload {nsid, params, body}
  * @param {string|null} sessionDid ログイン中の DID
- * @returns {{ok: true, rule: {target: string, method: string}, body: Object|null}
- *   |{ok: false, reason: string}} body は白名簿のキーだけを写した送信用の body
- *   (GET なら null)
+ * @returns {{ok: true, rule: {target: string, method: string}, body: Object|null,
+ *   needsReplyCheck: boolean}|{ok: false, reason: string}} body は白名簿の
+ *   キーだけを写した送信用の body (GET なら null)
  */
 export function checkXrpcRequest(payload, sessionDid) {
 	if (!payload || typeof payload !== 'object') {
@@ -403,7 +589,7 @@ export function checkXrpcRequest(payload, sessionDid) {
 	// 白名簿に NSID を足しても検査が追随しない事故が起きる
 	const isRecordWrite = rule.recordWrite === true;
 	if (rule.method !== 'POST') {
-		return {ok: true, rule, body: null};
+		return {ok: true, rule, body: null, needsReplyCheck: false};
 	}
 	const body = payload.body;
 	if (!body || typeof body !== 'object') {
@@ -420,7 +606,7 @@ export function checkXrpcRequest(payload, sessionDid) {
 	// 白名簿のキーだけを写して送る (validate: false などの余分な指定を通さない)。
 	// bodyKeys が無い規則は body をそのまま通す (recordWrite の検査は上で済んでいる)
 	if (!Array.isArray(rule.bodyKeys)) {
-		return {ok: true, rule, body};
+		return {ok: true, rule, body, needsReplyCheck: false};
 	}
 	const sanitized = {};
 	for (let i = 0; i < rule.bodyKeys.length; i += 1) {
@@ -441,7 +627,45 @@ export function checkXrpcRequest(payload, sessionDid) {
 		&& (typeof sanitized.rkey !== 'string' || !sanitized.rkey)) {
 		return {ok: false, reason: 'invalid-rkey'};
 	}
-	return {ok: true, rule, body: sanitized};
+	const isPost = isRecordWrite && body.collection === EXT_BRIDGE.postCollection;
+	if (isPost && rule.bodyKeys.indexOf('record') !== -1) {
+		const postCheck = checkPostRecord(sanitized.record);
+		if (!postCheck.ok) {
+			return postCheck;
+		}
+	}
+	return {
+		ok: true,
+		rule,
+		body: sanitized,
+		needsReplyCheck: isPost && rule.bodyKeys.indexOf('rkey') !== -1
+	};
+}
+
+/**
+ * 消そうとしている投稿が返信であることを、本体の appview から引いて確かめる。
+ * @param {Object|null} clients findClients() の結果
+ * @param {{repo: string, rkey: string}} body 検査済みの deleteRecord の body
+ * @returns {Promise<boolean>} 確かめられなかったときも false (消さない側に倒す)
+ */
+async function confirmReplyPost(clients, body) {
+	try {
+		const agent = clients && clients.appviewClient && clients.appviewClient.agent;
+		if (!agent || typeof agent.fetchHandler !== 'function') {
+			return false;
+		}
+		const uri = `at://${body.repo}/${EXT_BRIDGE.postCollection}/${body.rkey}`;
+		const response = await agent.fetchHandler(
+			`/xrpc/${NSID.getPosts}${buildQuery({uris: [uri]})}`,
+			{method: 'GET', headers: {accept: 'application/json'}}
+		);
+		if (response.ok !== true) {
+			return false;
+		}
+		return isReplyPostResponse(await response.json(), uri);
+	} catch (error) {
+		return false;
+	}
 }
 
 /**
@@ -490,6 +714,9 @@ async function callXrpc(payload) {
 	const agent = client && client.agent;
 	if (!agent || typeof agent.fetchHandler !== 'function') {
 		return {ok: false, reason: 'no-agent'};
+	}
+	if (checked.needsReplyCheck && !(await confirmReplyPost(clients, checked.body))) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.postNotReply};
 	}
 	const init = {
 		method: checked.rule.method,
@@ -631,7 +858,10 @@ function dispatchRequest(detail) {
 		return;
 	}
 	if (detail.action === EXT_BRIDGE.actions.closeLightbox) {
-		reply(detail.id, closeLightbox());
+		closeLightboxAndSettle().then(
+			(result) => reply(detail.id, result),
+			() => reply(detail.id, {ok: false, reason: 'close-failed'})
+		);
 		return;
 	}
 	if (detail.action === EXT_BRIDGE.actions.callXrpc) {

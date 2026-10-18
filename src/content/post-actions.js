@@ -288,6 +288,43 @@ export class PostActions {
 	}
 
 	/**
+	 * 返信の一覧のために、投稿のスレッドを認証付きで引く。
+	 * 認証付きで引くのは viewer.replyDisabled とミュート・ブロックを反映させるため
+	 * @param {string} uri 起点の投稿の AT URI
+	 * @param {number} depth 下へ辿る深さ
+	 * @returns {Promise<Object|null>} getPostThread の応答。失敗なら null
+	 */
+	async fetchThread(uri, depth) {
+		const result = await this.call(this.config.nsid.getPostThread, {
+			params: {uri, depth, parentHeight: 0}
+		});
+		return result.ok ? result.json : null;
+	}
+
+	/**
+	 * 自分の repo にレコードを 1 件書く。
+	 * 覚えていた DID が古かった (repo-not-self) ときだけ、引き直して 1 回やり直す
+	 * @param {string} collection
+	 * @param {Object} record $type を含む record
+	 * @returns {Promise<{ok: boolean, json: Object|null, reason: string|null}>}
+	 */
+	async writeRecord(collection, record) {
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const did = await this.getSessionDid();
+			if (!did) {
+				return {ok: false, json: null, reason: 'no-session'};
+			}
+			const result = await this.call(this.config.nsid.createRecord, {
+				body: {repo: did, collection, record}
+			});
+			if (result.ok || result.reason !== this.config.reasons.repoNotSelf) {
+				return result;
+			}
+		}
+		return {ok: false, json: null, reason: this.config.reasons.repoNotSelf};
+	}
+
+	/**
 	 * レコードを 1 件作る。
 	 * @param {string} collection app.bsky.feed.like など
 	 * @param {string} uri 対象の投稿の AT URI
@@ -295,42 +332,53 @@ export class PostActions {
 	 * @returns {Promise<{ok: boolean, recordUri: string|null, reason: string|null}>}
 	 */
 	async createRecord(collection, uri, cid) {
-		// 覚えていた DID が古かった (repo-not-self) ときだけ、引き直して 1 回やり直す
-		for (let attempt = 0; attempt < 2; attempt += 1) {
-			const did = await this.getSessionDid();
-			if (!did) {
-				return {ok: false, recordUri: null, reason: 'no-session'};
-			}
-			const result = await this.call(this.config.nsid.createRecord, {
-				body: {
-					repo: did,
-					collection,
-					record: {
-						// 本体 (agent.like()) と同じく $type を明示する。橋渡しの検査も
-						// collection との一致を要求する
-						$type: collection,
-						subject: {uri, cid},
-						createdAt: new Date().toISOString()
-					}
-				}
-			});
-			if (result.ok) {
-				const recordUri = (result.json && typeof result.json.uri === 'string')
-					? result.json.uri
-					: null;
-				if (recordUri === null) {
-					// 応答から URI が読めないと、付けた反応を取り消せない。
-					// 「付いたが URI 不明」を正として覚え込むと次の押下で 2 本目が
-					// 飛ぶため失敗扱いにし、呼び出し側にサーバから引き直させる
-					return {ok: false, recordUri: null, reason: 'no-record-uri'};
-				}
-				return {ok: true, recordUri, reason: null};
-			}
-			if (result.reason !== this.config.reasons.repoNotSelf) {
-				return {ok: false, recordUri: null, reason: result.reason};
-			}
+		const result = await this.writeRecord(collection, {
+			// 本体 (agent.like()) と同じく $type を明示する。橋渡しの検査も
+			// collection との一致を要求する
+			$type: collection,
+			subject: {uri, cid},
+			createdAt: new Date().toISOString()
+		});
+		if (!result.ok) {
+			return {ok: false, recordUri: null, reason: result.reason};
 		}
-		return {ok: false, recordUri: null, reason: this.config.reasons.repoNotSelf};
+		const recordUri = (result.json && typeof result.json.uri === 'string')
+			? result.json.uri
+			: null;
+		if (recordUri === null) {
+			// 応答から URI が読めないと、付けた反応を取り消せない。
+			// 「付いたが URI 不明」を正として覚え込むと次の押下で 2 本目が
+			// 飛ぶため失敗扱いにし、呼び出し側にサーバから引き直させる
+			return {ok: false, recordUri: null, reason: 'no-record-uri'};
+		}
+		return {ok: true, recordUri, reason: null};
+	}
+
+	/**
+	 * 返信を 1 件投稿する。橋渡しは返信の形の record だけを通す。
+	 * @param {Object} record reply-text.js の buildReplyRecord() の結果
+	 * @returns {Promise<{ok: boolean, uri: string|null, cid: string|null, reason: string|null}>}
+	 *   応答から uri / cid が読めなければ失敗扱い (一覧へ差し込めず、消せもしないため)
+	 */
+	async createReply(record) {
+		const result = await this.writeRecord(this.config.collections.post, record);
+		if (!result.ok) {
+			return {ok: false, uri: null, cid: null, reason: result.reason};
+		}
+		const json = result.json || {};
+		if (typeof json.uri !== 'string' || typeof json.cid !== 'string') {
+			return {ok: false, uri: null, cid: null, reason: 'no-record-uri'};
+		}
+		return {ok: true, uri: json.uri, cid: json.cid, reason: null};
+	}
+
+	/**
+	 * 自分の返信を消す。橋渡しが「消す相手が返信であること」を確かめてから消す。
+	 * @param {string} uri 返信の AT URI
+	 * @returns {Promise<{ok: boolean, reason: string|null}>}
+	 */
+	deleteReply(uri) {
+		return this.deleteRecord(uri);
 	}
 
 	/**

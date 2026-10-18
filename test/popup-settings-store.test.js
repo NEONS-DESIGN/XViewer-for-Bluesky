@@ -91,7 +91,7 @@ test('初期化は扱うキーだけを remove する', async () => {
 	const storage = fakeStorage({});
 	assert.strictEqual(await resetSettings(storage), true);
 	assert.deepStrictEqual([...storage.removed].sort(), [...MANAGED_KEYS].sort());
-	assert.strictEqual(MANAGED_KEYS.length, 7);
+	assert.strictEqual(MANAGED_KEYS.length, 8);
 });
 
 test('初期化は扱わないキー (パネルの畳み状態) を残す', async () => {
@@ -101,7 +101,7 @@ test('初期化は扱わないキー (パネルの畳み状態) を残す', asyn
 	assert.ok(!('debugEnabled' in storage.data));
 });
 
-test('MANAGED_KEYS は 6 項目の保存キーと配色の保存キー', () => {
+test('MANAGED_KEYS は 7 項目の保存キーと配色の保存キー', () => {
 	assert.deepStrictEqual(
 		new Set(MANAGED_KEYS),
 		new Set([...ALL_FIELDS.map((f) => f.key), EXT_CONFIG.popup.themeStorageKey])

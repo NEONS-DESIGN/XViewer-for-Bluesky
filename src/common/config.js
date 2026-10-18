@@ -463,6 +463,112 @@ export const EXT_CONFIG = {
 	},
 
 	/**
+	 * ライトボックスのパネルの返信欄 (lightbox-replies.js)。
+	 * 姉妹プロジェクト XViewer for Pixiv のサイドバーのコメント欄と同じ形で、
+	 * 返信の一覧・入力欄・自分の返信の削除を出す。入力欄と削除は postActions も
+	 * 有効なときだけ出す (書き込みのため)
+	 */
+	lightboxReplies: {
+		storageKey: 'lightboxRepliesEnabled',
+		/** 既定は有効。利用者の要望で入れた機能のため */
+		defaultEnabled: true,
+		/** 一覧と開いた返信の中で、1 回に出す件数 (「もっと見る」で増やす) */
+		pageSize: 20,
+		/**
+		 * getPostThread の depth。1 段目はこの投稿への直接の返信だけを読む
+		 * (2 段目まで読むと大きな投稿で 1 件の下に数十件が付き、応答が重い。
+		 * 2026-10-18 実測)。開いた返信の下は Bluesky 本体と同じ深さで読む
+		 */
+		depth: {root: 1, branch: 6},
+		/**
+		 * 本文の上限。書記素は app.bsky.feed.post の lexicon の maxGraphemes、
+		 * バイトは橋渡しの検査と同じ値
+		 */
+		limits: {
+			maxGraphemes: 300,
+			maxBytes: BRIDGE_PROTOCOL.postRecord.maxTextBytes
+		},
+		/** 残りの文字数がこれ以下になったら残数の表示の色を変える */
+		warnRemaining: 20,
+		/** 投稿を引き直さずに組み立てるときの、返信の record の collection */
+		postCollection: BRIDGE_PROTOCOL.collections.post,
+		api: {
+			origin: EXT_SHARED.publicApiOrigin,
+			threadPath: '/xrpc/app.bsky.feed.getPostThread',
+			resolveHandlePath: '/xrpc/com.atproto.identity.resolveHandle',
+			profilePath: '/xrpc/app.bsky.actor.getProfile',
+			timeoutMs: 12000
+		},
+		classes: {
+			section: 'ext-lb-replies',
+			header: 'ext-lb-replies-header',
+			heading: 'ext-lb-replies-heading',
+			headingText: 'ext-lb-replies-heading-text',
+			toTop: 'ext-lb-replies-top',
+			sentinel: 'ext-lb-replies-sentinel',
+			status: 'ext-lb-replies-status',
+			retry: 'ext-lb-replies-retry',
+			list: 'ext-lb-reply-list',
+			more: 'ext-lb-replies-more',
+			item: 'ext-lb-reply',
+			child: 'ext-lb-reply-child',
+			avatar: 'ext-lb-reply-avatar',
+			body: 'ext-lb-reply-body',
+			nameRow: 'ext-lb-reply-name-row',
+			name: 'ext-lb-reply-name',
+			label: 'ext-lb-reply-label',
+			labelSelf: 'ext-lb-reply-label-self',
+			replyTo: 'ext-lb-reply-replyto',
+			text: 'ext-lb-reply-text',
+			embed: 'ext-lb-reply-embed',
+			meta: 'ext-lb-reply-meta',
+			metaButton: 'ext-lb-reply-meta-button',
+			toggle: 'ext-lb-reply-toggle',
+			deleteButton: 'ext-lb-reply-delete',
+			confirming: 'is-confirming',
+			showReplies: 'ext-lb-reply-replies',
+			date: 'ext-lb-reply-date',
+			area: 'ext-lb-reply-replies-area',
+			childList: 'ext-lb-reply-child-list',
+			error: 'ext-lb-reply-error',
+			form: 'ext-lb-reply-form',
+			formRow: 'ext-lb-reply-form-row',
+			formAvatar: 'ext-lb-reply-form-avatar',
+			inputFrame: 'ext-lb-reply-input-frame',
+			input: 'ext-lb-reply-input',
+			formFoot: 'ext-lb-reply-form-foot',
+			remaining: 'ext-lb-reply-remaining',
+			warn: 'is-warn',
+			submit: 'ext-lb-reply-submit'
+		},
+		text: {
+			heading: '返信',
+			toTop: '上部へ',
+			placeholder: '返信を書く',
+			replyPlaceholder: '返信する',
+			submit: '送信',
+			remaining: '残り',
+			loading: '読み込み中...',
+			empty: 'まだ返信はありません',
+			error: '返信を読み込めませんでした (押すと再試行)',
+			disabled: 'この投稿は返信を受け付けていません',
+			more: 'もっと見る',
+			moreReplies: '返信をもっと見る',
+			showReplies: '返信を表示',
+			hideReplies: '返信を隠す',
+			reply: '返信',
+			delete: '削除',
+			confirmDelete: '本当に削除？',
+			postFailed: '返信できませんでした',
+			deleteFailed: '削除できませんでした',
+			labelAuthor: '作者',
+			labelSelf: 'あなた',
+			replyTo: '返信先',
+			hasEmbed: '添付あり'
+		}
+	},
+
+	/**
 	 * ライトボックスの操作性の調整 (lightbox-guard.js、2.5.0 で追加)。
 	 * 投稿情報パネル (lightboxPanel) とは独立した機能で、設定も別に持つ。
 	 *

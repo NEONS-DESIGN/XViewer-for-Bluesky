@@ -107,6 +107,18 @@ const POST_ACTIONS = Object.freeze({
 	requires: EXT_CONFIG.lightboxPanel.storageKey
 });
 
+/** @type {Field} */
+const LIGHTBOX_REPLIES = Object.freeze({
+	role: 'lightbox-replies',
+	key: EXT_CONFIG.lightboxReplies.storageKey,
+	defaultValue: EXT_CONFIG.lightboxReplies.defaultEnabled,
+	label: '返信の一覧',
+	description: '画像を開いたとき、パネルの下に返信の一覧を出します。'
+		+ '『返信・いいね』が有効なら、その場で返信を書いたり、自分の返信を消したりできます。',
+	// 返信の一覧は投稿情報パネルの中に出る
+	requires: EXT_CONFIG.lightboxPanel.storageKey
+});
+
 /** @type {readonly Section[]} 並び順がそのまま表示順 */
 export const SECTIONS = Object.freeze([
 	Object.freeze({
@@ -135,7 +147,7 @@ export const SECTIONS = Object.freeze([
 				label: '投稿情報を表示',
 				description: '画像を開いたとき、右側に本文・投稿日時・反応数を並べます。'
 					+ 'メディアグリッド以外の画像でも動きます。',
-				children: Object.freeze([POST_ACTIONS])
+				children: Object.freeze([POST_ACTIONS, LIGHTBOX_REPLIES])
 			}),
 			Object.freeze({
 				role: 'lightbox-guard',

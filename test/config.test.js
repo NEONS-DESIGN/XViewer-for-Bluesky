@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import {EXT_VIEWS, EXT_CONFIG} from '../src/common/config.js';
+import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 
 test('EXT_VIEWS は 4 種のページ種別を持つ', () => {
 	assert.deepStrictEqual(EXT_VIEWS, {
@@ -105,10 +106,34 @@ test('保存キーは互いに衝突しない', () => {
 		EXT_CONFIG.lightboxPanel.storageKey,
 		EXT_CONFIG.lightboxPanel.collapsedStorageKey,
 		EXT_CONFIG.lightboxGuard.storageKey,
-		EXT_CONFIG.postActions.storageKey
+		EXT_CONFIG.postActions.storageKey,
+		EXT_CONFIG.lightboxReplies.storageKey
 	];
 	assert.strictEqual(new Set(keys).size, keys.length);
 	keys.forEach((key) => assert.strictEqual(typeof key, 'string'));
+});
+
+test('返信欄の上限は橋渡しの検査と同じ値を使う', () => {
+	const replies = EXT_CONFIG.lightboxReplies;
+	assert.strictEqual(replies.storageKey, 'lightboxRepliesEnabled');
+	assert.strictEqual(replies.defaultEnabled, true);
+	assert.strictEqual(replies.limits.maxGraphemes, 300);
+	assert.strictEqual(replies.limits.maxBytes, BRIDGE_PROTOCOL.postRecord.maxTextBytes);
+	assert.strictEqual(replies.pageSize, 20);
+	assert.deepStrictEqual(replies.depth, {root: 1, branch: 6});
+	assert.strictEqual(replies.warnRemaining, 20);
+});
+
+test('返信欄のクラスはすべて content.css に書いてあり、削除の色は両テーマにある', () => {
+	const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'content.css'), 'utf8');
+	for (const [role, cls] of Object.entries(EXT_CONFIG.lightboxReplies.classes)) {
+		assert.ok(css.includes(`.${cls}`), `${role} (${cls}) が content.css に無い`);
+	}
+	const values = Object.values(EXT_CONFIG.lightboxReplies.classes);
+	assert.strictEqual(new Set(values).size, values.length);
+	assert.ok(css.includes('--ext-lb-danger:'), '--ext-lb-danger が content.css に無い');
+	const light = css.slice(css.indexOf(':root.theme--light #ext-lightbox-panel {'));
+	assert.ok(light.slice(0, light.indexOf('}')).includes('--ext-lb-danger:'), 'ライトに --ext-lb-danger が無い');
 });
 
 test('ライトボックスのパネルは既定で有効', () => {

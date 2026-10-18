@@ -194,6 +194,8 @@
 	--ext-lb-repost: #00ba7c;
 	--ext-lb-like: #f91880;
 	--ext-lb-bookmark: #ffd400;
+	/* 返信欄の削除の聞き返し (2026-10-18 追加)。ライトは下で暗い側へ差し替える */
+	--ext-lb-danger: #e5737a;
 
 	position: fixed;
 	top: 0;
@@ -222,6 +224,7 @@
 	--ext-lb-repost: #00875a;
 	--ext-lb-like: #d81b7a;
 	--ext-lb-bookmark: #a16207;
+	--ext-lb-danger: #c62828;
 }
 
 :root.theme--dim #ext-lightbox-panel {
@@ -492,6 +495,340 @@
 .ext-lb-status {
 	margin: 0;
 	color: var(--ext-lb-muted);
+}
+
+/*
+ * 返信欄 (lightbox-replies.js、2026-10-18 追加)。
+ * XViewer for Pixiv のサイドバーのコメント欄と同じ形: 見出しと入力欄を上端に
+ * 貼り付け、その下に返信を新しい順に並べる。入れ子は 1 段で、左の縦線で示す。
+ * パネル全体が 1 つのスクロールで送られる (入れ子のスクロールを作らない)
+ */
+.ext-lb-replies {
+	display: flex;
+	flex-direction: column;
+	padding-top: 12px;
+	border-top: 1px solid var(--ext-lb-border);
+}
+
+/* 見出しが上端へ抜けたかを測るための番兵。大きさを持たない */
+.ext-lb-replies-sentinel {
+	height: 0;
+}
+
+.ext-lb-replies-header {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	padding-bottom: 4px;
+	background: var(--ext-lb-bg);
+}
+
+.ext-lb-replies-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin: 0 0 8px;
+	padding-top: 4px;
+	font-size: 14px;
+	font-weight: 700;
+	outline: none;
+}
+
+.ext-lb-replies-heading-text {
+	flex: 1 1 auto;
+}
+
+.ext-lb-replies-top,
+.ext-lb-reply-meta-button,
+.ext-lb-reply-name,
+.ext-lb-replies-retry {
+	padding: 0;
+	cursor: pointer;
+	color: var(--ext-lb-muted);
+	background: none;
+	border: none;
+	font: inherit;
+}
+
+.ext-lb-replies-top {
+	font-size: 12px;
+	font-weight: 400;
+}
+
+.ext-lb-replies-top:hover,
+.ext-lb-reply-meta-button:hover,
+.ext-lb-replies-retry:hover {
+	color: var(--ext-lb-text);
+	text-decoration: underline;
+}
+
+.ext-lb-replies-status p {
+	margin: 4px 0;
+	color: var(--ext-lb-muted);
+	font-size: 13px;
+}
+
+.ext-lb-reply-list,
+.ext-lb-reply-child-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.ext-lb-reply {
+	display: flex;
+	gap: 8px;
+	padding: 8px 0;
+	border-bottom: 1px solid var(--ext-lb-border);
+}
+
+.ext-lb-reply.ext-lb-reply-child {
+	padding: 6px 0;
+	border-bottom: none;
+}
+
+.ext-lb-reply-avatar {
+	flex: 0 0 auto;
+	width: 32px;
+	height: 32px;
+	border-radius: 16px;
+	object-fit: cover;
+	cursor: pointer;
+	background: var(--ext-lb-border);
+}
+
+.ext-lb-reply-child > .ext-lb-reply-avatar {
+	width: 24px;
+	height: 24px;
+	border-radius: 12px;
+}
+
+.ext-lb-reply-body {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.ext-lb-reply-name-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.ext-lb-reply-name {
+	overflow: hidden;
+	color: var(--ext-lb-text);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.ext-lb-reply-name:hover {
+	text-decoration: underline;
+}
+
+.ext-lb-reply-label {
+	flex: 0 0 auto;
+	padding: 0 6px;
+	border-radius: 999px;
+	color: var(--ext-lb-bg);
+	background: var(--ext-lb-muted);
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1.6;
+}
+
+.ext-lb-reply-label.ext-lb-reply-label-self {
+	background: var(--ext-lb-accent);
+}
+
+.ext-lb-reply-replyto,
+.ext-lb-reply-embed {
+	margin: 0;
+	color: var(--ext-lb-muted);
+	font-size: 12px;
+}
+
+.ext-lb-reply-text {
+	margin: 2px 0 0;
+	font-size: 13px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.ext-lb-reply-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 12px;
+	margin-top: 4px;
+}
+
+.ext-lb-reply-meta-button {
+	font-size: 12px;
+}
+
+.ext-lb-reply-date {
+	font-size: 11px;
+}
+
+/* 開いている入力欄・返信の一覧のボタンは、閉じているものより濃く出す */
+.ext-lb-reply-toggle[aria-expanded="true"],
+.ext-lb-reply-replies[aria-expanded="true"] {
+	color: var(--ext-lb-text);
+}
+
+.ext-lb-reply-delete.is-confirming {
+	color: var(--ext-lb-danger);
+	font-weight: 700;
+}
+
+.ext-lb-reply-replies-area {
+	margin: 4px 0 0 4px;
+	padding-left: 8px;
+	border-left: 2px solid var(--ext-lb-border);
+}
+
+.ext-lb-reply-error {
+	margin: 4px 0 0;
+	color: var(--ext-lb-danger);
+	font-size: 12px;
+}
+
+.ext-lb-reply-form {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 8px 0;
+}
+
+.ext-lb-reply-form-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+}
+
+.ext-lb-reply-form-avatar {
+	flex: 0 0 auto;
+	width: 32px;
+	height: 32px;
+	border-radius: 16px;
+	object-fit: cover;
+}
+
+/*
+ * 入力欄の見た目の枠。地色・枠線・余白は欄そのものではなくこちらに持たせる。
+ * 欄に余白を持たせると、10 行を超えてスクロールしたときに余白まで文字が送られ、
+ * 文字が枠に接して見える (2026-10-18 利用者の指摘)。欄は余白なしでこの内側に置く
+ */
+.ext-lb-reply-input-frame {
+	flex: 1 1 auto;
+	display: flex;
+	min-width: 0;
+	padding: 6px 8px;
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: 1px solid transparent;
+	border-radius: 4px;
+}
+
+.ext-lb-reply-input-frame:focus-within {
+	border-color: var(--ext-lb-accent);
+}
+
+.ext-lb-reply-input {
+	flex: 1 1 auto;
+	box-sizing: border-box;
+	min-width: 0;
+	/*
+	 * 10 行を超えた分は欄の中で送る (高さは JS が内容に合わせる)。
+	 * 届くまではスクロールバーを出さない (JS が overflow-y を切り替える。既定は隠す)
+	 */
+	max-height: 10lh;
+	overflow-y: hidden;
+	margin: 0;
+	padding: 0;
+	resize: none;
+	color: var(--ext-lb-text);
+	background: transparent;
+	border: none;
+	font: inherit;
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+.ext-lb-reply-input:focus {
+	outline: none;
+}
+
+.ext-lb-reply-input:disabled {
+	opacity: 0.6;
+}
+
+.ext-lb-reply-form-foot {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 12px;
+}
+
+.ext-lb-reply-remaining {
+	color: var(--ext-lb-muted);
+	font-size: 12px;
+}
+
+.ext-lb-reply-remaining.is-warn {
+	color: var(--ext-lb-danger);
+}
+
+.ext-lb-reply-submit {
+	height: 30px;
+	padding: 0 16px;
+	cursor: pointer;
+	color: #ffffff;
+	background: var(--ext-lb-accent);
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.ext-lb-reply-submit:disabled {
+	cursor: default;
+	color: var(--ext-lb-muted);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+}
+
+.ext-lb-reply-submit[aria-busy="true"] {
+	cursor: progress;
+}
+
+.ext-lb-replies-more {
+	width: 100%;
+	height: 30px;
+	margin-top: 8px;
+	cursor: pointer;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: none;
+	border-radius: 6px;
+	font: inherit;
+	font-size: 13px;
+}
+
+.ext-lb-replies-more:hover {
+	background: color-mix(in srgb, var(--ext-lb-text) 14%, transparent);
+}
+
+.ext-lb-replies-top:focus-visible,
+.ext-lb-reply-meta-button:focus-visible,
+.ext-lb-reply-name:focus-visible,
+.ext-lb-replies-retry:focus-visible,
+.ext-lb-reply-submit:focus-visible,
+.ext-lb-replies-more:focus-visible {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: 2px;
 }
 
 /*

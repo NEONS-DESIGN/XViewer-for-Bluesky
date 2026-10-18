@@ -36,7 +36,7 @@
 ## What this is
 
 A Bluesky profile's Media tab becomes **a grid of square thumbnails**.
-Open an image and the post's text, date and counts appear on the right, where you can reply, repost, like or bookmark right away.
+Open an image and the post's text, date, counts and replies appear on the right, where you can reply, repost, like or bookmark right away.
 Clicking the image itself no longer closes it, so you won't be thrown back to the list halfway through.
 
 ![An image open in the lightbox, with the post details panel on the right](site/assets/img/shot-lightbox.webp)
@@ -63,11 +63,13 @@ When you open an image, a post details panel appears on the right. It works wher
 | | |
 | --- | --- |
 | **Post details** | The author, text, date, the reply / repost / like counts and an "Open post" button. Links, mentions and hashtags in the text work too. The panel can be collapsed |
-| **React without closing** | Reply, repost, quote, like and bookmark without closing the image. The button changes the moment you press it; if the request fails it goes back and tells you in one line. Reply and quote open Bluesky's own composer on top of the lightbox. The buttons are not shown when you are signed out |
+| **React without closing** | Reply, repost, quote, like and bookmark without closing the image. The button changes the moment you press it; if the request fails it goes back and tells you in one line. Quote opens Bluesky's own composer on top of the lightbox. The buttons are not shown when you are signed out |
+| **Replies** | Lists the replies under the panel, newest first, 20 at a time. "Show replies" opens one level of replies to a reply. Reply right there from the box at the top (Ctrl+Enter or "Send", up to 300 characters), including replies to replies. Delete your own replies with "Delete" then "Really delete?". Same layout as the comment section of XViewer for Pixiv |
 | **Clicking the image keeps it open** | Clicking the image itself no longer closes the lightbox, and the pointer turns into a hand only over buttons you can press. Click the dark area around it to close. The close button moves to the top left, with the image options next to it |
 
 For sign-in, it only borrows the authenticated client that Bluesky keeps in the page, and never touches the tokens in `localStorage`.
-What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, and fetching posts.
+What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching posts and their replies, and posting and deleting your own replies.
+Posts that are not replies cannot be created, and before deleting, it checks that the target is your own reply.
 
 ### Other
 
@@ -151,6 +153,7 @@ The option names below are translations; the popup shows them in Japanese.
 | Media grid | ↳ Remove NSFW blur | Off | Removes the blur and warning text from grid tiles so a single click opens them. Warnings shown by Bluesky itself are left alone |
 | Lightbox | Show post details | On | Shows the text, date and counts on the right when you open an image. Works for images outside the grid too. Not shown when the window is narrow |
 | Lightbox | ↳ Reply and like | On | Adds reply, repost, quote, like and bookmark buttons to the panel. When off, only the buttons go away and the panel stays |
+| Lightbox | ↳ Reply list | On | Shows the list of replies under the panel. When "Reply and like" is also on, you can reply from the box and delete your own replies |
 | Lightbox | Don't close on image click | On | Keeps the lightbox open when you click the image itself, and leaves the hand pointer only on buttons. Moves the close button to the top left, with the image options next to it |
 | Developer | Debug mode | Off | Logs tab detection, the grid starting and stopping, and fetching to the console, and writes the internal state to an attribute on the `html` element. Useful when reporting a bug |
 
@@ -165,8 +168,8 @@ and stays on your choice once you switch. ("Reset settings" returns it to follow
 - **Use it at your own risk.** Neither the author nor Bluesky Social PBC is responsible for any damage caused by using this extension
 - **Each like, repost or bookmark you press is sent to Bluesky from your account.**
   Likes and reposts are public, just as when you use Bluesky directly
-- **Replies and quotes are posted only when you send them from Bluesky's own composer.**
-  The extension never deletes posts, follows, blocks or sends DMs
+- **Replies are posted only when you send them yourself, from the panel's reply box or from Bluesky's own composer.** Quotes are sent from Bluesky's own composer.
+  The only posts the extension deletes are your own replies, after you press "Really delete?". It never creates or deletes posts that are not replies, and never follows, blocks or sends DMs
 - **Removing the NSFW blur affects only the grid tiles.** It never changes Bluesky's own content settings or the warnings Bluesky shows
 - **It has no way to collect images.** There is no downloading and no bulk automation.
   It only fetches the posts of the profile you are viewing and the post of the image you open

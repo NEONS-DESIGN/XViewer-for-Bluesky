@@ -69,6 +69,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	 */
 	nsid: {
 		getPosts: 'app.bsky.feed.getPosts',
+		/** パネルの返信の一覧を読む (読み取りのみ) */
+		getPostThread: 'app.bsky.feed.getPostThread',
 		createRecord: 'com.atproto.repo.createRecord',
 		deleteRecord: 'com.atproto.repo.deleteRecord',
 		createBookmark: 'app.bsky.bookmark.createBookmark',
@@ -76,18 +78,36 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	},
 	/**
 	 * createRecord / deleteRecord で触れてよいコレクション。
-	 * ここに無いものは通さないため、投稿・削除・フォロー・ブロックは
-	 * この橋渡しでは行えない
+	 * ここに無いものは通さないため、フォロー・ブロックはこの橋渡しでは行えない。
+	 * 投稿 (post) は**返信だけ**を通す。作成は record の形 (postRecord) を、
+	 * 削除は消す相手が返信であることを、受け手の page-bridge.js が確かめる
 	 */
 	collections: {
 		like: 'app.bsky.feed.like',
-		repost: 'app.bsky.feed.repost'
+		repost: 'app.bsky.feed.repost',
+		post: 'app.bsky.feed.post'
+	},
+	/**
+	 * 返信として作れる投稿の record の形。
+	 * embed (画像・引用・リンクカード) は通さない。maxTextBytes は
+	 * app.bsky.feed.post の lexicon の text の maxLength (3000 バイト)
+	 */
+	postRecord: {
+		allowedKeys: ['$type', 'text', 'createdAt', 'reply', 'langs', 'facets'],
+		maxTextBytes: 3000,
+		maxLangs: 3,
+		/** facets の件数の上限 (大量のメンションで通知を撒かせない) */
+		maxFacets: 50
 	},
 	/** open-composer が受け付けるモード */
 	composerModes: {reply: 'reply', quote: 'quote'},
 	/** 橋渡しが返す失敗理由のうち、呼び出し側が分岐に使うもの */
 	reasons: {
 		/** repo が本人の DID でない = 覚えていた DID が古い (アカウント切り替え) */
-		repoNotSelf: 'repo-not-self'
+		repoNotSelf: 'repo-not-self',
+		/** 返信でない投稿を作ろうとした / 返信でない投稿を消そうとした */
+		postNotReply: 'post-not-reply',
+		/** 返信の record に許していないキー・形が含まれていた */
+		postRecordNotAllowed: 'post-record-not-allowed'
 	}
 });

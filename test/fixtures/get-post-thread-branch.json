@@ -1,0 +1,73 @@
+{
+	"thread": {
+		"$type": "app.bsky.feed.defs#threadViewPost",
+		"post": {
+			"uri": "at://did:plc:a/app.bsky.feed.post/A",
+			"cid": "cid-A",
+			"author": {"did": "did:plc:a", "handle": "a.example.com"},
+			"record": {"$type": "app.bsky.feed.post", "text": "起点", "createdAt": "2026-10-02T00:00:00.000Z"},
+			"replyCount": 2
+		},
+		"replies": [
+			{
+				"$type": "app.bsky.feed.defs#threadViewPost",
+				"post": {
+					"uri": "at://did:plc:b/app.bsky.feed.post/B",
+					"cid": "cid-B",
+					"author": {"did": "did:plc:b", "handle": "b.example.com"},
+					"record": {
+						"$type": "app.bsky.feed.post",
+						"text": "B",
+						"createdAt": "2026-10-04T00:00:00.000Z",
+						"reply": {
+							"root": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"},
+							"parent": {"uri": "at://did:plc:a/app.bsky.feed.post/A", "cid": "cid-A"}
+						}
+					},
+					"replyCount": 1
+				},
+				"replies": [
+					{
+						"$type": "app.bsky.feed.defs#threadViewPost",
+						"post": {
+							"uri": "at://did:plc:d/app.bsky.feed.post/D",
+							"cid": "cid-D",
+							"author": {"did": "did:plc:d", "handle": "d.example.com"},
+							"record": {
+								"$type": "app.bsky.feed.post",
+								"text": "D",
+								"createdAt": "2026-10-05T00:00:00.000Z",
+								"reply": {
+									"root": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"},
+									"parent": {"uri": "at://did:plc:b/app.bsky.feed.post/B", "cid": "cid-B"}
+								}
+							},
+							"replyCount": 0
+						},
+						"replies": [
+							{"$type": "app.bsky.feed.defs#notFoundPost", "uri": "at://did:plc:gone/app.bsky.feed.post/z", "notFound": true}
+						]
+					}
+				]
+			},
+			{
+				"$type": "app.bsky.feed.defs#threadViewPost",
+				"post": {
+					"uri": "at://did:plc:c/app.bsky.feed.post/C",
+					"cid": "cid-C",
+					"author": {"did": "did:plc:c", "handle": "c.example.com"},
+					"record": {
+						"$type": "app.bsky.feed.post",
+						"text": "C",
+						"createdAt": "2026-10-03T00:00:00.000Z",
+						"reply": {
+							"root": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"},
+							"parent": {"uri": "at://did:plc:a/app.bsky.feed.post/A", "cid": "cid-A"}
+						}
+					},
+					"replyCount": 0
+				}
+			}
+		]
+	}
+}

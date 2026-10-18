@@ -1,0 +1,57 @@
+{
+	"thread": {
+		"$type": "app.bsky.feed.defs#threadViewPost",
+		"post": {
+			"uri": "at://did:plc:op/app.bsky.feed.post/root1",
+			"cid": "cid-root1",
+			"author": {"did": "did:plc:op", "handle": "op.example.com", "displayName": "OP"},
+			"record": {"$type": "app.bsky.feed.post", "text": "画像の投稿", "createdAt": "2026-10-01T00:00:00.000Z"},
+			"replyCount": 4,
+			"viewer": {"replyDisabled": false}
+		},
+		"replies": [
+			{
+				"$type": "app.bsky.feed.defs#threadViewPost",
+				"post": {
+					"uri": "at://did:plc:alice/app.bsky.feed.post/r1",
+					"cid": "cid-r1",
+					"author": {"did": "did:plc:alice", "handle": "alice.example.com", "displayName": "Alice", "avatar": "https://cdn.example.com/a.jpg"},
+					"record": {
+						"$type": "app.bsky.feed.post",
+						"text": "いいね https://example.com",
+						"createdAt": "2026-10-02T00:00:00.000Z",
+						"facets": [{"index": {"byteStart": 10, "byteEnd": 29}, "features": [{"$type": "app.bsky.richtext.facet#link", "uri": "https://example.com"}]}],
+						"reply": {
+							"root": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"},
+							"parent": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"}
+						}
+					},
+					"replyCount": 2,
+					"indexedAt": "2026-10-02T00:00:01.000Z"
+				},
+				"replies": []
+			},
+			{"$type": "app.bsky.feed.defs#notFoundPost", "uri": "at://did:plc:gone/app.bsky.feed.post/x", "notFound": true},
+			{"$type": "app.bsky.feed.defs#blockedPost", "uri": "at://did:plc:blocked/app.bsky.feed.post/y", "blocked": true},
+			{
+				"$type": "app.bsky.feed.defs#threadViewPost",
+				"post": {
+					"uri": "at://did:plc:bob/app.bsky.feed.post/r2",
+					"cid": "cid-r2",
+					"author": {"did": "did:plc:bob", "handle": "bob.example.com"},
+					"record": {
+						"$type": "app.bsky.feed.post",
+						"text": "",
+						"reply": {
+							"root": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"},
+							"parent": {"uri": "at://did:plc:op/app.bsky.feed.post/root1", "cid": "cid-root1"}
+						}
+					},
+					"embed": {"$type": "app.bsky.embed.images#view", "images": []},
+					"replyCount": 0,
+					"indexedAt": "2026-10-03T00:00:00.000Z"
+				}
+			}
+		]
+	}
+}

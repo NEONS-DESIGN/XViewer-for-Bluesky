@@ -21,6 +21,8 @@ import {ExtDebug} from '../common/debug.js';
 import {createIcon} from '../common/icons.js';
 import {callBridge} from './bridge-client.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
+import {installPanelFocusGuard} from './panel-focus-guard.js';
+import {LightboxReplies} from './lightbox-replies.js';
 import {
 	PostActions, readViewerState, toggleActionState, mergeActionKind, isActionApplied
 } from './post-actions.js';
@@ -487,6 +489,26 @@ export class LightboxPanel {
 		 * 閉じるときに aria-expanded を戻すのに要る
 		 */
 		this.menuAnchor = null;
+		/**
+		 * パネルに付けたフォーカスとキーのリスナーを外す関数。
+		 * mountPanel() で付け、unmountPanel() で外す
+		 * @type {(() => void)|null}
+		 */
+		this.releaseFocusGuard = null;
+		/** 返信欄を出すか。ポップアップのトグル */
+		this.repliesEnabled = EXT_CONFIG.lightboxReplies.defaultEnabled;
+		/**
+		 * 返信欄 (lightbox-replies.js)。パネルを import させないため、
+		 * 本文の描画・遷移・返信数の更新はここから口として渡す
+		 * @type {LightboxReplies}
+		 */
+		this.replies = new LightboxReplies(EXT_CONFIG.lightboxReplies, {
+			toSegments: (text, facets) => applyFacets(text, facets, this.config),
+			buildSegment: (segment) => this.buildSegment(segment),
+			leaveTo: (target) => this.leaveTo(target),
+			adjustReplyCount: (delta) => this.adjustReplyCount(delta),
+			actions: this.actions
+		});
 	}
 
 	/**
@@ -499,12 +521,15 @@ export class LightboxPanel {
 			const stored = await chrome.storage.sync.get([
 				config.storageKey,
 				config.collapsedStorageKey,
-				EXT_CONFIG.postActions.storageKey
+				EXT_CONFIG.postActions.storageKey,
+				EXT_CONFIG.lightboxReplies.storageKey
 			]);
 			this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
 			this.collapsed = stored[config.collapsedStorageKey] ?? config.defaultCollapsed;
 			this.actionsEnabled = stored[EXT_CONFIG.postActions.storageKey]
 				?? EXT_CONFIG.postActions.defaultEnabled;
+			this.repliesEnabled = stored[EXT_CONFIG.lightboxReplies.storageKey]
+				?? EXT_CONFIG.lightboxReplies.defaultEnabled;
 		} catch (error) {
 			console.error('[XViewer] パネルの設定の読み込みに失敗しました', error);
 		}
@@ -513,9 +538,16 @@ export class LightboxPanel {
 				if (area !== 'sync') {
 					return;
 				}
-				if (changes[EXT_CONFIG.postActions.storageKey]) {
-					this.actionsEnabled = changes[EXT_CONFIG.postActions.storageKey].newValue
-						?? EXT_CONFIG.postActions.defaultEnabled;
+				const repliesKey = EXT_CONFIG.lightboxReplies.storageKey;
+				if (changes[EXT_CONFIG.postActions.storageKey] || changes[repliesKey]) {
+					if (changes[EXT_CONFIG.postActions.storageKey]) {
+						this.actionsEnabled = changes[EXT_CONFIG.postActions.storageKey].newValue
+							?? EXT_CONFIG.postActions.defaultEnabled;
+					}
+					if (changes[repliesKey]) {
+						this.repliesEnabled = changes[repliesKey].newValue
+							?? EXT_CONFIG.lightboxReplies.defaultEnabled;
+					}
 					// 描画済みのパネルにその場で反映する (リロードを求めない)
 					if (this.post) {
 						this.renderPost(this.post);
@@ -642,6 +674,7 @@ export class LightboxPanel {
 	 */
 	teardown() {
 		this.closeRepostMenu();
+		this.replies.destroy();
 		// 飛行中の取得の応答を捨てる
 		this.generation += 1;
 		this.releaseShrink();
@@ -802,6 +835,13 @@ export class LightboxPanel {
 		this.panelEl = panel;
 		this.toggleEl = toggle;
 		this.bodyEl = body;
+		try {
+			this.releaseFocusGuard = installPanelFocusGuard(panel, () => (this.replies
+				? this.replies.readKeyState()
+				: {hasDraft: false, confirming: false}));
+		} catch (error) {
+			console.error('[XViewer] パネルのフォーカスの扱いを付けられませんでした', error);
+		}
 		this.updateToggle();
 		ExtDebug.log('パネルを生成', {畳んでいる: this.collapsed});
 	}
@@ -816,6 +856,14 @@ export class LightboxPanel {
 		} catch (error) {
 			console.error('[XViewer] パネルの撤去に失敗しました', error);
 		} finally {
+			if (this.releaseFocusGuard) {
+				try {
+					this.releaseFocusGuard();
+				} catch (error) {
+					console.error('[XViewer] パネルのフォーカスの扱いを外せませんでした', error);
+				}
+				this.releaseFocusGuard = null;
+			}
 			this.panelEl = null;
 			this.toggleEl = null;
 			this.bodyEl = null;
@@ -924,6 +972,11 @@ export class LightboxPanel {
 				? this.buildActions()
 				: this.buildCounts(post));
 			this.bodyEl.appendChild(this.buildOpenPost(post));
+			if (this.repliesEnabled) {
+				this.replies.mount(this.bodyEl, post, {canWrite: this.shouldShowActions(post)});
+			} else {
+				this.replies.destroy();
+			}
 		} catch (error) {
 			console.error('[XViewer] パネルの描画に失敗しました', error);
 			this.renderStatus(this.config.text.error);
@@ -1129,7 +1182,11 @@ export class LightboxPanel {
 		}
 		button.addEventListener('click', () => {
 			if (item.kind === 'reply') {
-				this.openComposerFor(EXT_CONFIG.postActions.composerModes.reply);
+				// 返信欄の入力欄があればそこで書く。無ければ (返信欄が無効・返信不可など)
+				// 従来どおり本体の投稿作成モーダルを開く
+				if (!this.repliesEnabled || !this.replies.focusComposer()) {
+					this.openComposerFor(EXT_CONFIG.postActions.composerModes.reply);
+				}
 				return;
 			}
 			if (item.kind === 'repost') {
@@ -1349,6 +1406,42 @@ export class LightboxPanel {
 			}
 		} catch (error) {
 			console.error('[XViewer] 操作行の描き直しに失敗しました', error);
+		}
+	}
+
+	/**
+	 * 返信欄で返信を投稿・削除したときに、投稿の返信数を合わせる。
+	 * 覚えている投稿 (キャッシュ) と本体へ渡す生データ (raw) も同じ値にする。0 未満にしない
+	 * @param {number} delta
+	 * @returns {void}
+	 */
+	adjustReplyCount(delta) {
+		try {
+			const post = this.post;
+			if (!post) {
+				return;
+			}
+			const next = Math.max(0, (post.counts.reply || 0) + delta);
+			post.counts.reply = next;
+			if (post.raw && typeof post.raw === 'object') {
+				post.raw.replyCount = next;
+			}
+			if (this.state) {
+				this.state.counts.reply = next;
+			}
+			if (!this.bodyEl) {
+				return;
+			}
+			if (this.bodyEl.querySelector(`.${EXT_CONFIG.postActions.actionsClass}`)) {
+				this.renderActions();
+				return;
+			}
+			const counts = this.bodyEl.querySelector(`.${this.config.countsClass}`);
+			if (counts) {
+				counts.replaceWith(this.buildCounts(post));
+			}
+		} catch (error) {
+			console.error('[XViewer] 返信数の更新に失敗しました', error);
 		}
 	}
 

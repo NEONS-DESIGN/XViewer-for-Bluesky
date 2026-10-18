@@ -117,7 +117,7 @@
 			(<code>xvbluesky.neonsdesign.com</code>).
 		</p>
 		<p>
-			The extension is an unofficial tool that shows the media of a Bluesky (https://bsky.app/) profile as a thumbnail grid and adds post details and action buttons to the image lightbox.
+			The extension is an unofficial tool that shows the media of a Bluesky (https://bsky.app/) profile as a thumbnail grid and adds post details, a reply list and action buttons to the image lightbox.
 			It is not made or distributed by Bluesky Social PBC and has no connection with the company.
 			For how Bluesky itself handles personal information, please see Bluesky's privacy policy.
 		</p>
@@ -139,6 +139,7 @@
 			The extension loads Bluesky posts and images to show them in the grid and the panel,
 			but they are only handled in your browser's memory to draw them on screen.
 			They are never stored, and never sent anywhere the author or any third party can reach.
+			The same goes for text you type into the reply box in the panel: it is only posted to Bluesky as a reply when you send it, and the extension never stores it or sends it anywhere else.
 		</p>
 
 		<h2>3. Information it stores</h2>
@@ -149,19 +150,20 @@
 			(your Google account for Chrome, Microsoft account for Edge, Mozilla account for Firefox).
 			Neither the author nor any third party can read it.
 		</p>
-		<p>The following 8 values are stored. Each is either true/false or one of a fixed set of choices.</p>
+		<p>The following 9 values are stored. Each is either true/false or one of a fixed set of choices.</p>
 		<ul>
 			<li>Whether to show the media grid</li>
 			<li>Whether to remove the NSFW blur</li>
 			<li>Whether to show the post details panel</li>
 			<li>Whether to show the reply and like buttons in the panel</li>
+			<li>Whether to show the reply list in the panel</li>
 			<li>Whether to keep the lightbox open when the image is clicked</li>
 			<li>Whether to use debug mode</li>
 			<li>The popup's theme (follow the OS / dark / light)</li>
 			<li>Whether the post details panel is collapsed</li>
 		</ul>
 		<p>
-			IDs of posts or accounts you view, your browsing history, and records of your likes or reposts are never stored.
+			IDs of posts or accounts you view, your browsing history, records of your likes or reposts, and the replies you write are never stored.
 		</p>
 		<p>
 			When debug mode is on, the extension writes its internal state (the current tab, whether the grid is running, how many items were fetched, etc.)
@@ -181,17 +183,19 @@
 			The only connection the extension makes on its own is to Bluesky's public API.
 		</p>
 		<ul>
-			<li><code>https://public.api.bsky.app/</code> — fetching the profile you are viewing, its list of posts, and the post you open in the lightbox. This is a public API that needs no sign-in</li>
+			<li><code>https://public.api.bsky.app/</code> — fetching the profile you are viewing, its list of posts, the post you open in the lightbox, the replies to that post (when Bluesky's own client cannot be borrowed), your own avatar for the reply box, and the accounts you mention in a reply (the account identifier for each handle). This is a public API that needs no sign-in</li>
 		</ul>
 		<p>
 			Grid thumbnails show the image URLs that Bluesky attaches to posts (served by Bluesky's image servers) as they are.
 			This is the same loading that happens when you browse Bluesky normally.
 		</p>
 		<p>
-			When you press like, repost or bookmark in the panel, the extension borrows the signed-in client that Bluesky keeps in the page
+			When it loads the reply list, and when you like, repost, bookmark, send a reply or delete your own reply from the panel,
+			the extension borrows the signed-in client that Bluesky keeps in the page
 			and sends the request to the server that holds your account's data (your PDS). Bluesky decides where to send it and handles the tokens;
 			the extension does not read the tokens. It is the same request Bluesky makes when you press its own buttons.
-			Reply and quote only open Bluesky's own composer; the post is made by Bluesky when you send it.
+			The reply list is read from the public API above only when that client cannot be borrowed.
+			Quote only opens Bluesky's own composer; the post is made by Bluesky when you send it.
 		</p>
 		<p>
 			No analytics, advertising or crash reporting of any kind is built in.
@@ -206,7 +210,7 @@
 		</p>
 		<h3><code>https://public.api.bsky.app/*</code></h3>
 		<p>
-			Used to fetch a profile's posts and the details of an opened post from Bluesky's public API.
+			Used to fetch a profile's posts, the details and replies of an opened post, and the account information needed for the reply box and mentions from Bluesky's public API.
 			It is limited to this one domain.
 		</p>
 
@@ -216,13 +220,19 @@
 			Bluesky keeps its sign-in information in your browser's storage, but the extension does not touch it.
 		</p>
 		<p>
-			To send likes, reposts and bookmarks, it borrows the signed-in client that Bluesky keeps in the page.
-			The only thing it reads is your own account identifier (DID). It uses it only as the destination for recording your own likes and reposts in your own account, and neither stores nor sends it anywhere else.
-			What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, and fetching post details.
-			Creating or deleting posts, following, blocking and sending DMs are not possible through it.
+			To send likes, reposts, bookmarks and replies, and to load the reply list, it borrows the signed-in client that Bluesky keeps in the page.
+			The only thing it reads is your own account identifier (DID). It uses it only as the destination for recording your own likes, reposts and replies in your own account,
+			and to look up your own avatar for the reply box from Bluesky's public API. It neither stores it nor sends it anywhere other than Bluesky.
 		</p>
 		<p>
-			These actions run only when you press a button in the panel. Nothing is sent automatically.
+			What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching post details and replies, and creating and deleting replies in your own account.
+			Only text replies that point to the post they answer can be created; images and embeds cannot be attached.
+			A post can be deleted only after the extension has checked with Bluesky that it is a reply in your own account.
+			Creating or deleting posts that are not replies, following, blocking and sending DMs are not possible through it.
+		</p>
+		<p>
+			Write actions run only when you press a button in the panel (for a reply, "Send" or Ctrl+Enter / Cmd+Enter). Nothing is sent automatically.
+			The only thing done on its own is loading the reply list when you open an image, while "Reply list" is turned on in the settings.
 		</p>
 
 		<h2>7. Sharing with third parties</h2>
