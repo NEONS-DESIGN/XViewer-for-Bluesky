@@ -153,7 +153,7 @@ test('buildEmbed: thumb の無い GIF は再生ではなくリンクカードに
 	}
 });
 
-test('buildEmbed: recordWithMedia#view は画像の格子の下に引用カード、video#view は「添付あり」', () => {
+test('buildEmbed: recordWithMedia#view は画像の格子の下に引用カード、video#view は動画のカード', () => {
 	const {replies, restore} = setupEmbed();
 	try {
 		const both = replies.buildEmbed({uri: 'u', labels: [], embed: {
@@ -164,9 +164,10 @@ test('buildEmbed: recordWithMedia#view は画像の格子の下に引用カー�
 		assert.strictEqual(kids[0].className, EXT_CONFIG.lightboxReplies.classes.media);
 		assert.ok([kids[1], ...kids[1].descendants()].some((n) => n.className === CARD_CLASSES.quote));
 
-		const video = replies.buildEmbed({uri: 'u', labels: [], embed: {$type: TYPES.video}});
-		assert.strictEqual(video.className, EXT_CONFIG.lightboxReplies.classes.embed);
-		assert.strictEqual(video.textContent, EXT_CONFIG.lightboxReplies.text.hasEmbed);
+		const video = replies.buildEmbed({uri: 'u', labels: [], embed: {$type: TYPES.video, playlist: 'https://video.bsky.app/p.m3u8', thumbnail: 'https://video.bsky.app/t.jpg'}});
+		assert.strictEqual(video.className, CARD_CLASSES.video);
+		assert.ok(video.querySelector(`.${CARD_CLASSES.videoPlay}`));
+		assert.strictEqual(video.querySelector('img').getAttribute('src'), 'https://video.bsky.app/t.jpg');
 		assert.strictEqual(replies.buildEmbed({uri: 'u', labels: [], embed: null}), null);
 	} finally {
 		restore();
@@ -263,5 +264,69 @@ test('ぼかし: GIF はクラスでぼかし 1 回目の押下で外れる。�
 		assert.strictEqual(on.left.length, 1);
 	} finally {
 		on.restore();
+	}
+});
+
+test('ぼかし: 動画のカードは根でぼかし、1 回目の押下で外れる', () => {
+	const view = {$type: TYPES.video, playlist: 'https://video.bsky.app/p.m3u8', thumbnail: 'https://video.bsky.app/t.jpg', presentation: 'gif'};
+	const {replies, restore} = setupEmbed();
+	try {
+		const card = replies.buildEmbed({uri: 'u', labels: ['sexual'], embed: view});
+		assert.ok(card.classList.contains(CARD_CLASSES.blurred));
+		assert.strictEqual(press(card), false);
+		assert.strictEqual(card.classList.contains(CARD_CLASSES.blurred), false);
+	} finally {
+		restore();
+	}
+});
+
+test('動画: 読み込みの待ち中に取り消された札は、届いても再生を始めない', async () => {
+	const {replies, restore} = setupEmbed();
+	try {
+		let attached = 0;
+		replies.playerPromise = Promise.resolve({attachHls: () => { attached++; return {destroy() {}}; }});
+		const view = {$type: TYPES.video, playlist: 'https://video.bsky.app/p.m3u8', thumbnail: 'https://video.bsky.app/t.jpg'};
+		const card = replies.buildEmbed({uri: 'u', labels: [], embed: view});
+		click(card.querySelector(`.${CARD_CLASSES.videoPlay}`));
+		replies.destroyPlayers('u');
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(attached, 0);
+		assert.strictEqual(replies.players.size, 0);
+	} finally {
+		restore();
+	}
+});
+
+test('動画: attachHls が投げたら札を残さず、再生できない扱いにする', async () => {
+	const {replies, restore} = setupEmbed();
+	try {
+		replies.playerPromise = Promise.resolve({attachHls: () => { throw new Error('hls'); }});
+		const view = {$type: TYPES.video, playlist: 'https://video.bsky.app/p.m3u8', thumbnail: 'https://video.bsky.app/t.jpg'};
+		const card = replies.buildEmbed({uri: 'u', labels: [], embed: view});
+		click(card.querySelector(`.${CARD_CLASSES.videoPlay}`));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.strictEqual(replies.players.size, 0);
+		assert.strictEqual(card.querySelector('video'), null);
+	} finally {
+		restore();
+	}
+});
+
+test('動画: 縦横比の無い動画は compose.video.defaultAspect で枠を取る', () => {
+	const {replies, doc, restore} = setupEmbed();
+	try {
+		// 偽の DOM の要素は style を持たないため、枠の縦横比を読めるよう足す
+		const create = doc.createElement.bind(doc);
+		doc.createElement = (tag) => {
+			const element = create(tag);
+			if (!element.style) element.style = {};
+			return element;
+		};
+		const aspect = EXT_CONFIG.lightboxReplies.compose.video.defaultAspect;
+		const view = {$type: TYPES.video, playlist: 'https://video.bsky.app/p.m3u8', thumbnail: 'https://video.bsky.app/t.jpg'};
+		const card = replies.buildEmbed({uri: 'u', labels: [], embed: view});
+		assert.strictEqual(card.style.aspectRatio, `${aspect.width} / ${aspect.height}`);
+	} finally {
+		restore();
 	}
 });

@@ -19,6 +19,9 @@ export const POPUP_ENTRY_POINTS = Object.freeze({ 'popup/popup': 'src/popup/popu
 /** 絵文字ピッカーのページの入口。popup と同じく拡張のページなので ESM で束ねる。 */
 export const EMOJI_ENTRY_POINTS = Object.freeze({ 'emoji/emoji': 'src/emoji/emoji.js' });
 
+/** 動画の再生 (hls.js) の入口。必要になったときだけ content script が import() で読むので ESM で束ねる。 */
+export const VIDEO_ENTRY_POINTS = Object.freeze({ 'video/hls-player': 'src/video/hls-player.js' });
+
 /**
  * 入口の表から出力ファイル名 (出力先からの相対) を作る。
  * @param {Readonly<Record<string, string>>} entryPoints 入口の表

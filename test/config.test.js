@@ -271,3 +271,14 @@ test('返信に添付できる画像の形式は本体と同じ 6 つ', () => {
 	assert.deepStrictEqual(EXT_CONFIG.lightboxReplies.compose.acceptImageTypes,
 		['image/gif', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif']);
 });
+
+test('動画の設定は橋渡しの規則と同じ値を使う', () => {
+	const video = EXT_CONFIG.lightboxReplies.compose.video;
+	assert.strictEqual(video.maxBytes, BRIDGE_PROTOCOL.video.maxBytes);
+	assert.strictEqual(video.caption.maxBytes, BRIDGE_PROTOCOL.upload.maxBytes['text/vtt']);
+	assert.deepStrictEqual(video.acceptTypes, BRIDGE_PROTOCOL.video.mimeTypes);
+	assert.strictEqual(video.caption.mimeType, BRIDGE_PROTOCOL.video.captionMimeType);
+	assert.strictEqual(video.maxDurationMs, 600000);
+	assert.strictEqual(EXT_CONFIG.lightboxReplies.compose.cdn.video, 'https://video.bsky.app/watch');
+	assert.strictEqual(EXT_CONFIG.lightboxReplies.compose.text.addImage, '画像・動画を追加');
+});

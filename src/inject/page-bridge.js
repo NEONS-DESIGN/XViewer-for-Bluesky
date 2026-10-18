@@ -7,8 +7,10 @@
  *
  * content script とは別の束 (inject.js) になる。chrome.* や EXT_CONFIG は使えないため、
  * ブラウザ API に触れない bridge-protocol.js 以外を import しないこと。
+ * (同じ束に入る ./video-upload.js だけは例外で、動画のアップロードの流れを持つ)
  */
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
+import {VIDEO_UPLOAD, runVideoUpload} from './video-upload.js';
 
 /** XRPC の NSID。白名簿の規則 (EXT_BRIDGE.xrpc) のキーに使う */
 const NSID = BRIDGE_PROTOCOL.nsid;
@@ -534,12 +536,14 @@ function isAspectRatio(ratio) {
  * 上限に収まるか。
  * @param {*} blob
  * @param {number} [maxBytes] サイズの上限 (既定はアップロードの上限)
+ * @param {string[]} [mimeTypes] 許す MIME (既定は画像)
  * @returns {boolean}
  */
-function isStrictEmbedBlob(blob, maxBytes = BRIDGE_PROTOCOL.upload.maxBytes.default) {
+function isStrictEmbedBlob(blob, maxBytes = BRIDGE_PROTOCOL.upload.maxBytes.default,
+	mimeTypes = EXT_BRIDGE.postRecord.imageMimeTypes) {
 	return hasOnlyKeys(blob, ['$type', 'ref', 'mimeType', 'size'])
 		&& hasOnlyKeys(blob.ref, ['$link'])
-		&& isBlobRef(blob, EXT_BRIDGE.postRecord.imageMimeTypes)
+		&& isBlobRef(blob, mimeTypes)
 		&& blob.size <= maxBytes;
 }
 
@@ -636,16 +640,58 @@ function isRecordEmbed(embed) {
 }
 
 /**
- * recordWithMedia の media に置いてよい embed (images / gallery / external) か。
+ * 字幕 1 件 ({lang, file}) が正しい形か。file は text/vtt の厳密な BlobRef
+ * @param {*} caption
+ * @returns {boolean}
+ */
+function isVideoCaption(caption) {
+	const rule = BRIDGE_PROTOCOL.video;
+	return hasOnlyKeys(caption, ['lang', 'file'])
+		&& typeof caption.lang === 'string'
+		&& new RegExp(rule.langPattern).test(caption.lang)
+		&& isStrictEmbedBlob(caption.file, rule.captionMaxBytes, [rule.captionMimeType]);
+}
+
+/**
+ * video の embed の形か。video は動画サービスが返す MIME の厳密な BlobRef、
+ * captions は無いか 1〜maxCaptions 件、余分なキーは拒む。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isVideoEmbed(embed) {
+	const rule = BRIDGE_PROTOCOL.video;
+	if (!embed || embed.$type !== EXT_BRIDGE.postRecord.embedTypes.video
+		|| !hasOnlyKeys(embed, ['$type', 'video', 'alt', 'captions', 'aspectRatio', 'presentation'])
+		|| !isStrictEmbedBlob(embed.video, rule.maxBytes, [rule.blobMimeType])) {
+		return false;
+	}
+	if (embed.alt !== undefined && (typeof embed.alt !== 'string'
+		|| countGraphemes(embed.alt) > EXT_BRIDGE.postRecord.maxAltGraphemes)) {
+		return false;
+	}
+	if (embed.captions !== undefined && (!Array.isArray(embed.captions)
+		|| embed.captions.length < 1 || embed.captions.length > rule.maxCaptions
+		|| !embed.captions.every(isVideoCaption))) {
+		return false;
+	}
+	if (embed.aspectRatio !== undefined && !isAspectRatio(embed.aspectRatio)) {
+		return false;
+	}
+	return embed.presentation === undefined || embed.presentation === rule.presentation;
+}
+
+/**
+ * recordWithMedia の media に置いてよい embed (images / gallery / video / external) か。
  * @param {*} embed
  * @returns {boolean}
  */
 function isMediaEmbed(embed) {
-	return isImagesEmbed(embed) || isGalleryEmbed(embed) || isExternalEmbed(embed);
+	return isImagesEmbed(embed) || isGalleryEmbed(embed) || isVideoEmbed(embed)
+		|| isExternalEmbed(embed);
 }
 
 /**
- * record.embed が、返信に付けてよい embed (images / gallery / external / record /
+ * record.embed が、返信に付けてよい embed (images / gallery / video / external / record /
  * recordWithMedia) か。余分なキーは拒む
  * @param {*} embed
  * @returns {boolean}
@@ -696,7 +742,7 @@ export function checkSelfLabels(labels) {
 
 /**
  * 橋渡しから作ってよい投稿 (返信) の record かを検査する。
- * **返信でない投稿は通さず、embed は画像・リンクカード・引用だけ、labels は
+ * **返信でない投稿は通さず、embed は画像・動画・リンクカード・引用だけ、labels は
  * 自己ラベルだけを通す。** 作れる投稿を返信に絞ることで、ページ上の誰かが
  * この橋渡しを撃っても返信でない投稿を作れないようにする
  * @param {*} record createRecord の body.record
@@ -1028,6 +1074,23 @@ export function checkUploadBlob(info) {
 }
 
 /**
+ * upload-video に渡される動画の MIME・サイズが許した範囲かを確かめる。
+ * @param {{type: string, size: number}} info 動画の type と size
+ * @returns {{ok: true}|{ok: false, reason: string}}
+ */
+export function checkUploadVideo(info) {
+	const rule = BRIDGE_PROTOCOL.video;
+	const notAllowed = {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotAllowed};
+	if (!info || typeof info.type !== 'string' || !rule.mimeTypes.includes(info.type)) {
+		return notAllowed;
+	}
+	if (!Number.isSafeInteger(info.size) || info.size <= 0 || info.size > rule.maxBytes) {
+		return notAllowed;
+	}
+	return {ok: true};
+}
+
+/**
  * 値が PDS の返す BlobRef の形か。
  * @param {*} value uploadBlob の応答の blob
  * @param {string[]} mimeTypes 許す MIME
@@ -1205,6 +1268,14 @@ export function readBlobMessage(event, win) {
 let blobInbox = null;
 
 /**
+ * テストから預かり箱を差し替える。
+ * @param {{waitFor: function(string, number): Promise<Blob|null>}|null} inbox
+ */
+export function setBlobInboxForTest(inbox) {
+	blobInbox = inbox;
+}
+
+/**
  * 預かった Blob を本体の認証済み fetchHandler で PDS へアップロードする。
  * **MIME・サイズの検査を通ったものだけが飛ぶ。** 認証は本体に任せ、トークンには触らない。
  * @param {{blobId: string}} payload 預けたときの id
@@ -1247,6 +1318,310 @@ async function uploadBlobAction(payload) {
 	} catch (error) {
 		return {ok: false, reason: 'fetch-failed'};
 	}
+}
+
+/** upload-video の失敗の message を返事に載せるときの文字数の上限 */
+const VIDEO_MESSAGE_MAX_CHARS = 300;
+
+/** upload-video の進み具合のイベントに載せてよい phase */
+const PROGRESS_PHASES = Object.freeze(['upload', 'processing']);
+
+/** 取り消しの後に送る abortUpload を打ち切るまでの時間。共有の signal は既に鳴っているため別に持つ */
+const ABORT_UPLOAD_TIMEOUT_MS = 10000;
+
+/** 走っている upload-video の取り消し口。キーは blobId */
+const videoUploads = new Map();
+
+/** 動画の名前の乱数に使う文字 */
+const RANDOM_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+/**
+ * 進み具合を、分離ワールドへ送る形 {id, phase, progress} に絞る。トークンなど余分なキーは載せない。
+ * @param {number} id 要求の id
+ * @param {{phase: string, progress: number|null}} progress runVideoUpload の onProgress の値
+ * @returns {{id: number, phase: string, progress: number|null}|null} phase が不明なら null
+ */
+export function toProgressDetail(id, progress) {
+	if (!progress || !PROGRESS_PHASES.includes(progress.phase)) {
+		return null;
+	}
+	const value = typeof progress.progress === 'number' && Number.isFinite(progress.progress)
+		? Math.min(Math.max(progress.progress, 0), 1)
+		: null;
+	return {id, phase: progress.phase, progress: value};
+}
+
+/**
+ * サーバが返した文言を、返事に載せる長さへ切る。
+ * @param {*} message
+ * @returns {string|undefined} 空でない文字列でなければ undefined
+ */
+export function truncateMessage(message) {
+	if (typeof message !== 'string' || message === '') {
+		return undefined;
+	}
+	return message.slice(0, VIDEO_MESSAGE_MAX_CHARS);
+}
+
+/**
+ * 取り消しの signal に、1 回の要求ごとの打ち切り (requestTimeoutMs) を合わせる。
+ * @param {AbortSignal} [signal]
+ * @returns {AbortSignal}
+ */
+function withRequestTimeout(signal) {
+	const timeout = AbortSignal.timeout(VIDEO_UPLOAD.requestTimeoutMs);
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/**
+ * 本体の認証済み fetchHandler で GET し、JSON を返す。失敗・打ち切りは throw。
+ * @param {Object} clients findClients() の結果
+ * @param {string} nsid
+ * @param {Object} [params]
+ * @param {AbortSignal} [signal] 取り消し。1 回ごとの打ち切りと合わせて渡す
+ * @returns {Promise<any>}
+ */
+async function getWithAgent(clients, nsid, params, signal) {
+	const agent = clients && clients.pdsClient && clients.pdsClient.agent;
+	if (!agent || typeof agent.fetchHandler !== 'function') {
+		throw new Error('no-agent');
+	}
+	const response = await agent.fetchHandler(`/xrpc/${nsid}${buildQuery(params)}`, {
+		method: 'GET',
+		headers: {accept: 'application/json'},
+		signal: withRequestTimeout(signal)
+	});
+	if (response.ok !== true) {
+		throw new Error('http-error');
+	}
+	return response.json();
+}
+
+/**
+ * 英数字の乱数を nameLength 文字作る。
+ * @returns {string}
+ */
+function randomName() {
+	const bytes = new Uint8Array(VIDEO_UPLOAD.nameLength);
+	crypto.getRandomValues(bytes);
+	let out = '';
+	for (const byte of bytes) {
+		out += RANDOM_ALPHABET[byte % RANDOM_ALPHABET.length];
+	}
+	return out;
+}
+
+/**
+ * signal が鳴ったら早く解ける待ち。解けた後の中断の扱いは呼び出し側が決める。
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<void>}
+ */
+function abortableSleep(ms, signal) {
+	return new Promise((resolve) => {
+		if (signal && signal.aborted) {
+			resolve();
+			return;
+		}
+		const done = () => {
+			clearTimeout(timer);
+			if (signal) {
+				signal.removeEventListener('abort', done);
+			}
+			resolve();
+		};
+		const timer = setTimeout(done, ms);
+		if (signal) {
+			signal.addEventListener('abort', done, {once: true});
+		}
+	});
+}
+
+/**
+ * 動画サービスへの XRPC を 1 回呼ぶ。通信の失敗・打ち切りは throw。
+ * @param {AbortSignal} signal 取り消し。1 回ごとの打ち切りと合わせて渡す
+ * @param {'GET'|'POST'} method
+ * @param {string} nsid
+ * @param {{token?: string, params?: Object, body?: Object}} opts
+ * @returns {Promise<{status: number, json: any}>}
+ */
+async function videoRequestJson(signal, method, nsid, opts) {
+	const headers = {accept: 'application/json'};
+	if (opts.token) {
+		headers.authorization = `Bearer ${opts.token}`;
+	}
+	// abortUpload は取り消しの後に送られるため、鳴っている共有の signal を渡すと何も送らずに落ちる
+	const requestSignal = nsid === VIDEO_UPLOAD.nsid.abortUpload
+		? AbortSignal.timeout(ABORT_UPLOAD_TIMEOUT_MS)
+		: withRequestTimeout(signal);
+	const init = {method, headers, signal: requestSignal};
+	if (opts.body !== undefined) {
+		headers['content-type'] = 'application/json';
+		init.body = JSON.stringify(opts.body);
+	}
+	const response = await fetch(`${VIDEO_UPLOAD.origin}/xrpc/${nsid}${buildQuery(opts.params)}`, init);
+	let json = null;
+	try {
+		json = await response.json();
+	} catch (error) {
+		json = null;
+	}
+	return {status: response.status, json};
+}
+
+/**
+ * 部品 1 本を XMLHttpRequest で送る (fetch は送信の進み具合を取れないため)。
+ * 通信の失敗・時間切れ・中断は reject。
+ * @param {AbortSignal} signal
+ * @param {{jobId: string, partNumber: number, chunk: Blob, token: string, onBytes: function(number): void}} args
+ * @returns {Promise<{status: number, json: any}>}
+ */
+function sendVideoPart(signal, args) {
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		const onAbort = () => xhr.abort();
+		const cleanup = () => signal.removeEventListener('abort', onAbort);
+		const query = buildQuery({jobId: args.jobId, partNumber: args.partNumber});
+		xhr.open('POST', `${VIDEO_UPLOAD.origin}/xrpc/${VIDEO_UPLOAD.nsid.uploadPart}${query}`);
+		xhr.timeout = VIDEO_UPLOAD.partTimeoutMs;
+		xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+		xhr.setRequestHeader('Authorization', `Bearer ${args.token}`);
+		xhr.upload.onprogress = (event) => {
+			if (event.lengthComputable) {
+				args.onBytes(event.loaded);
+			}
+		};
+		xhr.onload = () => {
+			cleanup();
+			let json = null;
+			try {
+				json = JSON.parse(xhr.responseText);
+			} catch (error) {
+				json = null;
+			}
+			resolve({status: xhr.status, json});
+		};
+		const fail = () => {
+			cleanup();
+			reject(new Error('part-failed'));
+		};
+		xhr.onerror = fail;
+		xhr.ontimeout = fail;
+		xhr.onabort = fail;
+		if (signal.aborted) {
+			fail();
+			return;
+		}
+		signal.addEventListener('abort', onAbort, {once: true});
+		xhr.send(args.chunk);
+	});
+}
+
+/**
+ * runVideoUpload に渡す通信の口を作る。トークンは口の中だけで扱い、ログに出さない。
+ * @param {Object} clients findClients() の結果
+ * @param {AbortSignal} signal 取り消し。sendPart・requestJson・getServiceAuth・getSession が同じものを見る
+ *   (sleep は runVideoUpload が渡す signal を見る)
+ * @param {function({phase: string, progress: number|null}): void} onProgress
+ * @returns {Object} VideoUploadDeps
+ */
+export function createVideoDeps(clients, signal, onProgress) {
+	return {
+		getServiceAuth: async (aud, lxm, exp) => {
+			const json = await getWithAgent(clients, VIDEO_UPLOAD.nsid.getServiceAuth, {aud, lxm, exp}, signal);
+			if (!json || typeof json.token !== 'string' || json.token === '') {
+				throw new Error('no-token');
+			}
+			return json.token;
+		},
+		getSession: () => getWithAgent(clients, VIDEO_UPLOAD.nsid.getSession, undefined, signal),
+		requestJson: (method, nsid, opts) => videoRequestJson(signal, method, nsid, opts || {}),
+		// ほかの部品が諦めたときの args.signal と、取り消しの signal のどちらでも止める
+		sendPart: (args) => sendVideoPart(args && args.signal ? AbortSignal.any([signal, args.signal]) : signal, args),
+		sleep: abortableSleep,
+		now: () => Date.now(),
+		random: randomName,
+		onProgress
+	};
+}
+
+/**
+ * 預かった動画を動画サービスへ送り、変換し終えた BlobRef を返す。進み具合は progressEvent で知らせる。
+ * @param {{blobId: string}} payload 預けたときの id
+ * @param {number} requestId 進み具合の宛先になる要求の id
+ * @returns {Promise<{ok: boolean, blob?: Object, reason?: string, message?: string}>}
+ */
+export async function uploadVideoAction(payload, requestId) {
+	const id = payload && payload.blobId;
+	if (!blobInbox || typeof id !== 'string' || !BLOB_ID_REGEX.test(id)) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotFound};
+	}
+	// 動画の到着を待つあいだの取り消しも拾えるよう、待つ前に登録する
+	const controller = new AbortController();
+	videoUploads.set(id, controller);
+	try {
+		return await runUploadVideo(id, controller, requestId);
+	} finally {
+		if (videoUploads.get(id) === controller) {
+			videoUploads.delete(id);
+		}
+	}
+}
+
+/**
+ * 動画の到着を待ち、検査を通ったものを送る。
+ * @param {string} id blobId
+ * @param {AbortController} controller
+ * @param {number} requestId
+ * @returns {Promise<{ok: boolean, blob?: Object, reason?: string, message?: string}>}
+ */
+async function runUploadVideo(id, controller, requestId) {
+	const blob = await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs);
+	if (controller.signal.aborted) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.canceled};
+	}
+	if (!blob) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotFound};
+	}
+	const checked = checkUploadVideo({type: blob.type, size: blob.size});
+	if (!checked.ok) {
+		return {ok: false, reason: checked.reason};
+	}
+	const clients = findClients();
+	if (!clients) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed};
+	}
+	const onProgress = (progress) => {
+		const detail = toProgressDetail(requestId, progress);
+		if (detail) {
+			document.dispatchEvent(new CustomEvent(BRIDGE_PROTOCOL.progressEvent, {detail: JSON.stringify(detail)}));
+		}
+	};
+	const result = await runVideoUpload(blob, createVideoDeps(clients, controller.signal, onProgress), controller.signal);
+	if (result.ok) {
+		return {ok: true, blob: result.blob};
+	}
+	const failed = {ok: false, reason: result.reason};
+	const message = truncateMessage(result.message);
+	if (message !== undefined) {
+		failed.message = message;
+	}
+	return failed;
+}
+
+/**
+ * 走っている upload-video を取り消す。
+ * @param {{blobId: string}} payload
+ * @returns {{ok: boolean}} 走っていなければ false
+ */
+export function cancelUploadVideo(payload) {
+	const id = payload && payload.blobId;
+	const controller = typeof id === 'string' ? videoUploads.get(id) : undefined;
+	if (!controller) {
+		return {ok: false};
+	}
+	controller.abort();
+	return {ok: true};
 }
 
 /**
@@ -1340,6 +1715,17 @@ function dispatchRequest(detail) {
 		);
 		return;
 	}
+	if (detail.action === EXT_BRIDGE.actions.uploadVideo) {
+		uploadVideoAction(detail.payload, detail.id).then(
+			(result) => reply(detail.id, result),
+			() => reply(detail.id, {ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed})
+		);
+		return;
+	}
+	if (detail.action === EXT_BRIDGE.actions.cancelUploadVideo) {
+		reply(detail.id, cancelUploadVideo(detail.payload));
+		return;
+	}
 	reply(detail.id, {ok: false, reason: 'unknown-action'});
 }
 
@@ -1359,8 +1745,11 @@ if (typeof document !== 'undefined') {
 		});
 		window.addEventListener('message', (event) => {
 			const message = readBlobMessage(event, window);
-			if (message && checkUploadBlob({type: message.blob.type, size: message.blob.size}).ok) {
-				blobInbox.put(message.id, message.blob);
+			if (message) {
+				const info = {type: message.blob.type, size: message.blob.size};
+				if (checkUploadBlob(info).ok || checkUploadVideo(info).ok) {
+					blobInbox.put(message.id, message.blob);
+				}
 			}
 		});
 	} catch (error) {

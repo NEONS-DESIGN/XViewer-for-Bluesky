@@ -16,6 +16,16 @@ import {countGraphemes, primaryLanguage} from './reply-text.js';
  * @property {number} height 縮小後の高さ (px)
  */
 
+/**
+ * アップロード済みの動画 1 本。
+ * @typedef {Object} UploadedVideo
+ * @property {Object} blob uploadBlob が返した BlobRef
+ * @property {string} alt 代替テキスト (空なら付けない)
+ * @property {number} width 動画の幅 (px)
+ * @property {number} height 動画の高さ (px)
+ * @property {Array<{lang: string, file: Object}>} captions 字幕 (無ければ空)
+ */
+
 /** 橋渡しと共有する record の規則 */
 const RECORD_RULES = BRIDGE_PROTOCOL.postRecord;
 
@@ -34,6 +44,41 @@ function toAspectRatio(image) {
 	return image.width > 0 && image.height > 0
 		? {width: image.width, height: image.height}
 		: null;
+}
+
+/**
+ * 幅・高さがどちらも正のときだけ、整数に丸めた aspectRatio にする。
+ * @param {{width: number, height: number}} source
+ * @returns {{width: number, height: number}|null}
+ */
+function toRoundedAspectRatio(source) {
+	const width = Math.round(source.width);
+	const height = Math.round(source.height);
+	return width > 0 && height > 0 ? {width, height} : null;
+}
+
+/**
+ * 添付動画から投稿の embed を作る。ALT・字幕・縦横比は値があるときだけ付ける。
+ * @param {UploadedVideo|null} video
+ * @returns {Object|null} 動画が無ければ null
+ */
+export function buildVideoEmbed(video) {
+	if (!video || !video.blob) {
+		return null;
+	}
+	const embed = {$type: RECORD_RULES.embedTypes.video, video: video.blob};
+	if (typeof video.alt === 'string' && video.alt !== '') {
+		embed.alt = video.alt;
+	}
+	if (Array.isArray(video.captions) && video.captions.length > 0) {
+		embed.captions = video.captions;
+	}
+	const aspectRatio = toRoundedAspectRatio(video);
+	if (aspectRatio) {
+		embed.aspectRatio = aspectRatio;
+	}
+	embed.presentation = BRIDGE_PROTOCOL.video.presentation;
+	return embed;
 }
 
 /**
@@ -226,12 +271,13 @@ export function buildOwnEmbedView(images, did, cdn, legacyMax) {
  * 投稿に付ける添付の部品。
  * @typedef {Object} EmbedParts
  * @property {UploadedImage[]} images
+ * @property {UploadedVideo|null} [video] 動画 (無ければ省く)
  * @property {Object|null} external app.bsky.embed.external の embed そのもの (GIF かカード)
  * @property {{uri: string, cid: string}|null} quote 引用する投稿
  */
 
 /**
- * 添付の部品から投稿の embed を作る。画像と external が両方あるときは画像を使う。
+ * 添付の部品から投稿の embed を作る。media の優先は 画像、動画、external の順。
  * @param {EmbedParts} parts
  * @param {number} legacyMax images に収める枚数の上限
  * @returns {Object|null} 何も無ければ null
@@ -240,7 +286,7 @@ export function buildPostEmbed(parts, legacyMax) {
 	if (!parts) {
 		return null;
 	}
-	const media = buildMediaEmbed(parts.images, legacyMax) || parts.external || null;
+	const media = buildMediaEmbed(parts.images, legacyMax) || buildVideoEmbed(parts.video || null) || parts.external || null;
 	const record = parts.quote
 		? {$type: RECORD_RULES.embedTypes.record, record: parts.quote}
 		: null;
@@ -252,11 +298,11 @@ export function buildPostEmbed(parts, legacyMax) {
 
 /**
  * コンテンツの警告 (自己ラベル) の入口を出す条件。ラベルの対象はメディアだけ。
- * @param {{imageCount: number, hasGif: boolean, hasCard: boolean}} input
+ * @param {{imageCount: number, hasGif: boolean, hasCard: boolean, hasVideo?: boolean}} input
  * @returns {boolean}
  */
 export function hasLabelableMedia(input) {
-	return Boolean(input) && (input.imageCount > 0 || Boolean(input.hasGif) || Boolean(input.hasCard));
+	return Boolean(input) && (input.imageCount > 0 || Boolean(input.hasGif) || Boolean(input.hasCard) || Boolean(input.hasVideo));
 }
 
 /**
@@ -290,10 +336,39 @@ function buildExternalView(external, did, cdn) {
 }
 
 /**
+ * 動画の embed から video#view を作る。CID が読めなければ null。
+ * @param {UploadedVideo} video
+ * @param {string} did
+ * @param {{video?: string}} cdn
+ * @returns {Object|null}
+ */
+function buildVideoView(video, did, cdn) {
+	const cid = blobCid(video && video.blob);
+	if (!cid || !cdn || typeof cdn.video !== 'string') {
+		return null;
+	}
+	const base = `${cdn.video}/${encodeURIComponent(did)}/${cid}`;
+	const view = {
+		$type: RECORD_RULES.embedTypes.video + VIEW_SUFFIX,
+		cid,
+		playlist: `${base}/playlist.m3u8`,
+		thumbnail: `${base}/thumbnail.jpg`
+	};
+	if (typeof video.alt === 'string' && video.alt !== '') {
+		view.alt = video.alt;
+	}
+	const aspectRatio = toRoundedAspectRatio(video);
+	if (aspectRatio) {
+		view.aspectRatio = aspectRatio;
+	}
+	return view;
+}
+
+/**
  * 投稿した自分の返信の embed view を作る (取り直さずに描くため)。
- * @param {{images: UploadedImage[], external: Object|null, quoteView: Object|null}} parts
+ * @param {{images: UploadedImage[], video?: UploadedVideo|null, external: Object|null, quoteView: Object|null}} parts
  * @param {string} did 自分の DID
- * @param {{thumb: string, fullsize: string}} cdn
+ * @param {{thumb: string, fullsize: string, video?: string}} cdn
  * @param {number} legacyMax
  * @returns {Object|null}
  */
@@ -302,6 +377,7 @@ export function buildOwnPostEmbedView(parts, did, cdn, legacyMax) {
 		return null;
 	}
 	const media = buildOwnEmbedView(parts.images, did, cdn, legacyMax)
+		|| (parts.video ? buildVideoView(parts.video, did, cdn) : null)
 		|| (parts.external ? buildExternalView(parts.external, did, cdn) : null);
 	const record = parts.quoteView
 		? {$type: RECORD_RULES.embedTypes.record + VIEW_SUFFIX, record: parts.quoteView}

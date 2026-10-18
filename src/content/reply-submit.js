@@ -1,5 +1,5 @@
 /**
- * 返信の入力欄のうち DOM に触れない部分。貼り付け・ドロップの中身から画像を取り出すこと、
+ * 返信の入力欄のうち DOM に触れない部分。貼り付け・ドロップの中身から画像と動画を取り出すこと、
  * 画像の順次アップロード、送信の手順 (世代が変わったとき・失敗したときに何を呼ぶか)。
  * 入力欄 (reply-composer.js) が使い、そこから再び公開する。
  */
@@ -21,8 +21,8 @@
 const UPLOAD_EXCEPTION = 'upload-exception';
 /** 返信の作成が例外で止まったときの理由 */
 const POST_EXCEPTION = 'post-exception';
-/** 画像の MIME タイプの接頭辞 */
-const IMAGE_TYPE_PREFIX = 'image/';
+/** 取り込む候補にするファイルの MIME タイプの接頭辞 (画像と動画) */
+const MEDIA_TYPE_PREFIXES = ['image/', 'video/'];
 /** DataTransferItem のファイルの種類 */
 const FILE_KIND = 'file';
 
@@ -41,25 +41,25 @@ function toItemArray(items) {
 }
 
 /**
- * DataTransferItem が画像のファイルか。
+ * DataTransferItem が画像か動画のファイルか。形式が受け付けるものかは取り込む側が確かめる。
  * @param {*} item DataTransferItem
  * @returns {boolean}
  */
-function isImageItem(item) {
+function isMediaItem(item) {
 	return !!item && item.kind === FILE_KIND && typeof item.type === 'string'
-		&& item.type.startsWith(IMAGE_TYPE_PREFIX);
+		&& MEDIA_TYPE_PREFIXES.some((prefix) => item.type.startsWith(prefix));
 }
 
 /**
- * 貼り付けの中身から画像のファイルだけを取り出す。空なら呼び出し側は既定の貼り付け
+ * 貼り付けの中身から画像と動画のファイルだけを取り出す。空なら呼び出し側は既定の貼り付け
  * (文字) を止めない。
  * @param {*} items clipboardData.items (DataTransferItemList のような形)
  * @returns {File[]}
  */
-export function pickPastedImages(items) {
+export function pickPastedMedia(items) {
 	const files = [];
 	for (const item of toItemArray(items)) {
-		if (!isImageItem(item)) continue;
+		if (!isMediaItem(item)) continue;
 		try {
 			const file = item.getAsFile();
 			if (file) files.push(file);
@@ -71,12 +71,12 @@ export function pickPastedImages(items) {
 }
 
 /**
- * ドラッグ中の中身に画像のファイルがあるか (ドロップを受けるか)。
+ * ドラッグ中の中身に画像か動画のファイルがあるか (ドロップを受けるか)。
  * @param {*} items dataTransfer.items
  * @returns {boolean}
  */
-export function hasImageItems(items) {
-	return toItemArray(items).some(isImageItem);
+export function hasMediaItems(items) {
+	return toItemArray(items).some(isMediaItem);
 }
 
 /**

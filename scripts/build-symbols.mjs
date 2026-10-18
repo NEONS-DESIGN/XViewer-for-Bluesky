@@ -37,6 +37,7 @@ const ICON_SOURCES = {
 	check: { file: 'check-fill', label: 'ALT テキストを付けた印 (チェック)' },
 	gifBox: { file: 'gif_box-fill', label: '返信に GIF を添付' },
 	playArrow: { file: 'play_arrow-fill', label: 'GIF を再生' },
+	closedCaption: { file: 'closed_caption-fill', label: '字幕' },
 };
 
 /** 原本の置き場。 */

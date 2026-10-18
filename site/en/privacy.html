@@ -106,7 +106,7 @@
 		<div class="summary-box">
 			<p>This extension collects no personal information.</p>
 			<p>
-				It has no server of its own and never sends data anywhere other than Bluesky. (Only GIF images are loaded from the GIF provider, the same way Bluesky's own app does it)
+				It has no server of its own and never sends data anywhere other than Bluesky. (Only GIF images are loaded from the GIF provider, the same way Bluesky's own app does it. A video attached to a reply is exchanged with Bluesky's video service)
 				The only things it stores are the settings you choose and the post languages you use for replies. The details follow.
 			</p>
 		</div>
@@ -145,6 +145,12 @@
 			Images you attach to a reply are handled the same way. Images you pick, paste or drop are resized and turned into JPEG in your browser's memory,
 			and are uploaded to the server that holds your account's data (your PDS) and attached to the reply only when you send it.
 			Images you do not send are discarded when the reply box closes, and are neither stored nor sent.
+		</p>
+		<p>
+			A video attached to a reply is handled differently. The video you pick, paste or drop is uploaded as the original file, not shrunk, to Bluesky's video service (<code>video.bsky.app</code>)
+			as soon as you attach it, and Bluesky converts it there. This is so that sending can wait until the conversion is finished, and Bluesky's own reply screen works in the same order.
+			The upload happens even if you never send the reply, but removing the video or closing the reply box stops an upload in progress.
+			The video's length, size and aspect ratio, and the alt text and the caption file, are sent to Bluesky together with the reply only when you send it, and the extension never stores them.
 		</p>
 		<p>
 			When you search for GIFs in the reply box, the search terms, and the URLs of links you write in the reply box, are sent to Bluesky's relay services to get the list of GIFs and the content of link cards.
@@ -194,13 +200,14 @@
 		<h2>4. Where it connects</h2>
 		<p>
 			The extension has no servers. It never connects to any server run by the author.
-			The only connections the extension makes on its own are to Bluesky's public API, and to the same relay services and GIF provider that Bluesky's own app uses for GIFs and link cards in replies.
+			The only connections the extension makes on its own are to Bluesky's public API, and to the same relay services and GIF provider that Bluesky's own app uses for GIFs and link cards in replies, plus Bluesky's video service for videos in replies.
 		</p>
 		<ul>
 			<li><code>https://public.api.bsky.app/</code> — fetching the profile you are viewing, its list of posts, the post you open in the lightbox, the replies to that post (when Bluesky's own client cannot be borrowed), your own avatar for the reply box, and the accounts you mention in a reply or whose post URL you paste to quote it (the account identifier for each handle). This is a public API that needs no sign-in</li>
 			<li><code>https://gifs.bsky.app/</code> — listing and searching GIFs when you open the GIF search in the reply box. This is Bluesky's relay for its GIF search (KLIPY); it receives only the search terms, the region of your browser language (for example <code>jp</code>) and the position of the next page</li>
 			<li><code>https://static.klipy.com/</code> / <code>https://k.gifs.bsky.app/</code> — loading GIF images and videos in the GIF search, the reply box preview and the reply list, and fetching the thumbnail when you send a reply with a GIF. These only load images; nothing about you is sent</li>
 			<li><code>https://t.gifs.bsky.app/</code> — loading the videos of Tenor GIFs in the reply list</li>
+			<li><code>https://video.bsky.app/</code> — uploading a video you attach to a reply, and playing videos in the reply list. This is the video service run by Bluesky. For uploading it receives the video file and a short-lived authorization that proves your account (created by Bluesky's own client in the page; the extension never stores it and never hands it to any other part of the extension). For playback it only loads the video's playlist, the video segments and the thumbnail, and nothing about you is sent</li>
 			<li><code>https://cardyb.bsky.app/</code> — fetching the link card (title, description and image) for a link you write in the reply box. This is a service run by Bluesky; it receives only the URL of that link. Card images are also loaded from here</li>
 		</ul>
 		<p>
@@ -208,13 +215,18 @@
 			and when a reply in the list has a GIF or a card. All of these servers allow extensions to load from them, so no extra permission is requested.
 		</p>
 		<p>
+			The video connections happen only when you attach a video in the reply box (uploading) and when you click a video card in the reply list (playback).
+			Only the thumbnail is loaded whenever a reply in the list has a video, to draw the card.
+			The video service also allows extensions to load from it, so no extra permission is requested.
+		</p>
+		<p>
 			Grid thumbnails show the image URLs that Bluesky attaches to posts (served by Bluesky's image servers) as they are.
 			This is the same loading that happens when you browse Bluesky normally.
 		</p>
 		<p>
-			When it loads the reply list, and when you like, repost, bookmark, send a reply (including uploading the images attached to it) or delete your own reply from the panel,
+			When it loads the reply list, and when you like, repost, bookmark, send a reply (including uploading the images and caption file attached to it) or delete your own reply from the panel,
 			the extension borrows the signed-in client that Bluesky keeps in the page
-			and sends the request to the server that holds your account's data (your PDS). The thumbnails of link cards and GIFs are also uploaded through it when you send the reply,
+			and sends the request to the server that holds your account's data (your PDS). The thumbnails of link cards and GIFs and the caption file are also uploaded through it when you send the reply. For a video upload, the short-lived authorization this client creates is used on the spot only to send to the video service and your PDS, and is never read out, stored or handed on,
 			and the post you quote is fetched through it too. Bluesky decides where to send it and handles the tokens;
 			the extension does not read the tokens. It is the same request Bluesky makes when you press its own buttons.
 			The reply list is read from the public API above only when that client cannot be borrowed.
@@ -223,6 +235,9 @@
 		<p>
 			The emoji picker in the reply box is a page bundled with the extension (Emoji Mart) opened inside the panel, and the list of emoji is bundled too.
 			Nothing is loaded from outside, and the emoji you pick only goes into the text box.
+		</p>
+		<p>
+			Videos in the reply list are played with a player component bundled with the extension (hls.js). It is loaded only when you click a video card, and the only thing loaded from outside is the video itself.
 		</p>
 		<p>
 			No analytics, advertising or crash reporting of any kind is built in.
@@ -253,10 +268,10 @@
 			and to look up your own avatar for the reply box from Bluesky's public API. It neither stores it nor sends it anywhere other than Bluesky.
 		</p>
 		<p>
-			What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching post details and replies, and creating and deleting replies in your own account.
-			Only replies that point to the post they answer can be created. The only things that can be attached are images (up to 10, with alt text), a GIF or a link card (both are embeds of an http or https link), a quote of a post, and content warnings for adult content or graphic media (labels the author sets on their own post);
-			other embeds such as videos and quotes of feeds or lists cannot be attached.
-			Only JPEG, PNG, WebP and GIF files of up to 2MB can be uploaded as images.
+			What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching post details and replies, creating and deleting replies in your own account, and uploading a video to attach to a reply.
+			Only replies that point to the post they answer can be created. The only things that can be attached are images (up to 10, with alt text), a video (one, with alt text and a caption file), a GIF or a link card (both are embeds of an http or https link), a quote of a post, and content warnings for adult content or graphic media (labels the author sets on their own post);
+			other embeds such as quotes of feeds or lists cannot be attached.
+			Only JPEG, PNG, WebP and GIF files of up to 2MB can be uploaded as images, only .vtt files of up to 20KB as captions, and only mp4, webm, mov and mpeg files of up to 300MB as videos.
 			A post can be deleted only after the extension has checked with Bluesky that it is a reply in your own account.
 			Creating or deleting posts that are not replies, following, blocking and sending DMs are not possible through it.
 		</p>

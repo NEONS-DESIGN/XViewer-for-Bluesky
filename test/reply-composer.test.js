@@ -12,7 +12,7 @@ import {SheetHost} from '../src/content/reply-sheets.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {GIF_ALT_PREFIX} from '../src/content/klipy.js';
 import {
-	ReplyComposer, pickPastedImages, hasImageItems, uploadAll, runSubmit, defaultLanguages
+	ReplyComposer, pickPastedMedia, hasMediaItems, uploadAll, runSubmit, defaultLanguages
 } from '../src/content/reply-composer.js';
 
 /**
@@ -75,10 +75,10 @@ function makeSteps(overrides) {
 	return {steps, calls};
 }
 
-test('pickPastedImages: 文字だけなら空、画像と文字が混じれば画像だけ', () => {
-	assert.deepStrictEqual(pickPastedImages(itemList([item('string', 'text/plain', null)])), []);
+test('pickPastedMedia: 文字だけなら空、画像と文字が混じれば画像だけ', () => {
+	assert.deepStrictEqual(pickPastedMedia(itemList([item('string', 'text/plain', null)])), []);
 	const png = {name: 'a.png'};
-	const picked = pickPastedImages(itemList([
+	const picked = pickPastedMedia(itemList([
 		item('string', 'text/html', null),
 		item('file', 'image/png', png),
 		item('file', 'application/pdf', {name: 'x.pdf'}),
@@ -87,20 +87,35 @@ test('pickPastedImages: 文字だけなら空、画像と文字が混じれば�
 	assert.deepStrictEqual(picked, [png]);
 });
 
-test('pickPastedImages: getAsFile が null や例外なら除き、items が無ければ空', () => {
+test('pickPastedMedia: getAsFile が null や例外なら除き、items が無ければ空', () => {
 	const broken = {kind: 'file', type: 'image/png', getAsFile: () => {
 		throw new Error('x');
 	}};
-	assert.deepStrictEqual(pickPastedImages(itemList([item('file', 'image/png', null), broken])), []);
-	assert.deepStrictEqual(pickPastedImages(null), []);
-	assert.deepStrictEqual(pickPastedImages(undefined), []);
+	assert.deepStrictEqual(pickPastedMedia(itemList([item('file', 'image/png', null), broken])), []);
+	assert.deepStrictEqual(pickPastedMedia(null), []);
+	assert.deepStrictEqual(pickPastedMedia(undefined), []);
 });
 
-test('hasImageItems: 画像のファイルを含むときだけ真 (ドロップを受けるか)', () => {
-	assert.strictEqual(hasImageItems(itemList([item('string', 'text/plain', null)])), false);
-	assert.strictEqual(hasImageItems(itemList([item('file', 'text/plain', null)])), false);
-	assert.strictEqual(hasImageItems(itemList([item('file', 'image/jpeg', null)])), true);
-	assert.strictEqual(hasImageItems(null), false);
+test('hasMediaItems: 画像か動画のファイルを含むときだけ真 (ドロップを受けるか)', () => {
+	assert.strictEqual(hasMediaItems(itemList([item('string', 'text/plain', null)])), false);
+	assert.strictEqual(hasMediaItems(itemList([item('file', 'text/plain', null)])), false);
+	assert.strictEqual(hasMediaItems(itemList([item('file', 'image/jpeg', null)])), true);
+	assert.strictEqual(hasMediaItems(null), false);
+});
+
+test('pickPastedMedia / hasMediaItems: 画像と動画を拾い、文字は拾わない', () => {
+	const png = {name: 'a.png'};
+	const mp4 = {name: 'v.mp4'};
+	const items = itemList([
+		item('string', 'text/plain', null),
+		item('file', 'image/png', png),
+		item('file', 'video/mp4', mp4),
+		item('file', 'application/pdf', {name: 'x.pdf'})
+	]);
+	assert.deepStrictEqual(pickPastedMedia(items), [png, mp4]);
+	assert.strictEqual(hasMediaItems(itemList([item('file', 'video/webm', null)])), true);
+	assert.strictEqual(hasMediaItems(itemList([item('string', 'text/plain', null)])), false);
+	assert.deepStrictEqual(pickPastedMedia(itemList([item('string', 'text/uri-list', null)])), []);
 });
 
 test('uploadAll: 3 枚のうち 2 枚目で失敗すると止まり、3 枚目を送らない', async () => {
@@ -305,7 +320,10 @@ function makeComposer(overrides) {
 	const doc = new FakeDocument();
 	globalThis.document = doc;
 	const state = {generation: 1, posting: false};
-	const calls = {posted: [], created: [], uploads: 0, fetchJson: [], fetchBlob: [], fetchPost: []};
+	const calls = {
+		posted: [], created: [], uploads: 0, fetchJson: [], fetchBlob: [], fetchPost: [],
+		videoUploads: [], videoCancels: [], videoJobs: []
+	};
 	const deps = {
 		actions: {createReply: async (record) => {
 			calls.created.push(record);
@@ -348,6 +366,19 @@ function makeComposer(overrides) {
 		safeHref: (uri) => uri,
 		formatDate: (iso) => iso,
 		gifLocale: null,
+		// 動画のアップロードは結果を返さないまま待つ。テストが calls.videoJobs の finish で終わらせる
+		uploadVideo: (blob, onProgress) => {
+			const id = `v${calls.videoUploads.length + 1}`;
+			calls.videoUploads.push(blob);
+			let finish = null;
+			const done = new Promise((resolve) => {
+				finish = resolve;
+			});
+			calls.videoJobs.push({id, onProgress, finish});
+			return {id, done};
+		},
+		cancelVideoUpload: (id) => calls.videoCancels.push(id),
+		readVideoMeta: async () => ({width: 640, height: 360, duration: 5}),
 		...overrides
 	};
 	const composer = new ReplyComposer(EXT_CONFIG.lightboxReplies, deps, TARGET, 'placeholder');
@@ -440,7 +471,7 @@ test('ReplyComposer: 11 枚目と対応しない形式は取り込まず 1 行�
 	const {composer, restore} = makeComposer({});
 	try {
 		const files = Array.from({length: 11}, (unused, i) => ({name: `${i}.png`, type: 'image/png'}));
-		await composer.addFiles(files.concat({name: 'v.mp4', type: 'video/mp4'}));
+		await composer.addFiles(files.concat({name: 'd.pdf', type: 'application/pdf'}));
 		assert.strictEqual(composer.attachments.length, EXT_CONFIG.lightboxReplies.compose.maxImages);
 		const text = EXT_CONFIG.lightboxReplies.compose.text;
 		assert.ok(composer.noticeEl.textContent.includes(text.tooManyImages));
@@ -948,6 +979,339 @@ test('ReplyComposer: GIF の ALT の画面は題名から始まり、external �
 		const description = calls.created[0].embed.external.description;
 		assert.strictEqual(description, GIF_ALT_PREFIX + 'a'.repeat(maxAlt));
 		assert.strictEqual(description.length, maxDescription);
+	} finally {
+		restore();
+	}
+});
+
+/** 処理を終えた動画の BlobRef */
+const VIDEO_BLOB = {$type: 'blob', ref: {$link: 'bafyvideo'}, mimeType: 'video/mp4', size: 100};
+
+/**
+ * 偽の動画のファイル。
+ * @param {string} [name] ファイル名
+ * @returns {{name: string, type: string, size: number}}
+ */
+function videoFile(name = 'v.mp4') {
+	return {name, type: 'video/mp4', size: 1000};
+}
+
+/**
+ * 動画を取り込み、アップロードと処理を終えたことにする。
+ * @param {{composer: ReplyComposer, calls: Object}} made
+ * @returns {Promise<void>}
+ */
+async function addReadyVideo(made) {
+	await made.composer.addFiles([videoFile()]);
+	await flush();
+	const job = made.calls.videoJobs[made.calls.videoJobs.length - 1];
+	job.finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
+	await flush();
+}
+
+test('ReplyComposer: 動画を付けると処理が終わるまで送信できず、終わると動画だけで送れる', async () => {
+	const made = makeComposer({});
+	const {composer, calls, restore} = made;
+	try {
+		await composer.addFiles([videoFile()]);
+		await flush();
+		assert.strictEqual(calls.videoUploads.length, 1);
+		assert.strictEqual(composer.video.isPending(), true);
+		assert.strictEqual(composer.submitButton.disabled, true);
+		assert.strictEqual(composer.videoEl.hidden, false);
+		await composer.submit();
+		assert.deepStrictEqual(calls.created, []);
+		calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
+		await flush();
+		assert.strictEqual(composer.video.isReady(), true);
+		// 本文が空でも動画だけで送れる
+		assert.strictEqual(composer.submitButton.disabled, false);
+		await composer.submit();
+		assert.strictEqual(calls.created.length, 1);
+		const embed = calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.video');
+		assert.deepStrictEqual(embed.video, VIDEO_BLOB);
+		assert.deepStrictEqual(embed.aspectRatio, {width: 640, height: 360});
+		assert.strictEqual('captions' in embed, false);
+		// 字幕が無ければ upload-blob は呼ばない
+		assert.strictEqual(calls.uploads, 0);
+		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.video#view');
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.strictEqual(composer.videoEl.hidden, true);
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 字幕付きで送ると字幕を upload-blob で先に送り、captions に入れる', async () => {
+	const seen = [];
+	let made = null;
+	made = makeComposer({
+		uploadBlob: async (blob) => {
+			seen.push({blob, label: made.composer.submitButton.textContent});
+			return {ok: true, blob: {$type: 'blob', ref: {$link: 'bafycaption'}, mimeType: 'text/vtt', size: 10}, reason: null};
+		}
+	});
+	const {composer, calls, restore} = made;
+	try {
+		await addReadyVideo(made);
+		const captionBlob = {size: 10, type: 'text/vtt'};
+		composer.video.setAlt('動画の説明');
+		composer.video.setCaption({blob: captionBlob, name: 'c.vtt', lang: 'ja'});
+		await composer.submit();
+		assert.strictEqual(seen.length, 1);
+		assert.ok(seen[0].blob === captionBlob, '字幕の Blob を送っていない');
+		assert.strictEqual(seen[0].label, '送信中 1/1');
+		const embed = calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.video');
+		assert.strictEqual(embed.alt, '動画の説明');
+		assert.deepStrictEqual(embed.captions, [{
+			lang: 'ja', file: {$type: 'blob', ref: {$link: 'bafycaption'}, mimeType: 'text/vtt', size: 10}
+		}]);
+		assert.strictEqual(calls.posted[0][3].alt, '動画の説明');
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 字幕の送信が失敗すると返信を作らず、字幕を送れませんでしたを出して動画を残す', async () => {
+	const made = makeComposer({
+		uploadBlob: async () => ({ok: false, blob: null, reason: 'upload-failed'})
+	});
+	const {composer, calls, restore} = made;
+	try {
+		await addReadyVideo(made);
+		composer.textarea.value = '本文';
+		composer.video.setCaption({blob: {size: 10}, name: 'c.vtt', lang: 'ja'});
+		await composer.submit();
+		assert.deepStrictEqual(calls.created, []);
+		assert.strictEqual(composer.noticeEl.textContent, EXT_CONFIG.lightboxReplies.compose.text.captionUploadFailed);
+		assert.strictEqual(composer.video.isReady(), true);
+		assert.ok(composer.video.state.caption, '字幕が消えた');
+		assert.strictEqual(composer.textarea.value, '本文');
+		assert.strictEqual(composer.submitButton.disabled, false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画と画像を同じ回に渡すと動画は取り込まず排他の 1 行を出し、画像は取り込む', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}, videoFile()]);
+		await flush();
+		assert.strictEqual(composer.attachments.length, 1);
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.deepStrictEqual(calls.videoUploads, []);
+		assert.ok(composer.noticeEl.textContent.includes(text.videoExclusive));
+		// 画像があるあいだに動画だけを渡しても取り込まない
+		await composer.addFiles([videoFile()]);
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.removeAttachment(composer.attachments[0]);
+		// 2 本は取り込まない
+		await composer.addFiles([videoFile('a.mp4'), videoFile('b.mp4')]);
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+		await composer.addFiles([videoFile('a.mp4')]);
+		assert.strictEqual(composer.video.isActive(), true);
+		await composer.addFiles([videoFile('b.mp4')]);
+		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+		assert.strictEqual(calls.videoUploads.length, 1);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 受け付けない形式の動画は画像として扱わず、動画の形式の知らせを出す', async () => {
+	const made = makeComposer({});
+	const {composer, calls, restore} = made;
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		await composer.addFiles([{name: 'a.mkv', type: 'video/x-matroska', size: 1000}]);
+		await flush();
+		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
+		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.ok(!composer.noticeEl.textContent.includes(text.unsupportedImage));
+		// 画像の知らせは今までどおり
+		await composer.addFiles([{name: 'a.bmp', type: 'image/bmp', size: 1000}]);
+		await flush();
+		assert.strictEqual(composer.noticeEl.textContent, text.unsupportedImage);
+		// 受け付ける画像と一緒なら、画像は取り込んで動画の形式だけを知らせる
+		await composer.addFiles([{name: 'a.avi', type: 'video/x-msvideo', size: 1000}, {name: 'a.png', type: 'image/png'}]);
+		await flush();
+		assert.strictEqual(composer.attachments.length, 1);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
+		composer.removeAttachment(composer.attachments[0]);
+		// 受け付ける動画と一緒なら、動画は取り込み、形式の知らせを残す
+		await composer.addFiles([{name: 'a.m4v', type: 'video/x-m4v', size: 1000}, videoFile()]);
+		await flush();
+		assert.strictEqual(composer.video.isActive(), true);
+		assert.strictEqual(calls.videoUploads.length, 1);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画があるあいだ GIF ボタンが止まり、画像は取り込まない', async () => {
+	const made = makeComposer({});
+	const {composer, restore} = made;
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		assert.strictEqual(composer.gifTool.disabled, false);
+		await addReadyVideo(made);
+		assert.strictEqual(composer.mediaCount(), 1);
+		assert.strictEqual(composer.gifTool.disabled, true);
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await flush();
+		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.importing, 0);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		// 画像の貼り付けも取り込まない
+		const imagePaste = new FakeEvent('paste');
+		imagePaste.clipboardData = {items: itemList([item('file', 'image/png', {name: 'p.png', type: 'image/png'})])};
+		composer.onPaste(imagePaste);
+		await flush();
+		assert.strictEqual(composer.attachments.length, 0);
+		// 動画を外すと GIF ボタンが戻る
+		composer.video.remove();
+		assert.strictEqual(composer.gifTool.disabled, false);
+		// GIF があるあいだは動画を取り込まない
+		composer.extras.setGif(gifItem());
+		await composer.addFiles([videoFile()]);
+		assert.strictEqual(composer.video.isActive(), false);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画があるあいだリンクカードを送らない', async () => {
+	const made = makeComposer({});
+	const {composer, calls, restore} = made;
+	const cardSelector = `.${EXT_CONFIG.lightboxReplies.cards.classes.linkCard}`;
+	try {
+		pasteText(composer, 'https://example.com/article');
+		await flush();
+		assert.ok(composer.embedEl.querySelector(cardSelector), 'カードが出ていない');
+		await addReadyVideo(made);
+		assert.strictEqual(composer.embedEl.querySelector(cardSelector), null);
+		// 動画もラベルの対象
+		assert.strictEqual(composer.labelsButton.hidden, false);
+		await composer.submit();
+		const embed = calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.video');
+		assert.deepStrictEqual(calls.fetchBlob, []);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画だけでも書きかけになる (hasDraft)', async () => {
+	const made = makeComposer({});
+	const {composer, restore} = made;
+	try {
+		assert.strictEqual(composer.hasDraft(), false);
+		await composer.addFiles([videoFile()]);
+		assert.strictEqual(composer.hasDraft(), true);
+		made.calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
+		await flush();
+		assert.strictEqual(composer.video.isReady(), true);
+		assert.strictEqual(composer.hasDraft(), true);
+		composer.video.remove();
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 処理中に destroy すると cancelVideoUpload を送る', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		await composer.addFiles([videoFile()]);
+		await flush();
+		assert.strictEqual(calls.videoJobs.length, 1);
+		calls.videoJobs[0].onProgress({phase: 'processing', progress: 0.5});
+		composer.destroy();
+		assert.deepStrictEqual(calls.videoCancels, [calls.videoJobs[0].id]);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画の ALT ボタンで字幕と ALT の画面が開き、保存した ALT が動画に付く', async () => {
+	const made = makeComposerWithSheets();
+	const {composer, panel, restore} = made;
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	try {
+		// プレビューを描くにはオブジェクト URL が要るため、本物の File を渡す
+		await composer.addFiles([new File(['x'], 'v.mp4', {type: 'video/mp4'})]);
+		await flush();
+		made.calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
+		await flush();
+		const altButton = composer.videoEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`);
+		assert.ok(altButton, '動画の ALT ボタンが無い');
+		click(altButton);
+		const field = panel.querySelector(`.${compose.classes.altInput}`);
+		assert.ok(field, '字幕と ALT の画面が開かない');
+		field.value = '動画の説明';
+		click(panel.querySelector(`[data-role="${compose.sheetRoles.done}"]`));
+		assert.strictEqual(composer.video.state.alt, '動画の説明');
+	} finally {
+		composer.destroy();
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画が原因の排他の 1 行は動画を外すと消え、動画 1 本までの知らせは残る', async () => {
+	const made = makeComposer({});
+	const {composer, restore} = made;
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		await addReadyVideo(made);
+		click(composer.imageTool);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.video.remove();
+		assert.strictEqual(composer.noticeEl, null);
+		// 画像を渡して断られた場合も同じ
+		await addReadyVideo(made);
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.video.remove();
+		assert.strictEqual(composer.noticeEl, null);
+		// 排他でない知らせは動画を外しても消さない
+		await addReadyVideo(made);
+		await composer.addFiles([videoFile('b.mp4')]);
+		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+		composer.video.remove();
+		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: GIF・画像が原因で動画を断った 1 行は、その GIF・画像を外すと消える', async () => {
+	const {composer, restore} = makeComposer({});
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		composer.extras.setGif(gifItem());
+		await composer.addFiles([videoFile()]);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.extras.removeGif();
+		assert.strictEqual(composer.noticeEl, null);
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await composer.addFiles([videoFile()]);
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		// 画像が原因の知らせは、本文の入力などで extras が変わっても消えない
+		pasteText(composer, 'https://example.com/article');
+		await flush();
+		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.removeAttachment(composer.attachments[0]);
+		assert.strictEqual(composer.noticeEl, null);
 	} finally {
 		restore();
 	}

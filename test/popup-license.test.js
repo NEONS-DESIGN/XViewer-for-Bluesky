@@ -48,3 +48,14 @@ test('実行時の依存 (dependencies) はすべて第三者の成果物に載�
 		assert.ok(NOTICE.includes(name), `${name} が NOTICE に無い`);
 	}
 });
+
+test('ライセンスタブに hls.js の行がある', () => {
+	const hls = THIRD_PARTY.find((item) => item.name.includes('hls.js'));
+	assert.ok(hls, 'hls.js の行が無い');
+	assert.strictEqual(hls.licenseFile, 'LICENSES/Apache-2.0.txt');
+	assert.strictEqual(hls.url, 'https://github.com/video-dev/hls.js');
+	assert.ok(hls.license.startsWith('Apache'));
+	assert.strictEqual(hls.copyright, 'Copyright (c) 2017 Dailymotion (http://www.dailymotion.com)');
+	assert.ok(hls.attribution.join(' ').includes('Copyright (c) 2013-2015 Brightcove'));
+	assert.ok(NOTICE.includes('Copyright (c) 2013-2015 Brightcove'));
+});

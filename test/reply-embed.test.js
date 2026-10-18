@@ -9,7 +9,7 @@ import assert from 'node:assert';
 import {
 	buildMediaEmbed, buildSelfLabels, acceptImages, canSubmitComposer,
 	normalizeLanguages, suggestReplyLanguage, buildOwnEmbedView,
-	buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView, toQuoteViewRecord
+	buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView, toQuoteViewRecord, buildVideoEmbed
 } from '../src/content/reply-embed.js';
 
 const LEGACY_MAX = 4;
@@ -201,4 +201,61 @@ test('toQuoteViewRecord: record を value に、embed を embeds に写す', () 
 	assert.deepStrictEqual(toQuoteViewRecord({...post, embed: undefined, labels: undefined}).embeds, []);
 	assert.strictEqual(toQuoteViewRecord(null), null);
 	assert.strictEqual(toQuoteViewRecord({uri: 'x'}), null);
+});
+
+/** 偽の UploadedVideo */
+const VIDEO_BLOB_REF = {$type: 'blob', ref: {$link: 'bafkreivideo'}, mimeType: 'video/mp4', size: 1000};
+const VTT_REF = {$type: 'blob', ref: {$link: 'bafkreivtt'}, mimeType: 'text/vtt', size: 100};
+const CDN_WITH_VIDEO = {...CDN, video: 'https://video.bsky.app/watch'};
+function uploadedVideo(overrides) {
+	return {blob: VIDEO_BLOB_REF, alt: '説明', width: 640.6, height: 360, captions: [{lang: 'ja', file: VTT_REF}], ...overrides};
+}
+
+test('buildVideoEmbed: ALT・字幕・縦横比は値があるときだけ付ける', () => {
+	assert.deepStrictEqual(buildVideoEmbed(uploadedVideo()), {
+		$type: 'app.bsky.embed.video',
+		video: VIDEO_BLOB_REF,
+		alt: '説明',
+		captions: [{lang: 'ja', file: VTT_REF}],
+		aspectRatio: {width: 641, height: 360},
+		presentation: 'default'
+	});
+	assert.deepStrictEqual(buildVideoEmbed(uploadedVideo({alt: '', captions: [], height: 0})), {
+		$type: 'app.bsky.embed.video', video: VIDEO_BLOB_REF, presentation: 'default'
+	});
+	assert.strictEqual(buildVideoEmbed(null), null);
+});
+
+test('buildPostEmbed: 動画だけは video、引用と一緒なら recordWithMedia の media が video', () => {
+	const video = uploadedVideo();
+	const only = buildPostEmbed({images: [], video, external: null, quote: null}, 4);
+	assert.strictEqual(only.$type, 'app.bsky.embed.video');
+	const withQuote = buildPostEmbed({images: [], video, external: null, quote: Q}, 4);
+	assert.strictEqual(withQuote.$type, 'app.bsky.embed.recordWithMedia');
+	assert.strictEqual(withQuote.media.$type, 'app.bsky.embed.video');
+});
+
+test('buildPostEmbed: 動画があるとき external は使わない', () => {
+	const embed = buildPostEmbed({images: [], video: uploadedVideo(), external: EXT, quote: null}, 4);
+	assert.strictEqual(embed.$type, 'app.bsky.embed.video');
+});
+
+test('hasLabelableMedia: 動画だけでもラベルを出す', () => {
+	assert.strictEqual(hasLabelableMedia({imageCount: 0, hasGif: false, hasCard: false, hasVideo: true}), true);
+	assert.strictEqual(hasLabelableMedia({imageCount: 0, hasGif: false, hasCard: false, hasVideo: false}), false);
+});
+
+test('buildOwnPostEmbedView: 動画の view は video.bsky.app の playlist と thumbnail を組む', () => {
+	const view = buildOwnPostEmbedView({images: [], video: uploadedVideo(), external: null, quoteView: null}, DID, CDN_WITH_VIDEO, 4);
+	assert.deepStrictEqual(view, {
+		$type: 'app.bsky.embed.video#view',
+		cid: 'bafkreivideo',
+		playlist: 'https://video.bsky.app/watch/did%3Aplc%3Aabc/bafkreivideo/playlist.m3u8',
+		thumbnail: 'https://video.bsky.app/watch/did%3Aplc%3Aabc/bafkreivideo/thumbnail.jpg',
+		alt: '説明',
+		aspectRatio: {width: 641, height: 360}
+	});
+	const bare = buildOwnPostEmbedView({images: [], video: uploadedVideo({alt: '', width: 0}), external: null, quoteView: null}, DID, CDN_WITH_VIDEO, 4);
+	assert.ok(!('alt' in bare));
+	assert.ok(!('aspectRatio' in bare));
 });

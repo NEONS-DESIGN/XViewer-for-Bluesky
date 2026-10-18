@@ -1488,8 +1488,172 @@
 	background: var(--ext-lb-accent);
 }
 
+.ext-lb-video {
+	position: relative;
+	box-sizing: border-box;
+	max-width: 100%;
+	max-height: 360px;
+	margin-top: 6px;
+	overflow: hidden;
+	border: 1px solid var(--ext-lb-border);
+	border-radius: 8px;
+	background: #000000;
+}
+
+.ext-lb-video-thumb {
+	position: absolute;
+	inset: 0;
+	display: block;
+}
+
+.ext-lb-video-thumb img,
+.ext-lb-video-player {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+
+.ext-lb-video.is-blurred .ext-lb-video-thumb img,
+.ext-lb-video.is-blurred .ext-lb-video-player {
+	filter: blur(16px);
+}
+
+.ext-lb-replies-unblur .ext-lb-video.is-blurred .ext-lb-video-thumb img,
+.ext-lb-replies-unblur .ext-lb-video.is-blurred .ext-lb-video-player {
+	filter: none;
+}
+
+.ext-lb-video-play {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	cursor: pointer;
+	color: #ffffff;
+	background: transparent;
+	border: none;
+}
+
+.ext-lb-video-play svg {
+	width: 52px;
+	height: 52px;
+	padding: 10px;
+	box-sizing: border-box;
+	fill: currentColor;
+	background: color-mix(in srgb, #000000 65%, transparent);
+	border-radius: 50%;
+}
+
+.ext-lb-video-fallback {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	cursor: pointer;
+	color: #ffffff;
+	background: #000000;
+	border: none;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 700;
+}
+
 .ext-lb-composer-embed {
 	margin-left: var(--ext-lb-composer-indent);
+}
+
+/* 入力欄の動画 (プレビューは GIF のプレビューと同じ見た目) */
+.ext-lb-composer-video {
+	margin-left: var(--ext-lb-composer-indent);
+}
+
+/* 入れ物とプレビューが同じクラスを持つため、内側では字下げを重ねない */
+.ext-lb-composer-video .ext-lb-composer-video {
+	margin-left: 0;
+}
+
+.ext-lb-composer-video-status {
+	margin: 4px 0 0;
+	color: var(--ext-lb-muted);
+	font-size: 13px;
+}
+
+.ext-lb-composer-video-retry {
+	height: 28px;
+	margin-top: 4px;
+	padding: 0 12px;
+	cursor: pointer;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.ext-lb-composer-video-retry:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--ext-lb-text) 14%, transparent);
+}
+
+.ext-lb-composer-video-retry:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.ext-lb-composer-video-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	margin-top: 4px;
+	padding: 0;
+	cursor: pointer;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: none;
+	border-radius: 50%;
+}
+
+.ext-lb-composer-video-remove:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--ext-lb-text) 14%, transparent);
+}
+
+.ext-lb-composer-video-remove:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.ext-lb-composer-video-remove svg {
+	width: 16px;
+	height: 16px;
+	fill: currentColor;
+}
+
+.ext-lb-composer-video-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	margin-left: 4px;
+	padding: 2px 8px;
+	color: #ffffff;
+	background: color-mix(in srgb, #000000 65%, transparent);
+	border-radius: 10px;
+	font-size: 11px;
+	font-weight: 700;
+	pointer-events: none;
+}
+
+.ext-lb-composer-video-badge svg {
+	width: 14px;
+	height: 14px;
+	fill: currentColor;
 }
 
 .ext-lb-replies-more {
@@ -1757,6 +1921,37 @@
 }
 
 /* ALT テキスト */
+/* 字幕と ALT の画面の字幕の行 */
+.ext-lb-caption-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.ext-lb-caption-name {
+	flex: 1 1 100%;
+	min-width: 0;
+	overflow: hidden;
+	font-size: 13px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ext-lb-caption-row select {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 32px;
+	padding: 0 8px;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: 1px solid var(--ext-lb-border);
+	border-radius: 4px;
+	font: inherit;
+	font-size: 13px;
+}
+
 .ext-lb-sheet-alt-preview {
 	display: block;
 	max-width: 100%;

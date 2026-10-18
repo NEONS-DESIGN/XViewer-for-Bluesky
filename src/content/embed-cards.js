@@ -29,7 +29,8 @@ const MAX_EMBED_DEPTH = 2;
  * @property {Object|null} media images / gallery の view
  * @property {Object|null} external external の view の中身 ({uri, title, description, thumb})
  * @property {QuoteModel|null} quote 引用
- * @property {boolean} other 出せない種類 (動画・フィードやリストなどの投稿でない record) を含むか
+ * @property {Object|null} video video#view
+ * @property {boolean} other 出せない種類 (フィードやリストなどの投稿でない record) を含むか
  */
 
 /**
@@ -100,7 +101,7 @@ function toQuoteModel(record, rule) {
  * @returns {EmbedClassification}
  */
 export function classifyEmbedView(view, rule) {
-	const result = {media: null, external: null, quote: null, other: false};
+	const result = {media: null, external: null, quote: null, video: null, other: false};
 	try {
 		if (!view || typeof view !== 'object') return result;
 		if (view.$type === rule.images || view.$type === rule.gallery) {
@@ -108,7 +109,7 @@ export function classifyEmbedView(view, rule) {
 		} else if (view.$type === rule.external) {
 			result.external = view.external || null;
 		} else if (view.$type === rule.video) {
-			result.other = true;
+			result.video = view;
 		} else if (view.$type === rule.record) {
 			applyRecord(result, view.record, rule);
 		} else if (view.$type === rule.recordWithMedia) {
@@ -118,12 +119,14 @@ export function classifyEmbedView(view, rule) {
 				result.media = media;
 			} else if (media.$type === rule.external) {
 				result.external = media.external || null;
+			} else if (media.$type === rule.video) {
+				result.video = media;
 			} else {
 				result.other = true;
 			}
 		}
 	} catch (_e) {
-		return {media: null, external: null, quote: null, other: false};
+		return {media: null, external: null, quote: null, video: null, other: false};
 	}
 	return result;
 }
@@ -310,6 +313,57 @@ export function buildQuoteCard(doc, model, opts) {
 }
 
 /**
+ * 再生と停止を切り替えるボタン。video の play / pause に合わせて名前と見た目 (is-playing) を変える。
+ * 押しても親の押下は起こさない。
+ * @param {Document} doc
+ * @param {HTMLVideoElement} video
+ * @param {string} className ボタンのクラス
+ * @param {{play: string, pause: string}} labels 止まっているとき・流れているときのボタンの名前
+ * @param {boolean} playing 作った時点の名前を「止める」にするか (自動再生のとき)
+ * @returns {HTMLButtonElement}
+ */
+function createPlayToggle(doc, video, className, labels, playing) {
+	const toggle = createIconButton(doc, className, 'playArrow', playing ? labels.pause : labels.play);
+	const sync = () => {
+		const nowPlaying = !video.paused;
+		const label = nowPlaying ? labels.pause : labels.play;
+		toggle.setAttribute('aria-label', label);
+		toggle.title = label;
+		toggle.classList.toggle('is-playing', nowPlaying);
+	};
+	toggle.addEventListener('click', (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		try {
+			if (video.paused) {
+				const started = video.play();
+				if (started && typeof started.catch === 'function') started.catch(() => {});
+			} else {
+				video.pause();
+			}
+		} catch (_e) {
+			// 再生できない環境では何もしない
+		}
+	});
+	video.addEventListener('play', sync);
+	video.addEventListener('pause', sync);
+	return toggle;
+}
+
+/**
+ * フォーカスを移す。移せなくても何もしない。
+ * @param {HTMLElement|null} element
+ * @returns {void}
+ */
+function focusSafely(element) {
+	try {
+		if (element && typeof element.focus === 'function') element.focus();
+	} catch (_e) {
+		// フォーカスを移せない環境では何もしない
+	}
+}
+
+/**
  * GIF のプレイヤーを組み立てる。動画は消音・ループ・インライン再生。
  * autoplay が偽なら、押すと再生・停止できる再生ボタンを重ねる。
  * @param {Document} doc
@@ -340,30 +394,7 @@ export function buildGifPlayer(doc, player, opts) {
 	}
 	root.append(video);
 
-	const toggle = createIconButton(doc, classes.gifPlay, 'playArrow', opts.autoplay ? text.gifPause : text.gifPlay);
-	const sync = () => {
-		const playing = !video.paused;
-		const label = playing ? text.gifPause : text.gifPlay;
-		toggle.setAttribute('aria-label', label);
-		toggle.title = label;
-		toggle.classList.toggle('is-playing', playing);
-	};
-	toggle.addEventListener('click', (event) => {
-		event.preventDefault();
-		event.stopPropagation();
-		try {
-			if (video.paused) {
-				const started = video.play();
-				if (started && typeof started.catch === 'function') started.catch(() => {});
-			} else {
-				video.pause();
-			}
-		} catch (_e) {
-			// 再生できない環境では何もしない
-		}
-	});
-	video.addEventListener('play', sync);
-	video.addEventListener('pause', sync);
+	const toggle = createPlayToggle(doc, video, classes.gifPlay, {play: text.gifPlay, pause: text.gifPause}, opts.autoplay);
 	root.append(toggle);
 
 	// 読み込みの失敗は video ではなく各 source に飛び、バブリングもしない。全部が失敗したら静止画にする
@@ -412,5 +443,128 @@ export function buildGifPlayer(doc, player, opts) {
 		if (opts.onRemove) tools.append(createRemoveButton(doc, classes, text.removeGif, opts.onRemove));
 		root.append(tools);
 	}
+	return root;
+}
+
+/**
+ * 寸法として使える {width, height} か。
+ * @param {*} ratio
+ * @returns {boolean}
+ */
+function isAspect(ratio) {
+	return !!ratio && ratio.width > 0 && ratio.height > 0;
+}
+
+/**
+ * 動画のカードを組み立てる。サムネイルと再生ボタンを出し、押すと video に替えて再生を始め、video へフォーカスを移す。
+ * 再生できなければ「投稿で見る」(onOpenPost があるときだけ) に替える。
+ * presentation が gif の動画は消音・ループ・操作部なしで、autoplay が真なら最初から流す。
+ * 操作部の代わりに、押すと停止と再生を切り替えるボタンを重ねる (再生ボタンから始めたときはそこへフォーカスを移す)。
+ * @param {Document} doc
+ * @param {{playlist?: string, thumbnail?: string, alt?: string, aspectRatio?: {width: number, height: number}, presentation?: string}} view video#view
+ * @param {{classes: Object, text: Object, autoplay: boolean, blurText: string|null, defaultAspect?: {width: number, height: number}, startPlayback: (video: HTMLVideoElement, url: string) => Promise<boolean>, onOpenPost: (() => void)|null}} opts
+ *   defaultAspect は view に縦横比が無いときに使う (無ければ縦横比を指定しない)
+ * @returns {HTMLElement}
+ */
+export function buildVideoCard(doc, view, opts) {
+	const {classes, text} = opts;
+	const isGif = view.presentation === 'gif';
+	const root = createElement(doc, 'div', classes.video);
+	const ratio = isAspect(view.aspectRatio) ? view.aspectRatio : (isAspect(opts.defaultAspect) ? opts.defaultAspect : null);
+	if (root.style && ratio) root.style.aspectRatio = `${ratio.width} / ${ratio.height}`;
+	const label = view.alt || text.videoLabel;
+
+	const holder = createElement(doc, 'span', classes.videoThumb);
+	if (view.thumbnail) {
+		const image = createElement(doc, 'img');
+		image.setAttribute('src', view.thumbnail);
+		image.setAttribute('alt', label);
+		image.setAttribute('loading', 'lazy');
+		holder.append(image);
+	}
+	root.append(holder);
+	applyBlur(doc, classes, root, opts.blurText);
+	const play = createIconButton(doc, classes.videoPlay, 'playArrow', text.videoPlay);
+	root.append(play);
+
+	let started = false;
+	/**
+	 * 「投稿で見る」に替える。
+	 * @returns {HTMLButtonElement|null} 出したボタン (onOpenPost が無ければ null)
+	 */
+	const showFallback = () => {
+		const items = Array.from(root.children).filter((child) => child.classList && child.classList.contains(classes.videoPlayer));
+		for (const one of items) one.remove();
+		if (!opts.onOpenPost) return null;
+		const onOpenPost = opts.onOpenPost;
+		const button = createElement(doc, 'button', classes.videoFallback, text.videoOpenPost);
+		button.type = 'button';
+		button.addEventListener('click', (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			onOpenPost();
+		});
+		root.append(button);
+		return button;
+	};
+	/**
+	 * 再生を始める。
+	 * @param {boolean} fromButton 再生ボタンから始めたか (フォーカスを移す)
+	 * @returns {Promise<void>}
+	 */
+	const begin = async (fromButton) => {
+		if (started || typeof view.playlist !== 'string') return;
+		started = true;
+		const video = createElement(doc, 'video', classes.videoPlayer);
+		video.setAttribute('playsinline', '');
+		video.playsInline = true;
+		video.setAttribute('aria-label', label);
+		if (isGif) {
+			video.muted = true;
+			video.loop = true;
+			video.setAttribute('muted', '');
+			video.setAttribute('loop', '');
+		} else {
+			video.controls = true;
+			video.setAttribute('controls', '');
+		}
+		holder.remove();
+		play.remove();
+		root.append(video);
+		const toggle = isGif
+			? createPlayToggle(doc, video, classes.gifPlay, {play: text.videoPlay, pause: text.videoPause}, false)
+			: null;
+		if (toggle) root.append(toggle);
+		// 押したボタンは外したため、フォーカスが文書の先頭へ落ちないよう再生の操作へ移す
+		// (gif の video は操作部を持たずフォーカスできないため、切り替えのボタンへ)
+		if (fromButton) focusSafely(toggle || video);
+		const fail = () => {
+			const active = doc.activeElement;
+			const hadFocus = !!active && (active === video || active === toggle);
+			video.remove();
+			if (toggle) toggle.remove();
+			const fallback = showFallback();
+			if (hadFocus) focusSafely(fallback);
+		};
+		try {
+			const ok = await opts.startPlayback(video, view.playlist);
+			if (!ok) {
+				fail();
+				return;
+			}
+			// 再生が始まった後の致命的なエラー (hls.js が video に出す error) も投稿で見るに替える
+			video.addEventListener('error', fail, {once: true});
+			const result = video.play();
+			if (result && typeof result.catch === 'function') result.catch(() => {});
+		} catch (_e) {
+			fail();
+		}
+	};
+	play.addEventListener('click', (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		begin(true);
+	});
+	if (isGif && opts.autoplay) begin(false);
 	return root;
 }

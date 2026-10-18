@@ -10,7 +10,7 @@ import path from 'node:path';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {FakeDocument, FakeEvent, click} from './helpers/fake-dom.js';
-import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, prefersReducedMotion} from '../src/content/embed-cards.js';
+import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, buildVideoCard, prefersReducedMotion} from '../src/content/embed-cards.js';
 
 const CARDS = EXT_CONFIG.lightboxReplies.cards;
 const RULE = CARDS.types;
@@ -67,26 +67,38 @@ test('classifyEmbedView: 引用先の embeds が gallery・recordWithMedia で�
 	assert.strictEqual(classifyEmbedView({$type: T.record, record: viewRecord({embeds: []})}, RULE).quote.imageUrl, null);
 });
 
-test('classifyEmbedView: external#view は external、video#view とフィードの record は other', () => {
+test('classifyEmbedView: external#view は external、フィードの record は other', () => {
 	const external = {uri: 'https://example.com', title: 't', description: 'd'};
 	const ext = classifyEmbedView({$type: T.external, external}, RULE);
 	assert.strictEqual(ext.external, external);
 	assert.strictEqual(ext.other, false);
 	assert.strictEqual(ext.quote, null);
 
-	assert.strictEqual(classifyEmbedView({$type: T.video}, RULE).other, true);
 	const feed = classifyEmbedView({$type: T.record, record: {$type: 'app.bsky.feed.defs#generatorView', uri: 'at://x'}}, RULE);
 	assert.strictEqual(feed.other, true);
 	assert.strictEqual(feed.quote, null);
 	const withVideo = classifyEmbedView({$type: T.recordWithMedia, record: {record: viewRecord()}, media: {$type: T.video}}, RULE);
-	assert.strictEqual(withVideo.other, true);
+	assert.strictEqual(withVideo.other, false);
 	assert.strictEqual(withVideo.quote.kind, 'post');
 	assert.strictEqual(withVideo.media, null);
+	assert.deepStrictEqual(withVideo.video, {$type: T.video});
+});
+
+test('classifyEmbedView: video#view は video に入り、recordWithMedia の media の video も拾う', () => {
+	const view = {$type: T.video, playlist: 'https://video.bsky.app/watch/x/p.m3u8', thumbnail: 'https://video.bsky.app/watch/x/t.jpg'};
+	const single = classifyEmbedView(view, RULE);
+	assert.strictEqual(single.video, view);
+	assert.strictEqual(single.other, false);
+	assert.strictEqual(single.media, null);
+	const combined = classifyEmbedView({$type: T.recordWithMedia, record: {record: viewRecord()}, media: view}, RULE);
+	assert.strictEqual(combined.video, view);
+	assert.strictEqual(combined.other, false);
+	assert.strictEqual(combined.quote.kind, 'post');
 });
 
 test('classifyEmbedView: null・未知の形は何も返さない', () => {
 	for (const input of [null, undefined, {}, {$type: 'x'}, 'str']) {
-		assert.deepStrictEqual(classifyEmbedView(input, RULE), {media: null, external: null, quote: null, other: false});
+		assert.deepStrictEqual(classifyEmbedView(input, RULE), {media: null, external: null, quote: null, video: null, other: false});
 	}
 });
 
@@ -156,6 +168,7 @@ function docWithVideoStub() {
 	const create = doc.createElement.bind(doc);
 	doc.createElement = (tag) => {
 		const element = create(tag);
+		element.style = {};
 		if (tag === 'video') {
 			element.paused = true;
 			element.play = () => {
@@ -294,4 +307,148 @@ test('config: カードの文言とクラス名が揃い、クラス名はすべ
 	};
 	const merged = {...compose.text, ...CARDS.text};
 	for (const [key, value] of Object.entries(expected)) assert.strictEqual(merged[key], value, key);
+});
+
+const VIDEO_VIEW = {
+	$type: T.video, cid: 'bafy', playlist: 'https://video.bsky.app/watch/did/cid/playlist.m3u8',
+	thumbnail: 'https://video.bsky.app/watch/did/cid/thumbnail.jpg', alt: '猫の動画', aspectRatio: {width: 1920, height: 1080}
+};
+const VIDEO_TEXT = {...EXT_CONFIG.lightboxReplies.compose.text, ...CARDS.text};
+const VIDEO_DEFAULT_ASPECT = EXT_CONFIG.lightboxReplies.compose.video.defaultAspect;
+
+/**
+ * 動画カードの組み立てに渡す共通の引数を作る。
+ * @param {Object} extra 上書き
+ * @returns {Object}
+ */
+function videoOpts(extra = {}) {
+	return {classes: CARDS.classes, text: VIDEO_TEXT, autoplay: false, blurText: null, startPlayback: async () => true, onOpenPost: null, ...extra};
+}
+
+test('buildVideoCard: サムネイルと再生ボタンを出し、押すと startPlayback に playlist を渡す', async () => {
+	const {doc, videos} = docWithVideoStub();
+	const calls = [];
+	const card = buildVideoCard(doc, VIDEO_VIEW, videoOpts({startPlayback: async (video, url) => { calls.push([video, url]); return true; }}));
+	const thumb = card.querySelector('img');
+	assert.strictEqual(thumb.getAttribute('src'), VIDEO_VIEW.thumbnail);
+	assert.strictEqual(card.style.aspectRatio, '1920 / 1080');
+	const play = card.querySelector(`.${CARDS.classes.videoPlay}`);
+	assert.strictEqual(play.getAttribute('aria-label'), VIDEO_TEXT.videoPlay);
+	click(play);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.strictEqual(calls.length, 1);
+	assert.strictEqual(calls[0][1], VIDEO_VIEW.playlist);
+	assert.strictEqual(calls[0][0], videos[0]);
+	assert.strictEqual(videos[0].controls, true);
+	assert.strictEqual(videos[0].getAttribute('playsinline'), '');
+	assert.ok(!card.querySelector('img'), 'サムネイルは動画に替わる');
+});
+
+test('buildVideoCard: 縦横比が無ければ opts.defaultAspect を使い、それも無ければ指定しない', () => {
+	const card = buildVideoCard(docWithVideoStub().doc, {...VIDEO_VIEW, aspectRatio: undefined}, videoOpts({defaultAspect: VIDEO_DEFAULT_ASPECT}));
+	assert.strictEqual(card.style.aspectRatio, `${VIDEO_DEFAULT_ASPECT.width} / ${VIDEO_DEFAULT_ASPECT.height}`);
+	const bare = buildVideoCard(docWithVideoStub().doc, {...VIDEO_VIEW, aspectRatio: undefined}, videoOpts());
+	assert.strictEqual(bare.style.aspectRatio, undefined);
+});
+
+test('embed-cards.js: EXT_CONFIG を import しない (設定は引数で受け取る)', () => {
+	const source = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'embed-cards.js'), 'utf8');
+	assert.ok(!/import\s*\{[^}]*EXT_CONFIG[^}]*\}\s*from/.test(source));
+});
+
+test('buildVideoCard: 再生ボタンを押すと video へフォーカスを移す', async () => {
+	const {doc, videos} = docWithVideoStub();
+	const card = buildVideoCard(doc, VIDEO_VIEW, videoOpts());
+	click(card.querySelector(`.${CARDS.classes.videoPlay}`));
+	assert.strictEqual(doc.activeElement, videos[0]);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.strictEqual(doc.activeElement, videos[0]);
+});
+
+test('buildVideoCard: gif の動画は切り替えのボタンで止めて再び流せる', async () => {
+	const {doc, videos} = docWithVideoStub();
+	const card = buildVideoCard(doc, {...VIDEO_VIEW, presentation: 'gif'}, videoOpts({autoplay: true}));
+	await new Promise((resolve) => setImmediate(resolve));
+	const video = videos[0];
+	assert.strictEqual(video.paused, false);
+	const toggle = byClass(card, CARDS.classes.gifPlay);
+	assert.ok(toggle, '切り替えのボタンが無い');
+	assert.strictEqual(toggle.getAttribute('aria-label'), VIDEO_TEXT.videoPause);
+	click(toggle);
+	assert.strictEqual(video.paused, true);
+	assert.strictEqual(toggle.getAttribute('aria-label'), VIDEO_TEXT.videoPlay);
+	click(toggle);
+	assert.strictEqual(video.paused, false);
+	assert.strictEqual(toggle.getAttribute('aria-label'), VIDEO_TEXT.videoPause);
+
+	// 自動再生しないときは再生ボタンから始め、切り替えのボタンへフォーカスを移す
+	const manual = docWithVideoStub();
+	const idle = buildVideoCard(manual.doc, {...VIDEO_VIEW, presentation: 'gif'}, videoOpts({autoplay: false}));
+	assert.ok(!byClass(idle, CARDS.classes.gifPlay), '始める前は切り替えのボタンを出さない');
+	click(idle.querySelector(`.${CARDS.classes.videoPlay}`));
+	const manualToggle = byClass(idle, CARDS.classes.gifPlay);
+	assert.strictEqual(manual.doc.activeElement, manualToggle);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.strictEqual(manual.videos[0].paused, false);
+
+	// 再生できなければ切り替えのボタンも外す
+	const failing = docWithVideoStub();
+	const broken = buildVideoCard(failing.doc, {...VIDEO_VIEW, presentation: 'gif'}, videoOpts({autoplay: true, startPlayback: async () => false}));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(!byClass(broken, CARDS.classes.gifPlay));
+	assert.ok(!broken.querySelector('video'));
+});
+
+test('buildVideoCard: startPlayback が偽なら投稿で見るを出し、押すと onOpenPost', async () => {
+	const {doc} = docWithVideoStub();
+	let opened = 0;
+	const card = buildVideoCard(doc, VIDEO_VIEW, videoOpts({startPlayback: async () => false, onOpenPost: () => { opened++; }}));
+	click(card.querySelector(`.${CARDS.classes.videoPlay}`));
+	await new Promise((resolve) => setImmediate(resolve));
+	const fallback = card.querySelector(`.${CARDS.classes.videoFallback}`);
+	assert.ok(fallback);
+	assert.ok(fallback.textContent.includes(VIDEO_TEXT.videoOpenPost));
+	click(fallback);
+	assert.strictEqual(opened, 1);
+
+	const thrown = buildVideoCard(docWithVideoStub().doc, VIDEO_VIEW, videoOpts({startPlayback: async () => { throw new Error('x'); }, onOpenPost: null}));
+	click(thrown.querySelector(`.${CARDS.classes.videoPlay}`));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(!thrown.querySelector(`.${CARDS.classes.videoFallback}`), 'onOpenPost が無ければ出さない');
+});
+
+test('buildVideoCard: presentation が gif で autoplay なら最初から音なしで流す', async () => {
+	const {doc, videos} = docWithVideoStub();
+	const calls = [];
+	const card = buildVideoCard(doc, {...VIDEO_VIEW, presentation: 'gif'}, videoOpts({autoplay: true, startPlayback: async (video, url) => { calls.push(url); return true; }}));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepStrictEqual(calls, [VIDEO_VIEW.playlist]);
+	assert.strictEqual(videos[0].muted, true);
+	assert.strictEqual(videos[0].loop, true);
+	assert.notStrictEqual(videos[0].controls, true);
+	assert.ok(card);
+});
+
+test('buildVideoCard: 再生が始まった後に video が error を出したら投稿で見るに替える', async () => {
+	const {doc, videos} = docWithVideoStub();
+	let opened = 0;
+	const card = buildVideoCard(doc, VIDEO_VIEW, videoOpts({onOpenPost: () => { opened++; }}));
+	click(card.querySelector(`.${CARDS.classes.videoPlay}`));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(!card.querySelector(`.${CARDS.classes.videoFallback}`));
+	videos[0].dispatchEvent(new FakeEvent('error'));
+	const fallback = card.querySelector(`.${CARDS.classes.videoFallback}`);
+	assert.ok(fallback);
+	assert.ok(!card.querySelector('video'));
+	click(fallback);
+	assert.strictEqual(opened, 1);
+});
+
+test('buildVideoCard: gif の自動再生でもぼかしは根に残り、最初の押下で外せる', async () => {
+	const {doc} = docWithVideoStub();
+	const card = buildVideoCard(doc, {...VIDEO_VIEW, presentation: 'gif'}, videoOpts({autoplay: true, blurText: '成人向け'}));
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(card.querySelector('video'));
+	assert.ok(card.classList.contains(CARDS.classes.blurred));
+	assert.ok(card.textContent.includes('成人向け'));
 });

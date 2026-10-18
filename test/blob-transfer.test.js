@@ -10,7 +10,7 @@ import assert from 'node:assert';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {callBridge} from '../src/content/bridge-client.js';
-import {uploadBlob} from '../src/content/blob-transfer.js';
+import {uploadBlob, uploadVideo, cancelVideoUpload} from '../src/content/blob-transfer.js';
 
 const ORIGIN = 'https://bsky.app';
 
@@ -137,6 +137,114 @@ test('callBridge: timeoutMs を渡さない・正の数でないときは既定�
 		assert.deepStrictEqual(fakes.delays, [
 			bridge.timeoutMs, bridge.timeoutMs, bridge.timeoutMs, bridge.timeoutMs, 1234
 		]);
+	} finally {
+		fakes.restore();
+	}
+});
+
+test('uploadVideo: 動画を postMessage で 1 回預け、同じ id を upload-video に載せる', async () => {
+	const requests = [];
+	const fakes = installFakes((detail) => {
+		requests.push(detail);
+		return {ok: true, blob: {$type: 'blob'}};
+	});
+	try {
+		const blob = new Blob(['v'], {type: 'video/mp4'});
+		const handle = uploadVideo(blob, () => {});
+		const result = await handle.done;
+		assert.deepStrictEqual(result, {ok: true, blob: {$type: 'blob'}, reason: null, message: null});
+		assert.strictEqual(fakes.posted.length, 1);
+		assert.strictEqual(fakes.posted[0].targetOrigin, ORIGIN);
+		assert.strictEqual(fakes.posted[0].message.blob, blob);
+		assert.strictEqual(handle.id, fakes.posted[0].message.id);
+		assert.strictEqual(requests[0].action, BRIDGE_PROTOCOL.actions.uploadVideo);
+		assert.deepStrictEqual(requests[0].payload, {blobId: handle.id});
+	} finally {
+		fakes.restore();
+	}
+});
+
+test('uploadVideo: 失敗の理由とサーバの文言をそのまま返す', async () => {
+	const fakes = installFakes(() => ({
+		ok: false,
+		reason: 'upload-forbidden',
+		message: 'Confirm your email address to upload videos'
+	}));
+	try {
+		const result = await uploadVideo(new Blob(['v'], {type: 'video/mp4'}), () => {}).done;
+		assert.deepStrictEqual(result, {
+			ok: false,
+			blob: null,
+			reason: 'upload-forbidden',
+			message: 'Confirm your email address to upload videos'
+		});
+	} finally {
+		fakes.restore();
+	}
+});
+
+test('cancelVideoUpload: cancel-upload-video に同じ id を載せる', () => {
+	const requests = [];
+	const fakes = installFakes((detail) => {
+		requests.push(detail);
+		return {ok: true};
+	});
+	try {
+		cancelVideoUpload('abc');
+		assert.strictEqual(requests.length, 1);
+		assert.strictEqual(requests[0].action, BRIDGE_PROTOCOL.actions.cancelUploadVideo);
+		assert.deepStrictEqual(requests[0].payload, {blobId: 'abc'});
+	} finally {
+		fakes.restore();
+	}
+});
+
+test('uploadVideo: 待ちを打ち切ったら、同じ id で cancel-upload-video を送る', async () => {
+	const requests = [];
+	const saved = {
+		window: globalThis.window,
+		document: globalThis.document,
+		setTimeout: globalThis.setTimeout
+	};
+	globalThis.window = {location: {origin: ORIGIN}, postMessage: () => {}};
+	globalThis.document = {
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		dispatchEvent: (event) => {
+			requests.push(JSON.parse(event.detail));
+			return true;
+		}
+	};
+	// 返事をせず、待ちはすぐ打ち切る
+	globalThis.setTimeout = (fn) => {
+		fn();
+		return 1;
+	};
+	try {
+		const handle = uploadVideo(new Blob(['v'], {type: 'video/mp4'}), () => {});
+		const result = await handle.done;
+		assert.deepStrictEqual(result, {ok: false, blob: null, reason: 'timeout', message: null});
+		assert.deepStrictEqual(requests.map((r) => r.action), [
+			BRIDGE_PROTOCOL.actions.uploadVideo,
+			BRIDGE_PROTOCOL.actions.cancelUploadVideo
+		]);
+		assert.deepStrictEqual(requests[1].payload, {blobId: handle.id});
+	} finally {
+		globalThis.window = saved.window;
+		globalThis.document = saved.document;
+		globalThis.setTimeout = saved.setTimeout;
+	}
+});
+
+test('uploadVideo: 打ち切り以外の失敗では取り消しを送らない', async () => {
+	const requests = [];
+	const fakes = installFakes((detail) => {
+		requests.push(detail);
+		return {ok: false, reason: 'upload-failed'};
+	});
+	try {
+		await uploadVideo(new Blob(['v'], {type: 'video/mp4'}), () => {}).done;
+		assert.deepStrictEqual(requests.map((r) => r.action), [BRIDGE_PROTOCOL.actions.uploadVideo]);
 	} finally {
 		fakes.restore();
 	}

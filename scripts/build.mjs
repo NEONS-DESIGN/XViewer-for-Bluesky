@@ -24,7 +24,7 @@ import { staticFilesFor } from './static-files.mjs';
 import { resolveTargets } from './browsers.mjs';
 import { minifyCssText } from './css-text-plugin.mjs';
 // 入口の表は副作用なしのモジュールに置く。(テストが manifest の参照先との突き合わせに読む)
-import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS, EMOJI_ENTRY_POINTS } from './entry-points.mjs';
+import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS, EMOJI_ENTRY_POINTS, VIDEO_ENTRY_POINTS } from './entry-points.mjs';
 
 /** 監視モードで起動するか。 */
 const WATCH = process.argv.includes('--watch');
@@ -100,6 +100,18 @@ function emojiOptionsFor(target) {
 	return {
 		...popupOptionsFor(target),
 		entryPoints: EMOJI_ENTRY_POINTS,
+	};
+}
+
+/**
+ * 動画の再生の束の esbuild の設定を作る。hls.js を含めて ESM で束ねる。
+ * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
+ * @returns {import('esbuild').BuildOptions} esbuild の設定
+ */
+function videoOptionsFor(target) {
+	return {
+		...popupOptionsFor(target),
+		entryPoints: VIDEO_ENTRY_POINTS,
 	};
 }
 
@@ -220,10 +232,12 @@ async function build(targets) {
 			const injectCtx = await context(injectOptionsFor(target));
 			const popupCtx = await context(popupOptionsFor(target));
 			const emojiCtx = await context(emojiOptionsFor(target));
+			const videoCtx = await context(videoOptionsFor(target));
 			await ctx.watch();
 			await injectCtx.watch();
 			await popupCtx.watch();
 			await emojiCtx.watch();
+			await videoCtx.watch();
 			await emitAssets(target, packageVersion);
 			completed.add(target.name);
 		}
@@ -239,6 +253,7 @@ async function build(targets) {
 		await bundle(injectOptionsFor(target));
 		await bundle(popupOptionsFor(target));
 		await bundle(emojiOptionsFor(target));
+		await bundle(videoOptionsFor(target));
 		await emitAssets(target, packageVersion);
 		completed.add(target.name);
 	}

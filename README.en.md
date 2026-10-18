@@ -64,14 +64,15 @@ When you open an image, a post details panel appears on the right. It works wher
 | --- | --- |
 | **Post details** | The author, text, date, the reply / repost / like counts and an "Open post" button. Links, mentions and hashtags in the text work too. The panel can be collapsed |
 | **React without closing** | Reply, repost, quote, like and bookmark without closing the image. The button changes the moment you press it; if the request fails it goes back and tells you in one line. Quote opens Bluesky's own composer on top of the lightbox. The buttons are not shown when you are signed out |
-| **Replies** | Lists the replies under the panel, newest first, 20 at a time. "Show replies" opens one level of replies to a reply. Reply right there from the box at the top (Ctrl+Enter or "Send", up to 300 characters), including replies to replies. Images attached to replies show as thumbnails; click one to switch the viewer to that image (the panel follows that reply). GIFs in replies play muted (or on click when your OS is set to reduce motion), and link cards and quotes show as cards. Delete your own replies with "Delete" then "Really delete?". Same layout as the comment section of XViewer for Pixiv |
+| **Replies** | Lists the replies under the panel, newest first, 20 at a time. "Show replies" opens one level of replies to a reply. Reply right there from the box at the top (Ctrl+Enter or "Send", up to 300 characters), including replies to replies. Images attached to replies show as thumbnails; click one to switch the viewer to that image (the panel follows that reply). GIFs in replies play muted (or on click when your OS is set to reduce motion), and link cards and quotes show as cards. Videos in replies show as a thumbnail card that plays in place when you click it. Delete your own replies with "Delete" then "Really delete?". Same layout as the comment section of XViewer for Pixiv |
 | **Images in replies** | Attach up to 10 images to a reply (pick them with the button, paste, or drop them on the box). Up to 4 are sent as regular images, 5 or more as a gallery. Each image can have alt text and be cropped, and the reply can carry content warnings (adult content, graphic media). Pick up to 3 post languages; your choice becomes the next default, and when the post you reply to is in another language, it offers to switch. There is an emoji picker too. Images are shrunk to JPEG (long side 4000px, up to 2MB) before sending |
 | **GIFs, link cards and quotes** | Pick a GIF from the same GIF search Bluesky uses (KLIPY) with the GIF button, with alt text if you like (a GIF and images cannot be attached together). A link pasted into the text becomes a link card, and a Bluesky post URL becomes a quote of that post. Images or a GIF can be sent together with a quote. Links in the text are saved in the same shortened form as Bluesky's own app, and the remaining character count uses that form |
+| **Videos in replies** | Attach one video to a reply (pick it with the same button as images, paste, or drop it; mp4, webm, mov or mpeg, up to 300MB and 10 minutes). It is sent as the original file, not shrunk, and the upload starts as soon as you attach it. Progress ("Uploading video", "Processing video") is shown, and sending waits until processing finishes. Add alt text and one caption file (.vtt, up to 20KB, with its language) in the "Captions and ALT" sheet. A video cannot be attached together with images or a GIF, but can be sent together with a quote |
 | **Clicking the image keeps it open** | Clicking the image itself no longer closes the lightbox, and the pointer turns into a hand only over buttons you can press. Click the dark area around it to close. The close button moves to the top left, with the image options next to it |
 
 For sign-in, it only borrows the authenticated client that Bluesky keeps in the page, and never touches the tokens in `localStorage`.
-What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching posts and their replies, uploading images for a reply (JPEG, PNG, WebP and GIF up to 2MB), and posting and deleting your own replies.
-Posts that are not replies cannot be created, and the only things a reply can carry are images, a GIF, a link card, a quote of a post and content warnings. Before deleting, it checks that the target is your own reply.
+What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching posts and their replies, uploading images for a reply (JPEG, PNG, WebP and GIF up to 2MB), uploading a caption file for a reply (.vtt up to 20KB), uploading a video for a reply to `video.bsky.app`, and posting and deleting your own replies.
+Posts that are not replies cannot be created, and the only things a reply can carry are images, a video, a GIF, a link card, a quote of a post and content warnings. The authorization used for the video upload is created and used only inside Bluesky's own client in the page, and is never handed to any other part of the extension. Before deleting, it checks that the target is your own reply.
 
 ### Other
 
@@ -155,7 +156,7 @@ The option names below are translations; the popup shows them in Japanese.
 | Media grid | ↳ Remove NSFW blur | Off | Removes the blur and warning text from grid tiles so a single click opens them. Warnings shown by Bluesky itself are left alone |
 | Lightbox | Show post details | On | Shows the text, date and counts on the right when you open an image. Works for images outside the grid too. Not shown when the window is narrow |
 | Lightbox | ↳ Reply and like | On | Adds reply, repost, quote, like and bookmark buttons to the panel. When off, only the buttons go away and the panel stays |
-| Lightbox | ↳ Reply list | On | Shows the list of replies under the panel. When "Reply and like" is also on, you can reply from the box (with images, a GIF, a link card or a quote) and delete your own replies |
+| Lightbox | ↳ Reply list | On | Shows the list of replies under the panel. When "Reply and like" is also on, you can reply from the box (with images, a video, a GIF, a link card or a quote) and delete your own replies |
 | Lightbox | Don't close on image click | On | Keeps the lightbox open when you click the image itself, and leaves the hand pointer only on buttons. Moves the close button to the top left, with the image options next to it |
 | Developer | Debug mode | Off | Logs tab detection, the grid starting and stopping, and fetching to the console, and writes the internal state to an attribute on the `html` element. Useful when reporting a bug |
 
@@ -170,9 +171,10 @@ and stays on your choice once you switch. ("Reset settings" returns it to follow
 - **Use it at your own risk.** Neither the author nor Bluesky Social PBC is responsible for any damage caused by using this extension
 - **Each like, repost or bookmark you press is sent to Bluesky from your account.**
   Likes and reposts are public, just as when you use Bluesky directly
-- **Replies are posted only when you send them yourself, from the panel's reply box or from Bluesky's own composer.** Attached images and the thumbnails of link cards and GIFs are uploaded to your account's server (PDS) only at that moment. The "Quote" item of the repost button opens Bluesky's own composer.
+- **Replies are posted only when you send them yourself, from the panel's reply box or from Bluesky's own composer.** Attached images and the thumbnails of link cards and GIFs are uploaded to your account's server (PDS) only at that moment. An attached video is uploaded to Bluesky's video service (`video.bsky.app`) as soon as you attach it, and the converted result is what the reply carries. (So the upload happens even if you never send; removing the video or closing the box stops it midway) The "Quote" item of the repost button opens Bluesky's own composer.
   The only posts the extension deletes are your own replies, after you press "Really delete?". It never creates or deletes posts that are not replies, and never follows, blocks or sends DMs
 - **GIF search and link cards use the same relay services as Bluesky's own app.** What you type into the GIF search (and the region of your browser language) is sent to `gifs.bsky.app`, and the URLs of links in the reply box are sent to `cardyb.bsky.app` to build the card. GIF images and videos load from `static.klipy.com`, `k.gifs.bsky.app` and `t.gifs.bsky.app`. This happens only when you open the GIF search, write a link in the reply box, or a reply in the list has a GIF or a card
+- **Playing videos in the reply list uses Bluesky's video service.** Only when you click a video card, the playlist and the video load from `video.bsky.app`. (The thumbnail loads when the card is shown)
 - **Removing the NSFW blur affects only the grid tiles.** It never changes Bluesky's own content settings or the warnings Bluesky shows
 - **It has no way to collect images.** There is no downloading and no bulk automation.
   It only fetches the posts of the profile you are viewing and the post of the image you open
@@ -199,8 +201,8 @@ For a bug, turning on "Debug mode" in the popup and including what it prints to 
 | `npm run build:symbols` | Generates the icon shapes for the popup and panel (`src/common/icon-shapes.js`) from Material Symbols (the output is committed) |
 | `npm run build:site-langs` | Rewrites the language lists on every website page (hreflang / language menu / footer) and `site/sitemap.xml` from the table in `scripts/site-langs.mjs` |
 
-The source lives in `src/` as ES Modules and is bundled with esbuild. The only runtime dependencies are `emoji-mart` and `@emoji-mart/data` for the emoji picker in the reply box,
-and they go only into the bundle of the emoji picker page (`dist/emoji/`). (The content script just opens that page in an iframe, so they are not in `content.js`)
+The source lives in `src/` as ES Modules and is bundled with esbuild. The only runtime dependencies are `emoji-mart` and `@emoji-mart/data` for the emoji picker in the reply box and `hls.js` for playing videos in the reply list,
+and they go only into the bundle of the emoji picker page (`dist/emoji/`) and the video player bundle (`dist/video/`). (The content script only opens the picker in an iframe and loads the player when you click a video, so they are not in `content.js`)
 The single source of the version is `version` in `package.json`; the build writes it into `dist/manifest.json` and `dist-firefox/manifest.json`.
 The single source of the minimum browser versions (the esbuild target, `minimum_chrome_version`, and Firefox's `strict_min_version`) is `scripts/targets.mjs`.
 
@@ -229,4 +231,4 @@ The language lists are not written by hand on each page; rewrite them with `npm 
 
 [MIT License](LICENSE)
 
-For the third-party work bundled with this extension (Material Symbols, Emoji Mart), see [`NOTICE`](NOTICE). The texts of the Apache License 2.0 and of Emoji Mart's MIT License are included in [`LICENSES/`](LICENSES).
+For the third-party work bundled with this extension (Material Symbols, Emoji Mart, hls.js), see [`NOTICE`](NOTICE). hls.js is bundled under the Apache License 2.0. The texts of the Apache License 2.0 and of Emoji Mart's MIT License are included in [`LICENSES/`](LICENSES).

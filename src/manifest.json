@@ -22,7 +22,7 @@
 	},
 	"web_accessible_resources": [
 		{
-			"resources": ["emoji/*"],
+			"resources": ["emoji/*", "video/*"],
 			"matches": ["*://bsky.app/*"]
 		}
 	],

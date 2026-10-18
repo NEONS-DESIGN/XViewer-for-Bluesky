@@ -54,8 +54,14 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		 * 預けた Blob を本体の認証済み fetchHandler でアップロードする。
 		 * Blob 本体は postMessage (blobMessageType) で先に預け、payload は blobId だけ
 		 */
-		uploadBlob: 'upload-blob'
+		uploadBlob: 'upload-blob',
+		/** 動画を本体の認証済み fetchHandler でサービス認証つきに動画サービスへ送る (進み具合は progressEvent) */
+		uploadVideo: 'upload-video',
+		/** 実行中の upload-video を取り消す */
+		cancelUploadVideo: 'cancel-upload-video'
 	},
+	/** upload-video の進み具合を MAIN ワールドから分離ワールドへ知らせる document 上のイベント名 */
+	progressEvent: 'ext:bridge-progress',
 	/** 分離ワールドから MAIN ワールドへ Blob を預ける postMessage の type */
 	blobMessageType: 'ext:bridge-blob',
 	/**
@@ -64,8 +70,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	 * default は載っていない MIME の上限。通すのは画像だけ
 	 */
 	upload: {
-		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-		maxBytes: {default: 2000000},
+		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'text/vtt'],
+		maxBytes: {default: 2000000, 'text/vtt': 20000},
 		/** 預けた Blob を取りに来なかったときに捨てるまでの時間 */
 		inboxTtlMs: 30000,
 		/** 預かり箱の件数の上限。超えたら古いものから捨てる */
@@ -74,6 +80,22 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		arriveTimeoutMs: 5000,
 		/** Blob を預けるときの id の形 (正規表現の文字列) */
 		blobIdPattern: '^[a-z0-9-]{8,64}$'
+	},
+	/**
+	 * 動画のアップロード (upload-video) が受け付ける動画の条件と、返信に付ける動画の embed の上限。
+	 * blobMimeType は動画サービスが変換して返す BlobRef の MIME
+	 */
+	video: {
+		mimeTypes: ['video/mp4', 'video/webm', 'video/quicktime', 'video/mpeg'],
+		maxBytes: 300000000,
+		blobMimeType: 'video/mp4',
+		maxCaptions: 1,
+		captionMimeType: 'text/vtt',
+		captionMaxBytes: 20000,
+		/** 字幕の言語タグの形 (正規表現の文字列) */
+		langPattern: '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$',
+		/** embed の presentation に置いてよい値 */
+		presentation: 'default'
 	},
 	/** タブ要素の data-testid の接頭辞 */
 	tabTestIdPrefix: 'profilePager-selector-',
@@ -115,7 +137,7 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	},
 	/**
 	 * 返信として作れる投稿の record の形。
-	 * embed は画像 (images / gallery)・リンクカード (external)・引用 (record / recordWithMedia) だけ、
+	 * embed は画像 (images / gallery)・動画 (video)・リンクカード (external)・引用 (record / recordWithMedia) だけ、
 	 * labels は自己ラベルだけを通す。maxTextBytes は
 	 * app.bsky.feed.post の lexicon の text の maxLength (3000 バイト)
 	 */
@@ -131,6 +153,7 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 			gallery: 'app.bsky.embed.gallery',
 			external: 'app.bsky.embed.external',
 			record: 'app.bsky.embed.record',
+			video: 'app.bsky.embed.video',
 			recordWithMedia: 'app.bsky.embed.recordWithMedia'
 		},
 		/** リンクカード (external) の上限。thumb は外部サムネイルの上限 (画像の 2MB より小さい) */
@@ -174,6 +197,12 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** MIME・サイズが許した範囲に無い Blob */
 		blobNotAllowed: 'blob-not-allowed',
 		/** アップロードが成功しなかった (どの段階でも呼び出し側は同じ扱い) */
-		uploadFailed: 'upload-failed'
+		uploadFailed: 'upload-failed',
+		/** 利用者の操作で取り消された */
+		canceled: 'canceled',
+		/** 動画サービスへの送信を本体の認証で許されなかった */
+		uploadForbidden: 'upload-forbidden',
+		/** 動画の処理 (変換) が失敗した */
+		videoFailed: 'video-failed'
 	}
 });

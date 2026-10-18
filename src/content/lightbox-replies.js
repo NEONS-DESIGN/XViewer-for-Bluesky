@@ -24,9 +24,10 @@ import {
 } from './reply-text.js';
 import {ReplyComposer, defaultLanguages} from './reply-composer.js';
 import {normalizeLanguages} from './reply-embed.js';
-import {uploadBlob} from './blob-transfer.js';
+import {uploadBlob, uploadVideo, cancelVideoUpload} from './blob-transfer.js';
 import {prepareImage} from './image-prepare.js';
-import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, prefersReducedMotion} from './embed-cards.js';
+import {readVideoMeta} from './reply-video.js';
+import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, buildVideoCard, prefersReducedMotion} from './embed-cards.js';
 import {gifPlayerFromUri, stripAltPrefix} from './klipy.js';
 
 /**
@@ -201,6 +202,10 @@ export class LightboxReplies {
 		this.confirmingButton = null;
 		/** @type {Map<string, ReplyRow>} */
 		this.rows = new Map();
+		/** @type {Promise<{attachHls: Function}|null>|null} 動画の再生の束の読み込み。1 回だけ試す */
+		this.playerPromise = null;
+		/** @type {Map<{destroy: () => void}, string>} 再生中の動画と、その返信の AT URI */
+		this.players = new Map();
 		/** @type {Set<ReplyComposer>} 描いている入力欄 */
 		this.composers = new Set();
 		/** @type {{composer: ReplyComposer, button: HTMLButtonElement}|null} 返信への返信の入力欄 */
@@ -298,6 +303,7 @@ export class LightboxReplies {
 
 	/** 区画の DOM と、それに結び付いた状態を外す。 */
 	removeDom() {
+		this.destroyPlayers(null);
 		try {
 			for (const composer of this.composers) {
 				composer.destroy();
@@ -685,6 +691,9 @@ export class LightboxReplies {
 			sheets: this.getSheets(),
 			uploadBlob,
 			prepareImage,
+			uploadVideo,
+			cancelVideoUpload,
+			readVideoMeta: (file) => readVideoMeta(file),
 			getSelfProfile: () => this.selfProfile,
 			getSessionDid: () => this.sessionDid,
 			isCurrent: (generation) => generation === this.generation,
@@ -1107,6 +1116,10 @@ export class LightboxReplies {
 				const external = this.buildExternal(result.external, blurText);
 				if (external) parts.push(external);
 			}
+			if (result.video) {
+				const video = this.buildVideo(item, result.video);
+				if (video) parts.push(video);
+			}
 			if (result.quote) {
 				const quote = this.buildQuote(result.quote);
 				if (quote) parts.push(quote);
@@ -1169,6 +1182,109 @@ export class LightboxReplies {
 			text,
 			safeHref: (uri) => this.host.safeHref(uri),
 			blurText
+		});
+		if (blurText) this.unblurOnFirstClick(card);
+		return card;
+	}
+
+	/**
+	 * 動画の再生の束を読み込む。1 回だけ試し、失敗は null (再生できない扱い)。
+	 * @returns {Promise<{attachHls: Function}|null>}
+	 */
+	loadPlayer() {
+		if (!this.playerPromise) {
+			this.playerPromise = (async () => {
+				try {
+					return await import(chrome.runtime.getURL(this.config.player.path));
+				} catch (error) {
+					ExtDebug.log('動画の再生の束を読み込めませんでした', error);
+					return null;
+				}
+			})();
+		}
+		return this.playerPromise;
+	}
+
+	/**
+	 * 再生中の動画を後始末する。
+	 * @param {string|null} uri この返信の分だけ (null なら全部)
+	 * @returns {void}
+	 */
+	destroyPlayers(uri) {
+		for (const [player, owner] of Array.from(this.players)) {
+			if (uri !== null && owner !== uri) continue;
+			this.players.delete(player);
+			try {
+				player.destroy();
+			} catch (_e) {
+				// 破棄済みなら何もしない
+			}
+		}
+	}
+
+	/**
+	 * 動画のカードを作る。押すと hls.js で再生し、できなければ投稿で見るに替える。
+	 * @param {Object} item ReplyItem
+	 * @param {Object} view video#view
+	 * @returns {HTMLElement|null}
+	 */
+	buildVideo(item, view) {
+		const cards = this.config.cards;
+		const blurText = formatBlurLabels(matchBlurLabels(item.labels, this.mediaConfig), this.mediaConfig);
+		const canOpen = item.handle && item.rkey;
+		const generation = this.generation;
+		const card = buildVideoCard(document, view, {
+			classes: cards.classes,
+			text: {...this.config.compose.text, ...cards.text},
+			autoplay: !prefersReducedMotion(document.defaultView || {}),
+			blurText,
+			defaultAspect: this.config.compose.video.defaultAspect,
+			startPlayback: async (video, url) => {
+				// 読み込みの待ち中に行が外されても取り消せるよう、先に札を登録する
+				// (自動再生の GIF は接続前に始まるため、接続の有無では判定しない)
+				const token = {
+					inner: null,
+					cancelled: false,
+					destroy: () => {
+						token.cancelled = true;
+						this.players.delete(token);
+						if (token.inner) {
+							const inner = token.inner;
+							token.inner = null;
+							try {
+								inner.destroy();
+							} catch (_e) {
+								// 破棄済みなら何もしない
+							}
+						}
+					}
+				};
+				this.players.set(token, item.uri);
+				const module = await this.loadPlayer();
+				if (token.cancelled || generation !== this.generation) {
+					token.destroy();
+					return false;
+				}
+				if (!module || typeof module.attachHls !== 'function') {
+					token.destroy();
+					return false;
+				}
+				try {
+					token.inner = module.attachHls(video, url);
+				} catch (error) {
+					ExtDebug.log('動画の再生を始められませんでした', error);
+					token.destroy();
+					return false;
+				}
+				video.addEventListener('error', () => token.destroy(), {once: true});
+				return true;
+			},
+			onOpenPost: canOpen
+				? () => this.host.leaveTo({
+					route: EXT_CONFIG.mediaGrid.bridge.routes.post,
+					params: {name: item.handle, rkey: item.rkey}
+				})
+				: null
 		});
 		if (blurText) this.unblurOnFirstClick(card);
 		return card;
@@ -1404,6 +1520,7 @@ export class LightboxReplies {
 		// 中の行の記録を外してから描き直す
 		for (const [uri, child] of this.rows) {
 			if (child.depth === 1 && child.anchorUri === anchorUri) {
+				this.destroyPlayers(uri);
 				this.rows.delete(uri);
 			}
 		}
@@ -1518,6 +1635,7 @@ export class LightboxReplies {
 		if (this.rowForm && row.li.contains(this.rowForm.composer.el)) {
 			this.closeRowForm(false);
 		}
+		this.destroyPlayers(row.item.uri);
 		row.li.remove();
 		this.rows.delete(row.item.uri);
 		if (row.depth === 0) {

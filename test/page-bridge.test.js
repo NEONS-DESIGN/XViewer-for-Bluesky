@@ -13,8 +13,10 @@ import {EXT_CONFIG} from '../src/common/config.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {
 	EXT_BRIDGE, checkXrpcRequest, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
-	waitForLightboxHistory, toBlobRef, checkUploadBlob, isBlobRef, BlobInbox, readBlobMessage
+	waitForLightboxHistory, toBlobRef, checkUploadBlob, checkUploadVideo, isBlobRef, BlobInbox, readBlobMessage, toProgressDetail, truncateMessage,
+	createVideoDeps, uploadVideoAction, cancelUploadVideo, setBlobInboxForTest
 } from '../src/inject/page-bridge.js';
+import {VIDEO_UPLOAD} from '../src/inject/video-upload.js';
 import {buildPostEmbed} from '../src/content/reply-embed.js';
 import {buildReplyRecord} from '../src/content/reply-text.js';
 import {buildGifExternal} from '../src/content/klipy.js';
@@ -633,7 +635,6 @@ test('checkUploadBlob: 上限を 1 バイト超えると落ちる', () => {
 test('checkUploadBlob: 許していない MIME・0 バイト・数でない size は落ちる', () => {
 	for (const info of [
 		{type: 'video/mp4', size: 10},
-		{type: 'text/vtt', size: 10},
 		{type: 'image/svg+xml', size: 10},
 		{type: 'application/octet-stream', size: 10},
 		{type: 'image/png', size: 0},
@@ -880,4 +881,239 @@ test('入力欄と橋渡しのつなぎ目: buildPostEmbed の 5 通りを build
 		embed: buildPostEmbed({images: [], external: buildGifExternal(gifItem, gifAlt, blobRef()), quote: null}, RULES.maxImages)
 	});
 	assert.strictEqual(checkPostRecord(unlimited).ok, false);
+});
+
+/** 検査に使う動画の BlobRef */
+const VIDEO_BLOB = {$type: 'blob', ref: {$link: 'bafkreivideo'}, mimeType: 'video/mp4', size: 131831};
+/** 検査に使う字幕の BlobRef */
+const VTT_BLOB = {$type: 'blob', ref: {$link: 'bafkreivtt'}, mimeType: 'text/vtt', size: 111};
+
+test('checkUploadVideo: 動画の MIME で 1〜300,000,000 バイトだけを通す', () => {
+	assert.deepStrictEqual(checkUploadVideo({type: 'video/mp4', size: 1}), {ok: true});
+	assert.deepStrictEqual(checkUploadVideo({type: 'video/quicktime', size: 300000000}), {ok: true});
+	assert.strictEqual(checkUploadVideo({type: 'video/webm', size: 300000001}).ok, false);
+	assert.strictEqual(checkUploadVideo({type: 'video/mp4', size: 0}).ok, false);
+	assert.strictEqual(checkUploadVideo({type: 'image/gif', size: 10}).ok, false);
+	assert.strictEqual(checkUploadVideo({type: 'text/vtt', size: 10}).ok, false);
+});
+
+test('checkUploadBlob: 字幕 (text/vtt) は 20,000 バイトまで通し、動画は通さない', () => {
+	assert.deepStrictEqual(checkUploadBlob({type: 'text/vtt', size: 20000}), {ok: true});
+	assert.strictEqual(checkUploadBlob({type: 'text/vtt', size: 20001}).ok, false);
+	assert.strictEqual(checkUploadBlob({type: 'video/mp4', size: 10}).ok, false);
+});
+
+test('checkPostEmbed: app.bsky.embed.video の正しい形を通す', () => {
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.video', video: VIDEO_BLOB}), true);
+	assert.strictEqual(checkPostEmbed({
+		$type: 'app.bsky.embed.video', video: VIDEO_BLOB, alt: '説明',
+		captions: [{lang: 'ja', file: VTT_BLOB}], aspectRatio: {width: 640, height: 360}, presentation: 'default'
+	}), true);
+	assert.strictEqual(checkPostEmbed({
+		$type: 'app.bsky.embed.recordWithMedia',
+		record: {$type: 'app.bsky.embed.record', record: {uri: 'at://did:plc:a/app.bsky.feed.post/1', cid: 'bafy'}},
+		media: {$type: 'app.bsky.embed.video', video: VIDEO_BLOB}
+	}), true);
+});
+
+test('checkPostEmbed: app.bsky.embed.video の崩れた形を拒む', () => {
+	const base = {$type: 'app.bsky.embed.video', video: VIDEO_BLOB};
+	const bad = [
+		{...base, video: {...VIDEO_BLOB, mimeType: 'video/webm'}},
+		{...base, video: {...VIDEO_BLOB, size: 300000001}},
+		{...base, video: {...VIDEO_BLOB, extra: 1}},
+		{$type: 'app.bsky.embed.video'},
+		{...base, extra: 1},
+		{...base, alt: 'あ'.repeat(2001)},
+		{...base, captions: []},
+		{...base, captions: [{lang: 'ja', file: VTT_BLOB}, {lang: 'en', file: VTT_BLOB}]},
+		{...base, captions: [{lang: 'ja!', file: VTT_BLOB}]},
+		{...base, captions: [{lang: 'ja', file: {...VTT_BLOB, mimeType: 'text/plain'}}]},
+		{...base, captions: [{lang: 'ja', file: {...VTT_BLOB, size: 20001}}]},
+		{...base, captions: [{lang: 'ja', file: VTT_BLOB, extra: 1}]},
+		{...base, presentation: 'gif'},
+		{...base, aspectRatio: {width: 0, height: 360}}
+	];
+	for (const embed of bad) assert.strictEqual(checkPostEmbed(embed), false, JSON.stringify(embed));
+});
+
+test('checkPostEmbed: 画像の BlobRef に動画の MIME を入れた images は拒む', () => {
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.images', images: [{image: VIDEO_BLOB, alt: ''}]}), false);
+});
+
+test('入力欄が組む動画の embed は checkPostRecord を通る', () => {
+	const RULES = BRIDGE_PROTOCOL.postRecord;
+	const video = {blob: VIDEO_BLOB, alt: '説明', width: 640.6, height: 360, captions: [{lang: 'ja', file: VTT_BLOB}]};
+	const quote = {uri: 'at://did:plc:q/app.bsky.feed.post/3kq', cid: 'bafyreiq'};
+	const cases = [
+		{name: '動画だけ', parts: {images: [], video, external: null, quote: null}, type: RULES.embedTypes.video},
+		{name: '引用 + 動画', parts: {images: [], video, external: null, quote}, type: RULES.embedTypes.recordWithMedia}
+	];
+	for (const one of cases) {
+		const record = buildReplyRecord({
+			text: 'a', reply: replyRecord().reply, createdAt: '2026-10-19T00:00:00.000Z',
+			langs: ['ja'], facets: [], embed: buildPostEmbed(one.parts, RULES.maxImages), labels: null
+		});
+		assert.strictEqual(record.embed.$type, one.type, one.name);
+		assert.deepStrictEqual(checkPostRecord(record), {ok: true}, one.name);
+	}
+});
+
+test('toProgressDetail: 段階と 0〜1 の数だけを運ぶ', () => {
+	assert.deepStrictEqual(toProgressDetail(7, {phase: 'upload', progress: 0.42}), {id: 7, phase: 'upload', progress: 0.42});
+	assert.deepStrictEqual(toProgressDetail(7, {phase: 'processing', progress: null}), {id: 7, phase: 'processing', progress: null});
+	assert.deepStrictEqual(toProgressDetail(7, {phase: 'upload', progress: 1.5}), {id: 7, phase: 'upload', progress: 1});
+	assert.deepStrictEqual(toProgressDetail(7, {phase: 'upload', progress: -1}), {id: 7, phase: 'upload', progress: 0});
+	assert.deepStrictEqual(toProgressDetail(7, {phase: 'upload', progress: NaN}), {id: 7, phase: 'upload', progress: null});
+	assert.strictEqual(toProgressDetail(7, {phase: 'token', progress: 0.1}), null);
+	assert.strictEqual(toProgressDetail(7, null), null);
+	assert.deepStrictEqual(Object.keys(toProgressDetail(7, {phase: 'upload', progress: 0.1, token: 'x'})).sort(), ['id', 'phase', 'progress']);
+});
+
+test('truncateMessage: 文字列だけを 300 文字で切る', () => {
+	assert.strictEqual(truncateMessage('abc'), 'abc');
+	assert.strictEqual(truncateMessage('a'.repeat(500)).length, 300);
+	assert.strictEqual(truncateMessage(42), undefined);
+	assert.strictEqual(truncateMessage(''), undefined);
+	assert.strictEqual(truncateMessage(undefined), undefined);
+});
+
+test('checkXrpcRequest: 動画サービスの NSID は call-xrpc では通らない', () => {
+	for (const nsid of ['app.bsky.video.startUpload', 'com.atproto.server.getServiceAuth', 'com.atproto.server.getSession']) {
+		assert.strictEqual(checkXrpcRequest({nsid, params: {}}, SELF_DID).ok, false, nsid);
+	}
+});
+
+test('createVideoDeps: abortUpload は鳴った signal を渡さずに送る', async () => {
+	const original = globalThis.fetch;
+	const calls = [];
+	globalThis.fetch = async (url, init) => {
+		calls.push({url, init});
+		return {status: 200, json: async () => ({})};
+	};
+	try {
+		const controller = new AbortController();
+		controller.abort();
+		const deps = createVideoDeps({}, controller.signal, () => {});
+		await deps.requestJson('POST', VIDEO_UPLOAD.nsid.abortUpload, {token: 't', body: {jobId: 'j'}});
+		assert.strictEqual(calls.length, 1);
+		assert.ok(String(calls[0].url).endsWith('/xrpc/app.bsky.video.abortUpload'));
+		assert.notStrictEqual(calls[0].init.signal, controller.signal);
+		assert.strictEqual(calls[0].init.signal.aborted, false);
+		await deps.requestJson('GET', VIDEO_UPLOAD.nsid.getUploadLimits, {token: 't'});
+		// 取り消しの signal に 1 回ごとの打ち切りを合わせたもの
+		assert.ok(calls[1].init.signal instanceof AbortSignal);
+		assert.strictEqual(calls[1].init.signal.aborted, true);
+	} finally {
+		globalThis.fetch = original;
+	}
+});
+
+test('createVideoDeps: requestJson・getSession・getServiceAuth は取り消しと 1 回ごとの打ち切りを合わせた signal を渡す', async () => {
+	const originalFetch = globalThis.fetch;
+	const originalTimeout = AbortSignal.timeout;
+	const timeouts = [];
+	const fetches = [];
+	const handlerCalls = [];
+	AbortSignal.timeout = (ms) => {
+		const timeout = new AbortController();
+		timeouts.push({ms, controller: timeout});
+		return timeout.signal;
+	};
+	globalThis.fetch = async (url, init) => {
+		fetches.push({url, init});
+		return {status: 200, json: async () => ({})};
+	};
+	try {
+		const controller = new AbortController();
+		const clients = {
+			pdsClient: {
+				agent: {
+					fetchHandler: async (url, init) => {
+						handlerCalls.push({url, init});
+						return {ok: true, json: async () => ({token: 'tok', did: 'did:plc:x'})};
+					}
+				}
+			}
+		};
+		const deps = createVideoDeps(clients, controller.signal, () => {});
+		await deps.requestJson('GET', VIDEO_UPLOAD.nsid.getUploadLimits, {token: 't'});
+		await deps.getSession();
+		assert.strictEqual(await deps.getServiceAuth('did:web:video.bsky.app', VIDEO_UPLOAD.nsid.getUploadLimits), 'tok');
+		assert.deepStrictEqual(timeouts.map((t) => t.ms), Array(3).fill(VIDEO_UPLOAD.requestTimeoutMs));
+		const signals = [fetches[0].init.signal, handlerCalls[0].init.signal, handlerCalls[1].init.signal];
+		for (const signal of signals) {
+			assert.ok(signal instanceof AbortSignal);
+			assert.strictEqual(signal.aborted, false);
+		}
+		// 1 回ごとの打ち切りが鳴ると、その要求の signal だけが鳴る
+		timeouts[0].controller.abort();
+		assert.strictEqual(signals[0].aborted, true);
+		assert.strictEqual(signals[1].aborted, false);
+		// 取り消しは全部に届く
+		controller.abort();
+		assert.ok(signals.every((signal) => signal.aborted));
+	} finally {
+		globalThis.fetch = originalFetch;
+		AbortSignal.timeout = originalTimeout;
+	}
+});
+
+test('createVideoDeps: sendPart は args.signal が鳴っても XHR を止める', async () => {
+	const original = globalThis.XMLHttpRequest;
+	const xhrs = [];
+	globalThis.XMLHttpRequest = class {
+		constructor() {
+			this.upload = {};
+			this.aborted = false;
+			xhrs.push(this);
+		}
+		open() {}
+		setRequestHeader() {}
+		send() {}
+		abort() {
+			this.aborted = true;
+			if (this.onabort) this.onabort();
+		}
+	};
+	try {
+		const controller = new AbortController();
+		const deps = createVideoDeps({}, controller.signal, () => {});
+		const stop = new AbortController();
+		const pending = deps.sendPart({
+			jobId: 'j', partNumber: 2, chunk: new Blob(['x']), token: 't', onBytes: () => {}, signal: stop.signal
+		});
+		assert.strictEqual(xhrs.length, 1);
+		assert.strictEqual(xhrs[0].aborted, false);
+		stop.abort();
+		await assert.rejects(pending);
+		assert.strictEqual(xhrs[0].aborted, true);
+		assert.strictEqual(controller.signal.aborted, false);
+
+		// 取り消しの signal でも止まる
+		const other = deps.sendPart({
+			jobId: 'j', partNumber: 3, chunk: new Blob(['x']), token: 't', onBytes: () => {}, signal: new AbortController().signal
+		});
+		controller.abort();
+		await assert.rejects(other);
+		assert.strictEqual(xhrs[1].aborted, true);
+	} finally {
+		globalThis.XMLHttpRequest = original;
+	}
+});
+
+test('uploadVideoAction: 動画の到着を待つあいだの取り消しを拾う', async () => {
+	let release = null;
+	const blob = new Blob([new Uint8Array(4)], {type: 'video/mp4'});
+	setBlobInboxForTest({waitFor: () => new Promise((resolve) => { release = () => resolve(blob); })});
+	try {
+		const blobId = 'a'.repeat(16);
+		const pending = uploadVideoAction({blobId}, 1);
+		assert.deepStrictEqual(cancelUploadVideo({blobId}), {ok: true});
+		release();
+		assert.deepStrictEqual(await pending, {ok: false, reason: BRIDGE_PROTOCOL.reasons.canceled});
+		assert.deepStrictEqual(cancelUploadVideo({blobId}), {ok: false});
+	} finally {
+		setBlobInboxForTest(null);
+	}
 });

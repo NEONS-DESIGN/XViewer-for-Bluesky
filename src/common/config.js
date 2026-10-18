@@ -300,7 +300,14 @@ export const EXT_CONFIG = {
 			 * upload-blob の応答を待つ上限。画像 (最大 2MB) を PDS へ送り終えるまで
 			 * 待つため、ほかの操作の timeoutMs より長くとる
 			 */
-			uploadTimeoutMs: 60000
+			uploadTimeoutMs: 60000,
+			/** 動画の進み具合のイベント名。page-bridge.js と共有する (BRIDGE_PROTOCOL) */
+			progressEvent: BRIDGE_PROTOCOL.progressEvent,
+			/**
+			 * upload-video で進み具合が止まってから打ち切るまでの待ち時間。
+			 * 進み具合が届くたびに掛け直すため、全体の長さには上限がない
+			 */
+			videoIdleTimeoutMs: 150000
 		}
 	},
 
@@ -613,7 +620,48 @@ export const EXT_CONFIG = {
 			/** 投稿した自分の返信の画像を、取り直さずに描くための CDN の形 */
 			cdn: {
 				thumb: 'https://cdn.bsky.app/img/feed_thumbnail/plain',
-				fullsize: 'https://cdn.bsky.app/img/feed_fullsize/plain'
+				fullsize: 'https://cdn.bsky.app/img/feed_fullsize/plain',
+				video: 'https://video.bsky.app/watch'
+			},
+			/** 動画 1 本と字幕 (上限は橋渡しの規則と同じ値) */
+			video: {
+				acceptTypes: BRIDGE_PROTOCOL.video.mimeTypes,
+				/** 動画と見なす MIME タイプの接頭辞 (acceptTypes に無い動画を、画像ではなく動画として断るため) */
+				typePrefix: 'video/',
+				maxBytes: BRIDGE_PROTOCOL.video.maxBytes,
+				/** 動画の長さの上限 (ミリ秒) */
+				maxDurationMs: 600000,
+				/** 動画の寸法と長さを読むのを諦めるまでの時間 (ミリ秒) */
+				metaTimeoutMs: 10000,
+				/** 寸法が読めないときの縦横比 */
+				defaultAspect: {width: 16, height: 9},
+				caption: {
+					extension: '.vtt',
+					mimeType: BRIDGE_PROTOCOL.video.captionMimeType,
+					maxBytes: BRIDGE_PROTOCOL.video.captionMaxBytes,
+					signature: 'WEBVTT',
+					headBytes: 16
+				},
+				/** 動画サービスが返す英語の文言と日本語の対応 */
+				serverMessages: {
+					'User is not allowed to upload videos': '動画をアップロードできないアカウントです',
+					'Uploading is disabled at the moment': '動画のアップロードは今は使えません',
+					"Failed to get user's upload stats": '動画をアップロードできるか確かめられませんでした。もう一度お試しください',
+					'User has exceeded daily upload bytes limit': '動画のアップロードが 1 日の上限 (容量) に達しました',
+					'User has exceeded daily upload videos limit': '動画のアップロードが 1 日の上限 (本数) に達しました',
+					'Account is not old enough to upload videos': 'アカウントが新しいため、まだ動画をアップロードできません',
+					'Confirm your email address to upload videos': '動画をアップロードするにはメールアドレスの確認が必要です'
+				},
+				/** 動画の処理の失敗コードと日本語の対応 */
+				failureTexts: {
+					video_too_long: '動画が長すぎます',
+					bad_aspect_ratio: 'この縦横比の動画は使えません',
+					unsupported_codec: 'この形式の動画は使えません',
+					encoded_video_too_large: '変換した動画が大きすぎます',
+					encoding_failure: '動画を変換できませんでした',
+					pds_upload_failure: '動画をサーバに保存できませんでした',
+					pds_upload_unsupported_blob_size: 'この大きさの動画はサーバが受け付けません'
+				}
 			},
 			/** 絵文字ピッカー (拡張のページを iframe で出す。通知の型は両側で同じ値を使う) */
 			emoji: {
@@ -696,6 +744,9 @@ export const EXT_CONFIG = {
 				gifItem: 'ext-lb-gif-item',
 				gifStatus: 'ext-lb-gif-status',
 				gifSentinel: 'ext-lb-gif-sentinel',
+				/** 字幕と ALT の画面の字幕の行 */
+				captionRow: 'ext-lb-caption-row',
+				captionName: 'ext-lb-caption-name',
 				/** 以下は入力欄 (reply-composer.js) の部品 */
 				composer: 'ext-lb-composer',
 				dragOver: 'is-dragover',
@@ -718,7 +769,13 @@ export const EXT_CONFIG = {
 				languageButton: 'ext-lb-composer-lang',
 				languageText: 'ext-lb-composer-lang-text',
 				/** 入力欄の中の GIF・リンクカード・引用のプレビューの入れ物 */
-				embedPreview: 'ext-lb-composer-embed'
+				embedPreview: 'ext-lb-composer-embed',
+				/** 入力欄の動画のプレビュー・状態の 1 行・再試行・字幕の印 */
+				video: 'ext-lb-composer-video',
+				videoStatus: 'ext-lb-composer-video-status',
+				videoRetry: 'ext-lb-composer-video-retry',
+				videoRemove: 'ext-lb-composer-video-remove',
+				videoBadge: 'ext-lb-composer-video-badge'
 			},
 			/** 送信中に押せなくする入力欄の中の要素 */
 			busyControls: 'button, textarea',
@@ -763,7 +820,36 @@ export const EXT_CONFIG = {
 				emojiFrame: '絵文字を選ぶ',
 				emojiFailed: '絵文字を読み込めませんでした',
 				/** 以下は入力欄 (reply-composer.js) の文言 */
-				addImage: '画像を追加',
+				addImage: '画像・動画を追加',
+				videoExclusive: '動画は画像・GIF と同時に付けられません',
+				tooManyVideos: '動画は 1 本までです',
+				videoUnreadable: 'この動画は読み込めませんでした',
+				videoUnsupported: 'この形式の動画は使えません',
+				videoReading: '動画を読み込み中…',
+				videoTooLarge: '動画は 300MB までです',
+				videoTooLong: '動画は 10 分までです',
+				videoUploading: '動画を送信中 {percent}%',
+				videoProcessing: '動画を処理中 {percent}%',
+				videoProcessingPending: '動画を処理中…',
+				videoReady: '動画の準備ができました',
+				videoFailed: '動画を送れませんでした',
+				videoProcessFailed: '動画を処理できませんでした',
+				videoRetry: '再試行',
+				removeVideo: '動画を外す',
+				videoAlt: 'ALT',
+				videoAltDone: 'ALT 済み',
+				videoCaptionBadge: '字幕',
+				video: '添付動画',
+				videoSheetTitle: '字幕と ALT',
+				captionSection: '字幕 (.vtt)',
+				captionPick: '字幕ファイルを選ぶ (.vtt)',
+				captionLanguage: '字幕の言語',
+				captionRemove: '字幕を外す',
+				captionNotVtt: '.vtt のファイルを選んでください',
+				captionTooLarge: '字幕は 20KB までです',
+				captionUploadFailed: '字幕を送れませんでした',
+				videoPlay: '動画を再生',
+				videoPause: '動画を止める',
 				emoji: '絵文字',
 				alt: 'ALT',
 				altDone: 'ALT 済み',
@@ -845,7 +931,12 @@ export const EXT_CONFIG = {
 				gifPlay: 'ext-lb-gif-play',
 				gifTools: 'ext-lb-gif-tools',
 				gifAlt: 'ext-lb-gif-alt',
-				gifAltDone: 'is-done'
+				gifAltDone: 'is-done',
+				video: 'ext-lb-video',
+				videoThumb: 'ext-lb-video-thumb',
+				videoPlay: 'ext-lb-video-play',
+				videoPlayer: 'ext-lb-video-player',
+				videoFallback: 'ext-lb-video-fallback'
 			},
 			text: {
 				gifPlay: 'GIF を再生',
@@ -854,9 +945,13 @@ export const EXT_CONFIG = {
 				quoteUnavailable: '引用元を表示できません',
 				quoteImage: '引用元の画像',
 				gifAlt: 'ALT',
-				gifAltDone: 'ALT 済み'
+				gifAltDone: 'ALT 済み',
+				videoOpenPost: '投稿で見る',
+				videoLabel: '動画'
 			}
 		},
+		/** 動画の再生 (hls.js) を載せた束。必要になったときだけ読み込む */
+		player: {path: 'video/hls-player.js'},
 		api: {
 			origin: EXT_SHARED.publicApiOrigin,
 			threadPath: '/xrpc/app.bsky.feed.getPostThread',
