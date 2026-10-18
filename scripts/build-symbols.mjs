@@ -35,6 +35,8 @@ const ICON_SOURCES = {
 	translate: { file: 'translate-fill', label: '投稿言語の選択 (文字と翻訳)' },
 	warning: { file: 'warning-fill', label: 'コンテンツの警告ラベル (三角の感嘆符)' },
 	check: { file: 'check-fill', label: 'ALT テキストを付けた印 (チェック)' },
+	gifBox: { file: 'gif_box-fill', label: '返信に GIF を添付' },
+	playArrow: { file: 'play_arrow-fill', label: 'GIF を再生' },
 };
 
 /** 原本の置き場。 */

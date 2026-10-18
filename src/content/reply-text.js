@@ -123,6 +123,22 @@ export function countGraphemes(text) {
 }
 
 /**
+ * 書記素 (見た目の 1 文字) で上限まで切る。
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+export function truncateGraphemes(text, max) {
+	if (countGraphemes(text) <= max) {
+		return text;
+	}
+	const units = graphemeSegmenter
+		? Array.from(graphemeSegmenter.segment(text), (part) => part.segment)
+		: Array.from(text);
+	return units.slice(0, max).join('');
+}
+
+/**
  * 文字列中の範囲を UTF-8 のバイト位置に直す。
  * @param {string} text 本文
  * @param {number} start UTF-16 の開始位置

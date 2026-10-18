@@ -115,7 +115,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	},
 	/**
 	 * 返信として作れる投稿の record の形。
-	 * embed は画像 (images / gallery) だけ、labels は自己ラベルだけを通す。maxTextBytes は
+	 * embed は画像 (images / gallery)・リンクカード (external)・引用 (record / recordWithMedia) だけ、
+	 * labels は自己ラベルだけを通す。maxTextBytes は
 	 * app.bsky.feed.post の lexicon の text の maxLength (3000 バイト)
 	 */
 	postRecord: {
@@ -125,7 +126,20 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** facets の件数の上限 (大量のメンションで通知を撒かせない) */
 		maxFacets: 50,
 		/** 返信に付けてよい embed の種類 */
-		embedTypes: {images: 'app.bsky.embed.images', gallery: 'app.bsky.embed.gallery'},
+		embedTypes: {
+			images: 'app.bsky.embed.images',
+			gallery: 'app.bsky.embed.gallery',
+			external: 'app.bsky.embed.external',
+			record: 'app.bsky.embed.record',
+			recordWithMedia: 'app.bsky.embed.recordWithMedia'
+		},
+		/** リンクカード (external) の上限。thumb は外部サムネイルの上限 (画像の 2MB より小さい) */
+		external: {
+			maxUriBytes: 3000, maxTitleGraphemes: 300,
+			maxDescriptionGraphemes: 1000, maxThumbBytes: 1000000,
+			/** uri の形 (http(s) で始まり、空白を含まない) の正規表現の文字列 */
+			uriPattern: '^https?://\\S+$'
+		},
 		/** gallery の item の $type */
 		galleryImageType: 'app.bsky.embed.gallery#image',
 		/** images の枚数の上限 */

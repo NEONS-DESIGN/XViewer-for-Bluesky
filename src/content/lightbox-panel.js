@@ -516,6 +516,8 @@ export class LightboxPanel {
 			leaveTo: (target) => this.leaveTo(target),
 			adjustReplyCount: (delta) => this.adjustReplyCount(delta),
 			openMedia: (request) => this.openReplyMedia(request),
+			safeHref: (uri) => toSafeLinkHref(uri, this.config),
+			formatDate: (iso) => formatPostDate(iso, this.config),
 			actions: this.actions,
 			getSheets: () => this.sheetHost
 		});

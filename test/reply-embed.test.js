@@ -8,7 +8,8 @@ import assert from 'node:assert';
 
 import {
 	buildMediaEmbed, buildSelfLabels, acceptImages, canSubmitComposer,
-	normalizeLanguages, suggestReplyLanguage, buildOwnEmbedView
+	normalizeLanguages, suggestReplyLanguage, buildOwnEmbedView,
+	buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView, toQuoteViewRecord
 } from '../src/content/reply-embed.js';
 
 const LEGACY_MAX = 4;
@@ -142,4 +143,62 @@ test('buildOwnEmbedView: 5 枚は gallery#view で items[].thumbnail', () => {
 	assert.strictEqual(view.items.length, 5);
 	assert.strictEqual(view.items[1].thumbnail, `${CDN.thumb}/${DID}/cid1`);
 	assert.strictEqual(view.items[1].fullsize, `${CDN.fullsize}/${DID}/cid1`);
+});
+
+const EXT = {$type: 'app.bsky.embed.external', external: {uri: 'https://e.com', title: 't', description: 'd'}};
+const Q = {uri: 'at://did:plc:x/app.bsky.feed.post/a', cid: 'c'};
+
+test('buildPostEmbed: 5 通りの組み合わせ', () => {
+	assert.strictEqual(buildPostEmbed({images: [], external: null, quote: null}, 4), null);
+	assert.strictEqual(buildPostEmbed({images: images(2), external: null, quote: null}, 4).$type, 'app.bsky.embed.images');
+	assert.deepStrictEqual(buildPostEmbed({images: [], external: EXT, quote: null}, 4), EXT);
+	assert.deepStrictEqual(buildPostEmbed({images: [], external: null, quote: Q}, 4), {$type: 'app.bsky.embed.record', record: Q});
+	const rwm = buildPostEmbed({images: images(5), external: null, quote: Q}, 4);
+	assert.strictEqual(rwm.$type, 'app.bsky.embed.recordWithMedia');
+	assert.strictEqual(rwm.media.$type, 'app.bsky.embed.gallery');
+	assert.deepStrictEqual(rwm.record, {$type: 'app.bsky.embed.record', record: Q});
+	assert.strictEqual(buildPostEmbed({images: [], external: EXT, quote: Q}, 4).media, EXT);
+	assert.strictEqual(buildPostEmbed({images: images(1), external: EXT, quote: null}, 4).$type, 'app.bsky.embed.images');
+});
+
+test('hasLabelableMedia: 画像・GIF・カードのどれかがあるときだけ', () => {
+	assert.strictEqual(hasLabelableMedia({imageCount: 0, hasGif: false, hasCard: false}), false);
+	assert.strictEqual(hasLabelableMedia({imageCount: 1, hasGif: false, hasCard: false}), true);
+	assert.strictEqual(hasLabelableMedia({imageCount: 0, hasGif: true, hasCard: false}), true);
+	assert.strictEqual(hasLabelableMedia({imageCount: 0, hasGif: false, hasCard: true}), true);
+});
+
+test('buildOwnPostEmbedView: external の thumb を CDN の URL にし、引用と組むと recordWithMedia#view', () => {
+	const ext = {$type: 'app.bsky.embed.external', external: {
+		uri: 'https://e.com', title: 't', description: 'd',
+		thumb: {$type: 'blob', ref: {$link: 'bafy'}, mimeType: 'image/jpeg', size: 1}
+	}};
+	const view = buildOwnPostEmbedView({images: [], external: ext, quoteView: null}, 'did:plc:me', CDN, 4);
+	assert.deepStrictEqual(view, {
+		$type: 'app.bsky.embed.external#view',
+		external: {uri: 'https://e.com', title: 't', description: 'd', thumb: `${CDN.thumb}/did:plc:me/bafy`}
+	});
+	const noThumb = buildOwnPostEmbedView({images: [], external: EXT, quoteView: null}, 'did:plc:me', CDN, 4);
+	assert.strictEqual('thumb' in noThumb.external, false);
+	const qv = {$type: 'app.bsky.embed.record#viewRecord', uri: Q.uri};
+	assert.deepStrictEqual(buildOwnPostEmbedView({images: [], external: null, quoteView: qv}, 'did:plc:me', CDN, 4),
+		{$type: 'app.bsky.embed.record#view', record: qv});
+	const rwm = buildOwnPostEmbedView({images: [], external: ext, quoteView: qv}, 'did:plc:me', CDN, 4);
+	assert.strictEqual(rwm.$type, 'app.bsky.embed.recordWithMedia#view');
+	assert.strictEqual(rwm.media.$type, 'app.bsky.embed.external#view');
+	assert.deepStrictEqual(rwm.record, {$type: 'app.bsky.embed.record#view', record: qv});
+	const img = buildOwnPostEmbedView({images: images(1), external: null, quoteView: qv}, 'did:plc:me', CDN, 4);
+	assert.strictEqual(img.media.$type, 'app.bsky.embed.images#view');
+	assert.strictEqual(buildOwnPostEmbedView({images: [], external: null, quoteView: null}, 'did:plc:me', CDN, 4), null);
+});
+
+test('toQuoteViewRecord: record を value に、embed を embeds に写す', () => {
+	const post = {uri: 'at://x/p/1', cid: 'c1', author: {did: 'd'}, record: {text: 'hi'}, indexedAt: 'T', labels: [], embed: {$type: 'e'}};
+	assert.deepStrictEqual(toQuoteViewRecord(post), {
+		$type: 'app.bsky.embed.record#viewRecord', uri: 'at://x/p/1', cid: 'c1', author: {did: 'd'},
+		value: {text: 'hi'}, indexedAt: 'T', labels: [], embeds: [{$type: 'e'}]
+	});
+	assert.deepStrictEqual(toQuoteViewRecord({...post, embed: undefined, labels: undefined}).embeds, []);
+	assert.strictEqual(toQuoteViewRecord(null), null);
+	assert.strictEqual(toQuoteViewRecord({uri: 'x'}), null);
 });

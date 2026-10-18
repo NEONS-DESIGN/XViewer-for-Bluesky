@@ -26,6 +26,8 @@ import {ReplyComposer, defaultLanguages} from './reply-composer.js';
 import {normalizeLanguages} from './reply-embed.js';
 import {uploadBlob} from './blob-transfer.js';
 import {prepareImage} from './image-prepare.js';
+import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, prefersReducedMotion} from './embed-cards.js';
+import {gifPlayerFromUri, stripAltPrefix} from './klipy.js';
 
 /**
  * パネルが返信欄に渡す口。
@@ -76,6 +78,73 @@ import {prepareImage} from './image-prepare.js';
  * @property {HTMLButtonElement|null} showButton 「返信を表示」
  * @property {HTMLElement|null} area 開いた返信の入れ物
  */
+
+/**
+ * URL を 1 回引き、応答を read で読む。timeoutMs で打ち切る (本文の読み込みも含む)。
+ * 通信・読み込みの失敗と打ち切りはすべて null。
+ * @template T
+ * @param {string} url
+ * @param {number} timeoutMs
+ * @param {(response: Response) => Promise<T>} read
+ * @returns {Promise<T|null>}
+ */
+async function fetchWithTimeout(url, timeoutMs, read) {
+	let timer = null;
+	try {
+		const controller = new AbortController();
+		timer = setTimeout(() => controller.abort(), timeoutMs);
+		const response = await fetch(url, {signal: controller.signal});
+		return await read(response);
+	} catch (error) {
+		return null;
+	} finally {
+		if (timer !== null) {
+			clearTimeout(timer);
+		}
+	}
+}
+
+/**
+ * JSON を引く (リンクカード・GIF の検索)。中身を読めなければ json は null。
+ * @param {string} url
+ * @param {number} timeoutMs
+ * @returns {Promise<{status: number, json: any}|null>} 通信の失敗・打ち切りは null
+ */
+function fetchJsonWithTimeout(url, timeoutMs) {
+	return fetchWithTimeout(url, timeoutMs, async (response) => {
+		let json = null;
+		try {
+			json = await response.json();
+		} catch (error) {
+			json = null;
+		}
+		return {status: response.status, json};
+	});
+}
+
+/**
+ * 画像を Blob で引く (リンクカード・GIF のサムネイル)。
+ * @param {string} url
+ * @param {number} timeoutMs
+ * @returns {Promise<Blob|null>} 失敗・打ち切り・2xx 以外は null
+ */
+function fetchBlobWithTimeout(url, timeoutMs) {
+	return fetchWithTimeout(url, timeoutMs, async (response) => (response.ok ? response.blob() : null));
+}
+
+/**
+ * 言語タグの地域を小文字で返す ('ja-JP' -> 'jp')。GIF の検索の地域に使う。
+ * @param {string|undefined} tag navigator.language など
+ * @returns {string|null} 地域を持たない・読めないなら null
+ */
+function localeRegion(tag) {
+	try {
+		const region = new Intl.Locale(String(tag)).region;
+		return typeof region === 'string' && region !== '' ? region.toLowerCase() : null;
+	} catch (error) {
+		return null;
+	}
+}
 
 export class LightboxReplies {
 	/**
@@ -630,7 +699,14 @@ export class LightboxReplies {
 			resolveHandle: (handle) => this.resolveHandle(handle),
 			parentLangs: Array.isArray(parentLangs) ? parentLangs : null,
 			loadLanguages: () => this.loadLanguages(),
-			saveLanguages: (codes) => this.saveLanguages(codes)
+			saveLanguages: (codes) => this.saveLanguages(codes),
+			fetchJson: fetchJsonWithTimeout,
+			fetchBlob: fetchBlobWithTimeout,
+			fetchPost: (uri) => this.host.actions.fetchPost(uri),
+			safeHref: (uri) => this.host.safeHref(uri),
+			formatDate: (iso) => this.host.formatDate(iso),
+			gifLocale: localeRegion(navigator.language),
+			blurText: (labels) => formatBlurLabels(matchBlurLabels(labels, this.mediaConfig), this.mediaConfig)
 		}, target, placeholder);
 		this.composers.add(composer);
 		return composer;
@@ -911,14 +987,8 @@ export class LightboxReplies {
 			}
 			body.appendChild(paragraph);
 		}
-		const media = this.buildMedia(item);
-		if (media) {
-			body.appendChild(media);
-		} else if (item.hasEmbed) {
-			// 画像以外の添付 (動画・リンクカード・引用) は文字で知らせるだけにする
-			const embed = document.createElement('p');
-			embed.className = c.embed;
-			embed.textContent = text.hasEmbed;
+		const embed = this.buildEmbed(item);
+		if (embed) {
 			body.appendChild(embed);
 		}
 
@@ -948,10 +1018,11 @@ export class LightboxReplies {
 	 * 返信に付いた画像のサムネイルを並べる。押すとライトボックスをその画像で開き直す。
 	 * NSFW ラベル付きはグリッドと同じく、1 回目の押下でぼかしを外すだけにする。
 	 * @param {Object} item ReplyItem
+	 * @param {Object|null} [embed] 画像の view (images / gallery)。省略時は item.embed
 	 * @returns {HTMLElement|null} 画像が無ければ null
 	 */
-	buildMedia(item) {
-		const media = extractMediaFromEmbed(item.embed, this.mediaConfig);
+	buildMedia(item, embed = item.embed) {
+		const media = extractMediaFromEmbed(embed, this.mediaConfig);
 		if (media.length === 0) {
 			return null;
 		}
@@ -964,7 +1035,7 @@ export class LightboxReplies {
 		const wrap = document.createElement('div');
 		wrap.className = c.media;
 		wrap.dataset.count = String(shown.length);
-		if (shown.length === 1) {
+		if (shown.length === 1 && wrap.style) {
 			wrap.style.aspectRatio = String(mediaAspectRatio(shown[0].dimensions, this.config.media.singleAspect));
 		}
 		const openLabel = (alt) => (alt ? `${text.openMedia}: ${alt}` : text.openMedia);
@@ -1013,6 +1084,142 @@ export class LightboxReplies {
 			wrap.appendChild(button);
 		});
 		return wrap;
+	}
+
+	/**
+	 * 返信の embed を、画像・GIF・リンクカード・引用の順に縦に並べる。
+	 * 出せない種類 (動画など) だけのときは文字で知らせる。
+	 * @param {Object} item ReplyItem
+	 * @returns {HTMLElement|null} 何も無ければ null
+	 */
+	buildEmbed(item) {
+		try {
+			const c = this.config.classes;
+			const cards = this.config.cards;
+			const result = classifyEmbedView(item.embed, cards.types);
+			const parts = [];
+			if (result.media) {
+				const media = this.buildMedia(item, result.media);
+				if (media) parts.push(media);
+			}
+			if (result.external) {
+				const blurText = formatBlurLabels(matchBlurLabels(item.labels, this.mediaConfig), this.mediaConfig);
+				const external = this.buildExternal(result.external, blurText);
+				if (external) parts.push(external);
+			}
+			if (result.quote) {
+				const quote = this.buildQuote(result.quote);
+				if (quote) parts.push(quote);
+			}
+			if (parts.length === 0) {
+				if (!result.other && !item.hasEmbed) return null;
+				const note = document.createElement('p');
+				note.className = c.embed;
+				note.textContent = this.config.text.hasEmbed;
+				return note;
+			}
+			if (result.other) {
+				const note = document.createElement('p');
+				note.className = c.embed;
+				note.textContent = this.config.text.hasEmbed;
+				parts.push(note);
+			}
+			if (parts.length === 1) return parts[0];
+			const wrap = document.createElement('div');
+			for (const part of parts) wrap.appendChild(part);
+			return wrap;
+		} catch (error) {
+			ExtDebug.log('返信の embed の描画に失敗', error);
+			return null;
+		}
+	}
+
+	/**
+	 * external を GIF の動画かリンクカードにする。
+	 * thumb の無い GIF は動画が読めないと空の箱が残るため、リンクカードにする。
+	 * @param {Object} external {uri, title, description, thumb}
+	 * @param {string|null} blurText ぼかす理由
+	 * @returns {HTMLElement|null}
+	 */
+	buildExternal(external, blurText) {
+		const cards = this.config.cards;
+		const gifRule = this.config.compose.gif;
+		const text = {...this.config.compose.text, ...cards.text};
+		const player = external.thumb ? gifPlayerFromUri(external.uri, {klipy: gifRule, tenor: gifRule.tenor}) : null;
+		if (player) {
+			const root = buildGifPlayer(document, player, {
+				classes: cards.classes,
+				text,
+				label: stripAltPrefix(external.description) || external.title || text.gifPlay,
+				autoplay: !prefersReducedMotion(document.defaultView || {}),
+				posterUrl: external.thumb
+			});
+			if (blurText) {
+				root.classList.add(cards.classes.blurred);
+				const label = document.createElement('span');
+				label.className = cards.classes.blurLabel;
+				label.textContent = blurText;
+				root.appendChild(label);
+				this.unblurOnFirstClick(root);
+			}
+			return root;
+		}
+		const card = buildLinkCard(document, external, {
+			classes: cards.classes,
+			text,
+			safeHref: (uri) => this.host.safeHref(uri),
+			blurText
+		});
+		if (blurText) this.unblurOnFirstClick(card);
+		return card;
+	}
+
+	/**
+	 * 引用カードを作る。押すと引用元の投稿へ遷移する。
+	 * @param {Object} model QuoteModel
+	 * @returns {HTMLElement|null}
+	 */
+	buildQuote(model) {
+		const cards = this.config.cards;
+		const blurText = formatBlurLabels(matchBlurLabels(model.labels || [], this.mediaConfig), this.mediaConfig);
+		const canOpen = model.kind === 'post' && model.handle && model.rkey;
+		const card = buildQuoteCard(document, model, {
+			classes: cards.classes,
+			text: {...this.config.compose.text, ...cards.text},
+			formatDate: (iso) => this.host.formatDate(iso),
+			blurText,
+			onOpen: canOpen
+				? () => this.host.leaveTo({
+					route: EXT_CONFIG.mediaGrid.bridge.routes.post,
+					params: {name: model.handle, rkey: model.rkey}
+				})
+				: undefined
+		});
+		if (blurText) this.unblurOnFirstClick(card);
+		return card;
+	}
+
+	/**
+	 * ぼかした画像・GIF を、ぼかし解除の設定が OFF のとき 1 回目の押下で外す (押下そのものは止める)。
+	 * @param {HTMLElement} card カード・引用・GIF のルート
+	 * @returns {void}
+	 */
+	unblurOnFirstClick(card) {
+		const blurredClass = this.config.cards.classes.blurred;
+		card.addEventListener('click', (event) => {
+			if (this.unblurEnabled) return;
+			const holders = Array.from(card.querySelectorAll(`.${blurredClass}`));
+			if (card.classList.contains(blurredClass)) holders.push(card);
+			if (holders.length === 0) return;
+			event.preventDefault();
+			event.stopPropagation();
+			for (const holder of holders) {
+				holder.classList.remove(blurredClass);
+				for (const label of Array.from(holder.querySelectorAll(`.${this.config.cards.classes.blurLabel}`))) {
+					label.remove();
+				}
+			}
+		}, true);
 	}
 
 	/**

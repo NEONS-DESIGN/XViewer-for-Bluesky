@@ -9,6 +9,8 @@ import assert from 'node:assert';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {FakeDocument, FakeEvent, click} from './helpers/fake-dom.js';
 import {SheetHost} from '../src/content/reply-sheets.js';
+import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
+import {GIF_ALT_PREFIX} from '../src/content/klipy.js';
 import {
 	ReplyComposer, pickPastedImages, hasImageItems, uploadAll, runSubmit, defaultLanguages
 } from '../src/content/reply-composer.js';
@@ -231,6 +233,68 @@ const TARGET = {
 	isPost: true, anchorUri: null, handle: 'op.example.com'
 };
 
+/** 引用される投稿の AT URI */
+const QUOTED_URI = 'at://did:plc:quoted/app.bsky.feed.post/q1';
+
+/**
+ * getPosts が返す引用元の PostView。
+ * @returns {Object}
+ */
+function quotedPost() {
+	return {
+		uri: QUOTED_URI,
+		cid: 'cid-q1',
+		author: {did: 'did:plc:quoted', handle: 'quoted.example.com', displayName: '引用元の人'},
+		record: {$type: 'app.bsky.feed.post', text: '引用元の本文', createdAt: '2026-10-01T00:00:00.000Z'},
+		indexedAt: '2026-10-01T00:00:00.000Z',
+		labels: [],
+		viewer: {}
+	};
+}
+
+/**
+ * Klipy の GIF 1 件。
+ * @returns {Object} GifItem
+ */
+function gifItem() {
+	return {
+		id: 'g1',
+		title: '踊る猫',
+		gifUrl: 'https://static.klipy.com/ii/abc/def/cat.gif',
+		width: 320,
+		height: 240,
+		previewUrl: 'https://static.klipy.com/ii/abc/def/cat.jpg',
+		tinyUrl: 'https://k.gifs.bsky.app/ii/abc/def/cat-tiny.gif',
+		tinyWidth: 160,
+		tinyHeight: 120,
+		playerUrl: 'https://k.gifs.bsky.app/ii/abc/def/cat-tiny.webm',
+		mp4Slug: 'cat',
+		webmSlug: 'cat'
+	};
+}
+
+/**
+ * 本文の欄に文字を貼り付けたことにする (paste の後に input が届く)。
+ * @param {ReplyComposer} composer
+ * @param {string} value 貼り付けた後の本文
+ * @returns {void}
+ */
+function pasteText(composer, value) {
+	const paste = new FakeEvent('paste');
+	paste.clipboardData = {items: itemList([item('string', 'text/plain', null)])};
+	composer.textarea.dispatchEvent(paste);
+	composer.textarea.value = value;
+	composer.textarea.dispatchEvent(new FakeEvent('input'));
+}
+
+/**
+ * 待っている Promise を進める。
+ * @returns {Promise<void>}
+ */
+async function flush() {
+	for (let i = 0; i < 3; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
 /**
  * 偽の DOM の上で入力欄を作る。document は作っている間だけ差し替える。
  * @param {Object} overrides 差し替える口
@@ -241,7 +305,7 @@ function makeComposer(overrides) {
 	const doc = new FakeDocument();
 	globalThis.document = doc;
 	const state = {generation: 1, posting: false};
-	const calls = {posted: [], created: [], uploads: 0};
+	const calls = {posted: [], created: [], uploads: 0, fetchJson: [], fetchBlob: [], fetchPost: []};
 	const deps = {
 		actions: {createReply: async (record) => {
 			calls.created.push(record);
@@ -269,6 +333,21 @@ function makeComposer(overrides) {
 		parentLangs: null,
 		loadLanguages: async () => ['ja'],
 		saveLanguages: () => {},
+		fetchJson: async (url, timeoutMs) => {
+			calls.fetchJson.push({url, timeoutMs});
+			return {status: 200, json: {error: '', title: '題名', description: '説明', image: 'https://cardyb.bsky.app/v1/image?url=x'}};
+		},
+		fetchBlob: async (url) => {
+			calls.fetchBlob.push(url);
+			return {name: 'thumb.jpg', size: 10, type: 'image/jpeg'};
+		},
+		fetchPost: async (uri) => {
+			calls.fetchPost.push(uri);
+			return {posts: [quotedPost()]};
+		},
+		safeHref: (uri) => uri,
+		formatDate: (iso) => iso,
+		gifLocale: null,
 		...overrides
 	};
 	const composer = new ReplyComposer(EXT_CONFIG.lightboxReplies, deps, TARGET, 'placeholder');
@@ -423,7 +502,9 @@ test('ReplyComposer: 本文だけの返信は embed も labels も付けず、fa
 		assert.strictEqual('embed' in record, false);
 		assert.strictEqual('labels' in record, false);
 		assert.ok(Array.isArray(record.facets) && record.facets.length === 2, 'リンクとタグの facets が無い');
-		assert.strictEqual(record.text, 'テスト https://bsky.app #test');
+		// リンクはスキームを除いた短い形で保存し、facet の uri は元のまま
+		assert.strictEqual(record.text, 'テスト bsky.app #test');
+		assert.strictEqual(record.facets[0].features[0].uri, 'https://bsky.app');
 		assert.strictEqual(calls.posted[0][3], null);
 	} finally {
 		restore();
@@ -546,7 +627,7 @@ function makeComposerWithSheets() {
 	const host = new SheetHost(panel, EXT_CONFIG.lightboxReplies.compose);
 	made.composer.deps.sheets = host;
 	panel.append(made.composer.el);
-	return {composer: made.composer, host, panel, restore: made.restore};
+	return {composer: made.composer, calls: made.calls, host, panel, restore: made.restore};
 }
 
 test('ReplyComposer: ALT の画面を開いた後に添付を描き直しても、入力欄を外せば画面も閉じる', async () => {
@@ -578,6 +659,253 @@ test('ReplyComposer: ALT の画面を閉じたとき、描き直したマスの 
 		click(panel.querySelector(`[data-role="${EXT_CONFIG.lightboxReplies.compose.sheetRoles.done}"]`));
 		assert.strictEqual(host.isOpen(), false);
 		assert.ok(globalThis.document.activeElement === after, '描き直した ALT ボタンへ戻らない');
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 長いリンクは短い形で送り、facet の uri は元のまま', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		const url = `https://example.com/${'a'.repeat(400)}`;
+		composer.textarea.value = `見て ${url} です`;
+		composer.textarea.dispatchEvent(new FakeEvent('input'));
+		// 元の本文は 300 字を超えるが、短くした本文で数えるので送れる
+		assert.strictEqual(composer.submitButton.disabled, false);
+		const short = 'example.com/aaaaaaaaaaaa...';
+		const remaining = EXT_CONFIG.lightboxReplies.limits.maxGraphemes - (3 + short.length + 3);
+		assert.strictEqual(composer.remaining.textContent, `${EXT_CONFIG.lightboxReplies.text.remaining} ${remaining}`);
+		await composer.submit();
+		const record = calls.created[0];
+		assert.strictEqual(record.text, `見て ${short} です`);
+		assert.strictEqual(record.facets.length, 1);
+		assert.deepStrictEqual(record.facets[0].index, {byteStart: 7, byteEnd: 7 + short.length});
+		assert.strictEqual(record.facets[0].features[0].uri, url);
+		// 打っただけ (貼り付けでも打ち終わりでもない) のリンクはカードを引かない
+		assert.deepStrictEqual(calls.fetchJson, []);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: GIF を付けると画像ボタンが止まり、送ると external (hh・ww 付き) と ALT: <title>', async () => {
+	const seen = [];
+	let made = null;
+	made = makeComposer({
+		uploadBlob: async () => {
+			seen.push(made.composer.submitButton.textContent);
+			return {ok: true, blob: {$type: 'blob', ref: {$link: 'bafythumb'}, mimeType: 'image/jpeg', size: 1}, reason: null};
+		}
+	});
+	const {composer, calls, restore} = made;
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		// 画像があるあいだは GIF のボタンを止める
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.gifTool.disabled, true);
+		composer.removeAttachment(composer.attachments[0]);
+		assert.strictEqual(composer.gifTool.disabled, false);
+		composer.extras.setGif(gifItem());
+		assert.strictEqual(composer.embedEl.hidden, false);
+		// GIF があるあいだは画像のボタン・取り込み・貼り付けで画像を足さない
+		click(composer.imageTool);
+		assert.strictEqual(composer.noticeEl.textContent, text.gifExclusive);
+		await composer.addFiles([{name: 'b.png', type: 'image/png'}]);
+		const imagePaste = new FakeEvent('paste');
+		imagePaste.clipboardData = {items: itemList([item('file', 'image/png', {name: 'p.png', type: 'image/png'})])};
+		composer.onPaste(imagePaste);
+		assert.strictEqual(imagePaste.defaultPrevented, true);
+		await flush();
+		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.importing, 0);
+		assert.strictEqual(composer.submitButton.disabled, false);
+		await composer.submit();
+		const embed = calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.external');
+		const uri = new URL(embed.external.uri);
+		assert.strictEqual(uri.searchParams.get('hh'), '240');
+		assert.strictEqual(uri.searchParams.get('ww'), '320');
+		assert.strictEqual(embed.external.description, 'ALT: 踊る猫');
+		assert.strictEqual(embed.external.thumb.ref.$link, 'bafythumb');
+		assert.deepStrictEqual(calls.fetchBlob, [gifItem().previewUrl]);
+		assert.deepStrictEqual(seen, ['送信中 1/1']);
+		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.external#view');
+		assert.strictEqual(composer.extras.gif, null);
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 引用だけなら record、引用 + 画像なら recordWithMedia で、ラベルのボタンは引用だけでは出ない', async () => {
+	const postUrl = 'https://bsky.app/profile/did:plc:quoted/post/q1';
+	const only = makeComposer({});
+	try {
+		pasteText(only.composer, `これ ${postUrl}`);
+		await flush();
+		assert.strictEqual(only.composer.extras.quote.status, 'ready');
+		assert.deepStrictEqual(only.calls.fetchPost, [QUOTED_URI]);
+		assert.strictEqual(only.composer.labelsButton.hidden, true);
+		await only.composer.submit();
+		assert.deepStrictEqual(only.calls.created[0].embed, {
+			$type: 'app.bsky.embed.record', record: {uri: QUOTED_URI, cid: 'cid-q1'}
+		});
+		assert.strictEqual(only.calls.posted[0][3].$type, 'app.bsky.embed.record#view');
+	} finally {
+		only.restore();
+	}
+	const withImage = makeComposer({});
+	try {
+		pasteText(withImage.composer, postUrl);
+		await flush();
+		await withImage.composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(withImage.composer.labelsButton.hidden, false);
+		await withImage.composer.submit();
+		const embed = withImage.calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.recordWithMedia');
+		assert.strictEqual(embed.media.$type, 'app.bsky.embed.images');
+		assert.deepStrictEqual(embed.record, {$type: 'app.bsky.embed.record', record: {uri: QUOTED_URI, cid: 'cid-q1'}});
+		assert.strictEqual(withImage.calls.posted[0][3].$type, 'app.bsky.embed.recordWithMedia#view');
+	} finally {
+		withImage.restore();
+	}
+});
+
+test('ReplyComposer: カードを出した後に画像を足すとカードを送らず、画像を外すとカードが戻る', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	const cardSelector = `.${EXT_CONFIG.lightboxReplies.cards.classes.linkCard}`;
+	try {
+		pasteText(composer, 'https://example.com/article');
+		await flush();
+		assert.strictEqual(calls.fetchJson.length, 1);
+		assert.ok(composer.embedEl.querySelector(cardSelector), 'カードが出ていない');
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.embedEl.querySelector(cardSelector), null);
+		composer.removeAttachment(composer.attachments[0]);
+		assert.ok(composer.embedEl.querySelector(cardSelector), '画像を外してもカードが戻らない');
+		await composer.addFiles([{name: 'b.png', type: 'image/png'}]);
+		await composer.submit();
+		const embed = calls.created[0].embed;
+		assert.strictEqual(embed.$type, 'app.bsky.embed.images');
+		assert.deepStrictEqual(calls.fetchBlob, []);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: カードを外してメディアも無くなったらラベルの選択を空に戻す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		pasteText(composer, 'https://example.com/article');
+		await flush();
+		assert.strictEqual(composer.labelsButton.hidden, false);
+		composer.labels = {adult: 'porn', graphic: true};
+		composer.renderLabels();
+		composer.extras.removeCard();
+		assert.strictEqual(composer.labelsButton.hidden, true);
+		assert.deepStrictEqual(composer.labels, {adult: null, graphic: false});
+		await composer.submit();
+		assert.strictEqual('labels' in calls.created[0], false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: GIF だけでも書きかけになり Escape で閉じない (hasDraft が真)', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		assert.strictEqual(composer.hasDraft(), false);
+		composer.extras.setGif(gifItem());
+		assert.strictEqual(composer.hasDraft(), true);
+		composer.extras.removeGif();
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: GIF・カード・引用の × で外した後は本文の欄にフォーカスがある', async () => {
+	const classes = EXT_CONFIG.lightboxReplies.cards.classes;
+	const removeButton = (composer) => composer.embedEl.querySelector(`.${classes.remove}`);
+	const gif = makeComposer({});
+	try {
+		gif.composer.extras.setGif(gifItem());
+		const button = removeButton(gif.composer);
+		button.focus();
+		click(button);
+		assert.strictEqual(gif.composer.extras.gif, null);
+		assert.ok(globalThis.document.activeElement === gif.composer.textarea, 'GIF の × の後に本文の欄へ移らない');
+	} finally {
+		gif.restore();
+	}
+	const card = makeComposer({});
+	try {
+		pasteText(card.composer, 'https://example.com/article');
+		await flush();
+		const button = removeButton(card.composer);
+		button.focus();
+		click(button);
+		assert.strictEqual(card.composer.extras.card, null);
+		assert.ok(globalThis.document.activeElement === card.composer.textarea, 'カードの × の後に本文の欄へ移らない');
+	} finally {
+		card.restore();
+	}
+	const quote = makeComposer({});
+	try {
+		pasteText(quote.composer, 'https://bsky.app/profile/did:plc:quoted/post/q1');
+		await flush();
+		// 引用の URL はカードにしないため、× は引用のものだけ
+		const button = removeButton(quote.composer);
+		button.focus();
+		click(button);
+		assert.strictEqual(quote.composer.extras.quote, null);
+		assert.ok(globalThis.document.activeElement === quote.composer.textarea, '引用の × の後に本文の欄へ移らない');
+	} finally {
+		quote.restore();
+	}
+});
+
+test('ReplyComposer: GIF の ALT を保存した後は、描き直した ALT ボタンにフォーカスがある', () => {
+	const {composer, panel, restore} = makeComposerWithSheets();
+	const altSelector = `.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`;
+	try {
+		composer.extras.setGif(gifItem());
+		const before = composer.embedEl.querySelector(altSelector);
+		click(before);
+		click(panel.querySelector(`[data-role="${EXT_CONFIG.lightboxReplies.compose.sheetRoles.done}"]`));
+		const after = composer.embedEl.querySelector(altSelector);
+		assert.ok(after && after !== before, 'ALT ボタンが描き直されていない');
+		assert.ok(globalThis.document.activeElement === after, '描き直した ALT ボタンへ移らない');
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: GIF の ALT の画面は題名から始まり、external の説明に収まる長さまでしか保存できない', async () => {
+	const {composer, calls, panel, restore} = makeComposerWithSheets();
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	const maxDescription = BRIDGE_PROTOCOL.postRecord.external.maxDescriptionGraphemes;
+	const maxAlt = maxDescription - GIF_ALT_PREFIX.length;
+	try {
+		composer.extras.setGif(gifItem());
+		click(composer.embedEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`));
+		const field = panel.querySelector(`.${compose.classes.altInput}`);
+		const done = panel.querySelector(`[data-role="${compose.sheetRoles.done}"]`);
+		assert.strictEqual(field.value, gifItem().title);
+		// 画像の ALT の上限 (2000) より短い
+		assert.ok(maxAlt < compose.maxAltGraphemes);
+		field.value = 'a'.repeat(maxAlt + 1);
+		field.dispatchEvent(new FakeEvent('input'));
+		assert.strictEqual(done.disabled, true);
+		field.value = 'a'.repeat(maxAlt);
+		field.dispatchEvent(new FakeEvent('input'));
+		assert.strictEqual(done.disabled, false);
+		click(done);
+		assert.strictEqual(composer.extras.gif.alt, 'a'.repeat(maxAlt));
+		await composer.submit();
+		const description = calls.created[0].embed.external.description;
+		assert.strictEqual(description, GIF_ALT_PREFIX + 'a'.repeat(maxAlt));
+		assert.strictEqual(description.length, maxDescription);
 	} finally {
 		restore();
 	}

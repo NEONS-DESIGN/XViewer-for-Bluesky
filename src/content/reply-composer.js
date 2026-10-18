@@ -1,23 +1,24 @@
 /**
- * 返信の入力欄 1 つ分の部品。本文・添付 (画像 10 枚まで)・ALT・切り抜き・コンテンツの警告・
- * 投稿言語と言語の提案・絵文字・貼り付けとドロップ・送信を持つ。
+ * 返信の入力欄 1 つ分の部品。本文・添付 (画像 10 枚まで、または GIF 1 つ)・ALT・切り抜き・
+ * リンクカード・引用・コンテンツの警告・投稿言語と言語の提案・絵文字・貼り付けとドロップ・送信を持つ。
  * 投稿への入力欄も、返信への返信の入力欄もこれを使う。
  *
  * **返信欄 (lightbox-replies.js) を import しない。** 送った結果・世代・送信中の印・
- * 言語の保存は、返信欄が deps として渡す口だけを使う。書き込みは呼び出し層 (PostActions)
+ * 言語の保存・通信は、返信欄が deps として渡す口だけを使う。書き込みは呼び出し層 (PostActions)
  * と橋渡しを通る。
  *
  * 依存: debug.js / icons.js / reply-text.js / reply-embed.js / reply-sheets.js /
- *       reply-attachments.js / reply-submit.js / sheet-dom.js
+ *       reply-attachments.js / reply-submit.js / sheet-dom.js / reply-extras.js / reply-links.js /
+ *       gif-sheet.js / klipy.js / bridge-protocol.js
  */
 import {ExtDebug} from '../common/debug.js';
 import {createIcon} from '../common/icons.js';
 import {
-	detectRichText, buildFacets, resolveReplyRef, buildReplyRecord, primaryLanguage, fitTextareaHeight
+	detectRichText, buildFacets, resolveReplyRef, buildReplyRecord, primaryLanguage, fitTextareaHeight, countGraphemes
 } from './reply-text.js';
 import {
-	buildMediaEmbed, buildSelfLabels, acceptImages, canSubmitComposer, normalizeLanguages,
-	suggestReplyLanguage, buildOwnEmbedView
+	buildSelfLabels, acceptImages, canSubmitComposer, normalizeLanguages,
+	suggestReplyLanguage, buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView
 } from './reply-embed.js';
 import {
 	openAltSheet, openCropSheet, openLabelSheet, openLanguageSheet, openEmojiSheet, languageName
@@ -25,6 +26,20 @@ import {
 import {renderAttachments, updateAttachmentCell, createIconButton} from './reply-attachments.js';
 import {createElement, createButton, formatText, browserLocale} from './sheet-dom.js';
 import {pickPastedImages, hasImageItems, runSubmit} from './reply-submit.js';
+import {ComposerExtras} from './reply-extras.js';
+import {shortenLinks} from './reply-links.js';
+import {openGifSheet} from './gif-sheet.js';
+import {GIF_ALT_PREFIX} from './klipy.js';
+import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
+
+/** GIF の検索の応答で中身を使ってよい HTTP の状態 */
+const GIF_OK_STATUS = 200;
+
+/**
+ * GIF の ALT 文の上限 (書記素)。description は接頭辞 + ALT 文で、橋渡しの external の説明の上限に収める
+ */
+const GIF_ALT_MAX_GRAPHEMES = BRIDGE_PROTOCOL.postRecord.external.maxDescriptionGraphemes
+	- countGraphemes(GIF_ALT_PREFIX);
 
 export {pickPastedImages, hasImageItems, uploadAll, runSubmit} from './reply-submit.js';
 
@@ -48,6 +63,14 @@ export {pickPastedImages, hasImageItems, uploadAll, runSubmit} from './reply-sub
  * @property {string[]|null} parentLangs 返信先の record.langs (言語の提案に使う)
  * @property {() => Promise<string[]>} loadLanguages 覚えている投稿言語
  * @property {(codes: string[]) => void} saveLanguages 選んだ投稿言語を覚える
+ * @property {(url: string, timeoutMs: number) => Promise<{status: number, json: any}|null>} fetchJson
+ *   JSON を引く (リンクカード・GIF の検索)。失敗は null
+ * @property {(url: string, timeoutMs: number) => Promise<Blob|null>} fetchBlob サムネイルを引く。失敗は null
+ * @property {(uri: string) => Promise<Object|null>} fetchPost 引用する投稿を引く (getPosts の応答)
+ * @property {(uri: string) => string|null} safeHref リンクにしてよい URL か
+ * @property {(iso: string) => string} formatDate 引用元の日時の表示
+ * @property {string|null} gifLocale GIF の検索に渡す地域 (小文字の 2 文字。無ければ null)
+ * @property {(labels: string[]) => string|null} [blurText] 引用元の画像をぼかす理由 (無ければぼかさない)
  */
 
 /**
@@ -97,8 +120,32 @@ export class ReplyComposer {
 		/** この入力欄が送信中か */
 		this.busy = false;
 		this.destroyed = false;
+		/** 直前の操作が文字の貼り付けか (次の input の 1 回だけ真として extras へ渡す) */
+		this.pastedPending = false;
+		/** GIF・リンクカード・引用の状態 */
+		this.extras = this.createExtras();
 		this.build(placeholder);
 		this.applyStoredLanguages();
+	}
+
+	/**
+	 * GIF・リンクカード・引用の状態を作る。口は呼ぶたびに this.deps から引く (差し替えに追随する)。
+	 * @returns {ComposerExtras}
+	 */
+	createExtras() {
+		const deps = () => this.deps;
+		return new ComposerExtras(this.config, {
+			fetchJson: (url, timeoutMs) => deps().fetchJson(url, timeoutMs),
+			fetchBlob: (url, timeoutMs) => deps().fetchBlob(url, timeoutMs),
+			resolveHandle: (handle) => deps().resolveHandle(handle),
+			fetchPost: (uri) => deps().fetchPost(uri),
+			prepareImage: (blob, crop, rules) => deps().prepareImage(blob, crop, rules),
+			uploadBlob: (blob) => deps().uploadBlob(blob),
+			safeHref: (uri) => deps().safeHref(uri),
+			formatDate: (iso) => deps().formatDate(iso),
+			blurText: (labels) => (typeof deps().blurText === 'function' ? deps().blurText(labels) : null),
+			onChange: () => this.onExtrasChange()
+		});
 	}
 
 	/**
@@ -130,6 +177,9 @@ export class ReplyComposer {
 		const attachments = createElement(doc, 'ul', cc.attachments);
 		attachments.setAttribute('aria-label', t.attachments);
 		attachments.hidden = true;
+		// GIF・リンクカード・引用のプレビュー (中身は extras が描く)
+		const embedPreview = createElement(doc, 'div', cc.embedPreview);
+		embedPreview.hidden = true;
 		const labelsButton = createButton(doc, cc.labelsButton, '');
 		labelsButton.hidden = true;
 		const suggest = createElement(doc, 'div', cc.suggest);
@@ -147,6 +197,7 @@ export class ReplyComposer {
 		fileInput.hidden = true;
 		fileInput.tabIndex = -1;
 		const imageTool = createIconButton(doc, cc.tool, 'image', t.addImage);
+		const gifTool = createIconButton(doc, cc.tool, 'gifBox', t.addGif);
 		const emojiTool = createIconButton(doc, cc.tool, 'mood', t.emoji);
 		const languageButton = createButton(doc, cc.languageButton, '');
 		languageButton.title = t.language;
@@ -154,12 +205,13 @@ export class ReplyComposer {
 		languageButton.append(createIcon(doc, 'translate'), languageText);
 		const remaining = createElement(doc, 'span', c.remaining);
 		const submit = createButton(doc, c.submit, this.config.text.submit);
-		toolbar.append(fileInput, imageTool, emojiTool, languageButton, remaining, submit);
-		el.append(row, attachments, labelsButton, suggest, toolbar);
+		toolbar.append(fileInput, imageTool, gifTool, emojiTool, languageButton, remaining, submit);
+		el.append(row, attachments, embedPreview, labelsButton, suggest, toolbar);
 
 		Object.assign(this, {
-			el, avatar, textarea, attachmentsEl: attachments, labelsButton, suggestEl: suggest,
-			suggestText, fileInput, imageTool, emojiTool, languageButton, languageText, remaining, submitButton: submit
+			el, avatar, textarea, attachmentsEl: attachments, embedEl: embedPreview, labelsButton, suggestEl: suggest,
+			suggestText, fileInput, imageTool, gifTool, emojiTool, languageButton, languageText, remaining,
+			submitButton: submit
 		});
 		this.bindEvents(suggestAccept, suggestDismiss);
 		this.renderLabels();
@@ -174,8 +226,15 @@ export class ReplyComposer {
 	 * @returns {void}
 	 */
 	bindEvents(suggestAccept, suggestDismiss) {
-		this.textarea.addEventListener('input', () => this.sync());
+		this.textarea.addEventListener('input', () => {
+			const pasted = this.pastedPending;
+			this.pastedPending = false;
+			this.notifyTextChange(pasted);
+			this.sync();
+		});
 		this.textarea.addEventListener('keydown', (event) => {
+			// 打鍵は貼り付けより前に届く。何も貼られなかった貼り付けの印を次の入力へ持ち越さない
+			this.pastedPending = false;
 			if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
 				event.preventDefault();
 				this.submit();
@@ -187,8 +246,14 @@ export class ReplyComposer {
 		this.el.addEventListener('drop', (event) => this.onDrop(event));
 		this.submitButton.addEventListener('click', () => this.submit());
 		this.imageTool.addEventListener('click', () => {
-			if (!this.busy) this.fileInput.click();
+			if (this.busy) return;
+			if (this.extras.gif) {
+				this.showNotice([this.compose.text.gifExclusive]);
+				return;
+			}
+			this.fileInput.click();
 		});
+		this.gifTool.addEventListener('click', () => this.openGif());
 		this.fileInput.addEventListener('change', () => {
 			const files = Array.from(this.fileInput.files || []);
 			// 同じファイルを続けて選んでも change が出るよう空にする
@@ -215,12 +280,92 @@ export class ReplyComposer {
 	}
 
 	/**
-	 * 書きかけがあるか (本文か添付が 1 つでもある)。Escape でライトボックスを閉じさせない判定に使う。
+	 * 書きかけがあるか (本文・添付・GIF が 1 つでもある)。Escape でライトボックスを閉じさせない判定に使う。
 	 * @returns {boolean}
 	 */
 	hasDraft() {
 		if (this.destroyed || !this.el.isConnected) return false;
-		return this.textarea.value.trim() !== '' || this.attachments.length > 0 || this.isPreparing();
+		return this.textarea.value.trim() !== '' || this.attachments.length > 0 || this.isPreparing()
+			|| this.extras.gif !== null;
+	}
+
+	/**
+	 * 画像の枚数 (取り込み中を含む)。GIF・カードとの排他とラベルの判定に使う。
+	 * @returns {number}
+	 */
+	imageCount() {
+		return this.attachments.length + this.importing;
+	}
+
+	/**
+	 * コンテンツの警告を付けられるか (画像・GIF・送るカードのどれかがある)。引用だけでは付けない。
+	 * @returns {boolean}
+	 */
+	isLabelable() {
+		const imageCount = this.imageCount();
+		return hasLabelableMedia({
+			imageCount,
+			hasGif: this.extras.gif !== null,
+			hasCard: Boolean(this.extras.sendableCard(imageCount))
+		});
+	}
+
+	/**
+	 * 送るときの本文 (リンクを短い形にしたもの)。残りの文字数と送信できる条件はこれで数える。
+	 * @param {string} value 入力欄の本文
+	 * @returns {string}
+	 */
+	countedText(value) {
+		const facets = buildFacets(detectRichText(value), new Map());
+		return shortenLinks(value, facets, this.compose.links).text;
+	}
+
+	/**
+	 * 本文のリンクを extras へ渡す (カードと引用の提案)。渡すのは短くする前の本文。
+	 * @param {boolean} pasted 貼り付けの直後か
+	 * @returns {void}
+	 */
+	notifyTextChange(pasted) {
+		if (this.destroyed) return;
+		try {
+			const value = this.textarea.value;
+			const links = detectRichText(value).links.map((link) => link.uri);
+			this.extras.onTextChange(value, links, pasted === true);
+		} catch (error) {
+			console.error('[XViewer] 本文のリンクを読めませんでした', error);
+		}
+	}
+
+	/**
+	 * extras の状態が変わった。プレビュー・ラベル・送信ボタンを合わせる。
+	 * @returns {void}
+	 */
+	onExtrasChange() {
+		if (this.destroyed) return;
+		this.renderExtras();
+		this.renderLabels();
+		this.sync();
+	}
+
+	/**
+	 * GIF・リンクカード・引用のプレビューを描き直す。送信中に描いたボタンは押せなくしておく。
+	 * × で外した後は、押した × が消えるため本文の欄へフォーカスを移す。
+	 * @returns {void}
+	 */
+	renderExtras() {
+		if (this.destroyed) return;
+		this.extras.render(this.embedEl, this.imageCount(), {
+			onGifAlt: (button) => this.openGifAlt(button),
+			onRemoved: () => {
+				if (!this.destroyed) this.focus();
+			}
+		});
+		if (!this.busy) return;
+		try {
+			for (const control of this.embedEl.querySelectorAll(this.compose.busyControls)) control.disabled = true;
+		} catch (error) {
+			console.error('[XViewer] 入力欄のプレビューを送信中の表示にできませんでした', error);
+		}
 	}
 
 	/**
@@ -237,10 +382,13 @@ export class ReplyComposer {
 	 */
 	sync() {
 		const c = this.config.classes;
-		const check = canSubmitComposer(this.textarea.value, this.attachments.length, this.config.limits);
+		// contentCount は画像の枚数を含んだ合計 (GIF・送るカード・取得できた引用を足したもの)
+		const check = canSubmitComposer(this.countedText(this.textarea.value),
+			this.extras.contentCount(this.imageCount()), this.config.limits);
 		this.remaining.textContent = `${this.config.text.remaining} ${check.remaining}`;
 		this.remaining.classList.toggle(c.warn, check.remaining <= this.config.warnRemaining);
 		this.submitButton.disabled = !check.ok || this.busy || this.isPreparing() || this.deps.isPosting();
+		this.gifTool.disabled = this.busy || this.imageCount() > 0 || this.isPreparing();
 		this.fitHeight();
 	}
 
@@ -321,17 +469,20 @@ export class ReplyComposer {
 	}
 
 	/**
-	 * ラベルのボタンの文言を今の選択に合わせる。添付があるときだけ出す。
+	 * ラベルのボタンの文言を今の選択に合わせる。画像・GIF・送るカードのどれかがあるときだけ出し、
+	 * どれも無くなったら選択を空に戻す。
 	 * @returns {void}
 	 */
 	renderLabels() {
 		const doc = this.labelsButton.ownerDocument;
 		const t = this.compose.text;
+		const labelable = this.isLabelable();
+		if (!labelable) this.labels = {adult: null, graphic: false};
 		const values = [];
 		if (this.labels.adult) values.push(this.labels.adult);
 		if (this.labels.graphic) values.push(this.compose.labels.graphic);
 		const names = values.map((value) => t.labelNames[value] || value).join(t.listSeparator);
-		this.labelsButton.hidden = this.attachments.length === 0;
+		this.labelsButton.hidden = !labelable;
 		this.labelsButton.classList.toggle(this.compose.classes.labelsActive, values.length > 0);
 		this.labelsButton.textContent = '';
 		this.labelsButton.append(createIcon(doc, 'warning'), createElement(doc, 'span', '', names || t.labels));
@@ -339,7 +490,7 @@ export class ReplyComposer {
 	}
 
 	/**
-	 * 添付のプレビューを描き直す。
+	 * 添付のプレビューを描き直す。画像の有無でカードの出し入れが変わるため、extras のプレビューも描き直す。
 	 * @returns {void}
 	 */
 	renderAttachments() {
@@ -348,18 +499,23 @@ export class ReplyComposer {
 			onCrop: (attachment, button) => this.openCrop(attachment, button),
 			onRemove: (attachment) => this.removeAttachment(attachment)
 		}, this.busy);
+		this.renderExtras();
 		this.renderLabels();
 	}
 
 	/**
 	 * 選んだ・貼り付けた・落としたファイルを取り込む。受け取れないものは 1 行で知らせる。
-	 * 1 枚ずつ縮小して預かる。縮小の最中は送信ボタンだけを止める。
+	 * 1 枚ずつ縮小して預かる。縮小の最中は送信ボタンだけを止める。GIF があるあいだは取り込まない。
 	 * @param {File[]|FileList} files
 	 * @returns {Promise<void>}
 	 */
 	async addFiles(files) {
 		if (this.destroyed || this.busy) return;
 		const t = this.compose.text;
+		if (this.extras.gif) {
+			this.showNotice([t.gifExclusive]);
+			return;
+		}
 		const list = Array.from(files || []);
 		const result = acceptImages(this.attachments.length + this.importing, list,
 			this.compose.acceptImageTypes, this.compose.maxImages);
@@ -368,6 +524,11 @@ export class ReplyComposer {
 		if (result.unsupported > 0) notices.push(t.unsupportedImage);
 		this.showNotice(notices);
 		this.importing += result.accepted.length;
+		if (result.accepted.length > 0) {
+			// 取り込み中から画像として扱う (カードを隠し、ラベルを出す)
+			this.renderExtras();
+			this.renderLabels();
+		}
 		this.sync();
 		let failed = false;
 		for (const index of result.accepted) {
@@ -505,7 +666,7 @@ export class ReplyComposer {
 	 * @returns {void}
 	 */
 	openLabels() {
-		if (!this.deps.sheets || this.busy) return;
+		if (!this.deps.sheets || this.busy || !this.isLabelable()) return;
 		openLabelSheet(this.deps.sheets, {...this.labels}, this.labelsButton, (selection) => {
 			this.labels = {adult: selection.adult || null, graphic: selection.graphic === true};
 			this.renderLabels();
@@ -537,6 +698,60 @@ export class ReplyComposer {
 	}
 
 	/**
+	 * GIF の画面を開く。画像がある (取り込み中を含む)・送信中なら開かない。
+	 * @returns {void}
+	 */
+	openGif() {
+		if (!this.deps.sheets || this.busy || this.imageCount() > 0 || this.isPreparing()) return;
+		openGifSheet(this.deps.sheets, {
+			fetchJson: (url) => this.fetchGifJson(url),
+			locale: typeof this.deps.gifLocale === 'string' && this.deps.gifLocale ? this.deps.gifLocale : null,
+			rule: this.compose.gif
+		}, this.gifTool, (item) => {
+			if (this.destroyed) return;
+			// 画面を開いているあいだに画像が落とされていたら付けない
+			if (this.imageCount() > 0) {
+				this.showNotice([this.compose.text.gifExclusive]);
+				return;
+			}
+			this.showNotice([]);
+			this.extras.setGif(item);
+		}, this.sheetOptions(() => this.gifTool));
+	}
+
+	/**
+	 * GIF の検索を 1 回引く。状態が 200 のときだけ中身を返し、それ以外・失敗は null。
+	 * @param {string} url
+	 * @returns {Promise<any|null>}
+	 */
+	async fetchGifJson(url) {
+		try {
+			const response = await this.deps.fetchJson(url, this.compose.gif.timeoutMs);
+			return response && response.status === GIF_OK_STATUS ? response.json : null;
+		} catch (error) {
+			console.error('[XViewer] GIF を検索できませんでした', error);
+			return null;
+		}
+	}
+
+	/**
+	 * GIF の ALT テキストの画面を開く。初期値は入力済みの ALT、無ければ GIF の題名。
+	 * 上限は画像の ALT より短い (external の説明に接頭辞ごと収めるため)。
+	 * @param {HTMLButtonElement} button プレビューの ALT ボタン
+	 * @returns {void}
+	 */
+	openGifAlt(button) {
+		const gif = this.extras.gif;
+		if (!this.deps.sheets || this.busy || !gif) return;
+		const altSelector = `.${this.config.cards.classes.gifAlt}`;
+		openAltSheet(this.deps.sheets, {
+			previewUrl: gif.item.previewUrl, alt: gif.alt || gif.item.title, maxGraphemes: GIF_ALT_MAX_GRAPHEMES
+		}, button,
+			(alt) => this.extras.setGifAlt(String(alt || '').trim()),
+			this.sheetOptions(() => this.embedEl.querySelector(altSelector) || this.gifTool));
+	}
+
+	/**
 	 * 本文のカーソルの位置 (選択範囲があれば置き換え) に文字を入れる。
 	 * @param {string} value 入れる文字
 	 * @returns {void}
@@ -551,17 +766,22 @@ export class ReplyComposer {
 		} catch (error) {
 			textarea.value += value;
 		}
+		this.notifyTextChange(false);
 		this.sync();
 	}
 
 	/**
-	 * 貼り付け。画像があるときだけ既定の貼り付けを止めて取り込む (文字だけなら何もしない)。
+	 * 貼り付け。画像があるときだけ既定の貼り付けを止めて取り込む (GIF があれば取り込まずに知らせる)。
+	 * 文字だけなら既定の貼り付けに任せ、続く input を「貼り付けの直後」として扱う。
 	 * @param {ClipboardEvent} event
 	 * @returns {void}
 	 */
 	onPaste(event) {
 		const files = pickPastedImages(event.clipboardData && event.clipboardData.items);
-		if (files.length === 0) return;
+		if (files.length === 0) {
+			this.pastedPending = true;
+			return;
+		}
 		event.preventDefault();
 		this.addFiles(files);
 	}
@@ -611,22 +831,27 @@ export class ReplyComposer {
 	}
 
 	/**
-	 * 返信を送る。失敗したら本文・添付・ALT・ラベル・言語を残して 1 行で知らせる。
+	 * 返信を送る。失敗したら本文・添付・ALT・GIF・カード・引用・ラベル・言語を残して 1 行で知らせる。
+	 * 本文のリンクは短い形にして送る (facet の uri は元のまま)。
 	 * @returns {Promise<void>}
 	 */
 	async submit() {
 		if (this.destroyed || this.busy || this.isPreparing() || this.deps.isPosting()) return;
 		const value = this.textarea.value;
-		if (!canSubmitComposer(value, this.attachments.length, this.config.limits).ok) return;
+		const imageCount = this.attachments.length;
+		const check = canSubmitComposer(this.countedText(value), this.extras.contentCount(imageCount), this.config.limits);
+		if (!check.ok) return;
 		const generation = this.deps.getGeneration();
 		const hadFocus = document.activeElement === this.textarea;
 		const attachments = this.attachments.slice();
 		const languages = this.languages.slice();
-		const labels = attachments.length > 0 ? buildSelfLabels(this.labels) : null;
+		const labels = this.isLabelable() ? buildSelfLabels(this.labels) : null;
 		const legacyMax = this.compose.legacyImagesMax;
 		const toUploaded = (blobs) => attachments.map((attachment, index) => ({
 			blob: blobs[index], alt: attachment.alt, width: attachment.prepared.width, height: attachment.prepared.height
 		}));
+		/** @type {import('./reply-extras.js').SubmitExtras} 送った GIF・カード・引用 (投稿直後の描画に使う) */
+		let resolved = {external: null, quote: null, quoteView: null};
 		this.deps.setPosting(true);
 		this.setBusy(true);
 		this.showNotice([]);
@@ -639,22 +864,30 @@ export class ReplyComposer {
 				// 止めると、作れた返信が一覧に入らない・書きかけが黙って消える
 				isCurrent: () => this.deps.isCurrent(generation),
 				buildRecord: async (blobs) => {
+					// GIF・カードのサムネイルを送るあいだも送信ボタンに進み具合 (1/1) を出す
+					resolved = await this.extras.resolveForSubmit(
+						(done, total) => this.showProgress(done, total), attachments.length);
 					const detected = detectRichText(value);
 					const didByHandle = await this.resolveMentions(detected.mentions);
+					const shortened = shortenLinks(value, buildFacets(detected, didByHandle), this.compose.links);
 					return buildReplyRecord({
-						text: value,
+						text: shortened.text,
 						reply: resolveReplyRef(this.target),
 						createdAt: new Date().toISOString(),
 						langs: languages.length > 0 ? languages : null,
-						facets: buildFacets(detected, didByHandle),
-						embed: buildMediaEmbed(toUploaded(blobs), legacyMax),
+						facets: shortened.facets,
+						embed: buildPostEmbed({
+							images: toUploaded(blobs), external: resolved.external, quote: resolved.quote
+						}, legacyMax),
 						labels
 					});
 				},
 				createReply: (record) => this.deps.actions.createReply(record),
 				onPosted: (result, record, blobs) => {
 					const did = this.deps.getSessionDid();
-					const embedView = buildOwnEmbedView(toUploaded(blobs), did, this.compose.cdn, legacyMax);
+					const embedView = buildOwnPostEmbedView({
+						images: toUploaded(blobs), external: resolved.external, quoteView: resolved.quoteView
+					}, did, this.compose.cdn, legacyMax);
 					if (!this.destroyed) this.resetAfterPost();
 					this.deps.onPosted(result, record, this.target, embedView);
 				},
@@ -669,20 +902,24 @@ export class ReplyComposer {
 		} finally {
 			if (this.deps.isCurrent(generation)) this.deps.setPosting(false);
 			this.setBusy(false);
+			// 送信中に外されていたら、送り終えたここで extras を片付ける
+			if (this.destroyed) this.extras.destroy();
 			this.sync();
 			if (hadFocus && this.textarea.isConnected) this.textarea.focus({preventScroll: true});
 		}
 	}
 
 	/**
-	 * 送れた後に、本文・添付・ラベルを空に戻し、言語を覚えたものに戻す。
+	 * 送れた後に、本文・添付・GIF・カード・引用・ラベルを空に戻し、言語を覚えたものに戻す。
 	 * 言語の提案を閉じたことはその入力欄のあいだ保つ。
 	 * @returns {void}
 	 */
 	resetAfterPost() {
 		this.textarea.value = '';
+		this.pastedPending = false;
 		for (const attachment of this.attachments) this.revoke(attachment.prepared);
 		this.attachments = [];
+		this.extras.reset();
 		this.labels = {adult: null, graphic: false};
 		this.languagesTouched = false;
 		this.renderAttachments();
@@ -775,6 +1012,8 @@ export class ReplyComposer {
 		}
 		for (const attachment of this.attachments) this.revoke(attachment.prepared);
 		this.attachments = [];
+		// 送信中は送り終えるまで GIF・カード・引用を残す (送る record がそれを読む)
+		if (!this.busy) this.extras.destroy();
 		try {
 			this.el.remove();
 		} catch (error) {

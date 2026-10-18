@@ -573,6 +573,41 @@ export const EXT_CONFIG = {
 				'su', 'sw', 'sv', 'ty', 'ta', 'tt', 'te', 'tg', 'tl', 'th', 'ti', 'to', 'tn', 'ts', 'tk', 'tr', 'tw',
 				'ug', 'uk', 'ur', 'uz', 've', 'vi', 'vo', 'wa', 'wo', 'xh', 'yi', 'yo', 'za', 'zu'
 			],
+			/** GIF (Klipy。Bluesky 本体と同じ gifs.bsky.app の中継を使う) */
+			gif: {
+				origin: 'https://gifs.bsky.app',
+				paths: {featured: '/klipy/v2/featured', search: '/klipy/v2/search'},
+				clientKey: 'bluesky-web',
+				limit: 30,
+				contentFilter: 'low',
+				debounceMs: 750,
+				sourceHost: 'static.klipy.com',
+				playerHost: 'k.gifs.bsky.app',
+				tenor: {sourceHost: 'media.tenor.com', playerHost: 't.gifs.bsky.app'},
+				timeoutMs: 12000
+			},
+			/** リンクカード (本体と同じ cardyb の extract) */
+			card: {
+				extractUrl: 'https://cardyb.bsky.app/v1/extract',
+				timeoutMs: 10000,
+				/** bsky.app の URL はカードにせず、引用か本文のリンクとして扱う */
+				excludedHosts: ['bsky.app'],
+				/** 画像そのものの URL。カードにせず画像として扱う判定に使う */
+				imageExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg']
+			},
+			/** 引用にできる投稿の URL のホスト */
+			quote: {hosts: ['bsky.app']},
+			/** 本文中の長い URL の短縮表示 (残りが maxRestChars を超えたら keepChars で切って … を付ける) */
+			links: {maxRestChars: 15, keepChars: 13},
+			/** リンクカードのサムネイルの縮小 (橋渡しの maxThumbBytes に収める) */
+			thumb: {
+				maxDimension: 2000,
+				maxBytes: BRIDGE_PROTOCOL.postRecord.external.maxThumbBytes,
+				minQuality: 0.13,
+				scaleStep: 0.8,
+				maxScaleRetries: 4,
+				qualitySteps: 7
+			},
 			/** 選んだ言語を覚える chrome.storage.local のキー */
 			languageStorageKey: 'replyLanguages',
 			/** 投稿した自分の返信の画像を、取り直さずに描くための CDN の形 */
@@ -656,6 +691,11 @@ export const EXT_CONFIG = {
 				langList: 'ext-lb-lang-list',
 				langCount: 'ext-lb-lang-count',
 				emojiFrame: 'ext-lb-emoji-frame',
+				gifSearch: 'ext-lb-gif-search',
+				gifGrid: 'ext-lb-gif-grid',
+				gifItem: 'ext-lb-gif-item',
+				gifStatus: 'ext-lb-gif-status',
+				gifSentinel: 'ext-lb-gif-sentinel',
 				/** 以下は入力欄 (reply-composer.js) の部品 */
 				composer: 'ext-lb-composer',
 				dragOver: 'is-dragover',
@@ -676,7 +716,9 @@ export const EXT_CONFIG = {
 				toolbar: 'ext-lb-composer-toolbar',
 				tool: 'ext-lb-composer-tool',
 				languageButton: 'ext-lb-composer-lang',
-				languageText: 'ext-lb-composer-lang-text'
+				languageText: 'ext-lb-composer-lang-text',
+				/** 入力欄の中の GIF・リンクカード・引用のプレビューの入れ物 */
+				embedPreview: 'ext-lb-composer-embed'
 			},
 			/** 送信中に押せなくする入力欄の中の要素 */
 			busyControls: 'button, textarea',
@@ -741,10 +783,78 @@ export const EXT_CONFIG = {
 				uploadFailed: '画像を送れませんでした',
 				attachment: '添付画像 {index}',
 				attachments: '添付画像',
+				addGif: 'GIF を追加',
+				gifExclusive: 'GIF と画像は同時に付けられません',
+				gifTitle: 'GIF を選ぶ',
+				gifSearch: 'KLIPY を検索',
+				gifFailed: 'GIF を読み込めませんでした',
+				gifRetry: '再試行',
+				gifEmpty: '見つかりませんでした',
+				gifItem: 'GIF「{title}」を選ぶ',
+				removeGif: 'GIF を外す',
+				cardLoading: 'リンクを読み込み中…',
+				removeCard: 'リンクカードを外す',
+				removeQuote: '引用を外す',
+				quoteDisabled: 'この投稿は引用できません',
 				/** 複数の知らせを 1 行にまとめるときの区切り */
 				noticeSeparator: '。',
 				/** 複数の言語・ラベルの名前をボタンに並べるときの区切り */
 				listSeparator: '、'
+			}
+		},
+		/**
+		 * 返信の一覧と入力欄のプレビューで共通のカード (リンクカード・引用・GIF) の部品。
+		 * types は getPostThread の embed の view の $type
+		 */
+		cards: {
+			types: {
+				external: 'app.bsky.embed.external#view',
+				record: 'app.bsky.embed.record#view',
+				recordWithMedia: 'app.bsky.embed.recordWithMedia#view',
+				images: 'app.bsky.embed.images#view',
+				gallery: 'app.bsky.embed.gallery#view',
+				video: 'app.bsky.embed.video#view',
+				viewRecord: 'app.bsky.embed.record#viewRecord',
+				viewNotFound: 'app.bsky.embed.record#viewNotFound',
+				viewBlocked: 'app.bsky.embed.record#viewBlocked',
+				viewDetached: 'app.bsky.embed.record#viewDetached'
+			},
+			classes: {
+				cardFrame: 'ext-lb-card-frame',
+				linkCard: 'ext-lb-card',
+				linkCardThumb: 'ext-lb-card-thumb',
+				linkCardBody: 'ext-lb-card-body',
+				linkCardTitle: 'ext-lb-card-title',
+				linkCardDescription: 'ext-lb-card-description',
+				linkCardHost: 'ext-lb-card-host',
+				quote: 'ext-lb-quote',
+				quoteHead: 'ext-lb-quote-head',
+				quoteAvatar: 'ext-lb-quote-avatar',
+				quoteName: 'ext-lb-quote-name',
+				quoteHandle: 'ext-lb-quote-handle',
+				quoteDate: 'ext-lb-quote-date',
+				quoteText: 'ext-lb-quote-text',
+				quoteImage: 'ext-lb-quote-image',
+				quoteUnavailable: 'is-unavailable',
+				blurred: 'is-blurred',
+				blurLabel: 'ext-lb-card-blur-label',
+				remove: 'ext-lb-card-remove',
+				gif: 'ext-lb-gif',
+				gifVideo: 'ext-lb-gif-video',
+				gifPoster: 'ext-lb-gif-poster',
+				gifPlay: 'ext-lb-gif-play',
+				gifTools: 'ext-lb-gif-tools',
+				gifAlt: 'ext-lb-gif-alt',
+				gifAltDone: 'is-done'
+			},
+			text: {
+				gifPlay: 'GIF を再生',
+				gifPause: 'GIF を止める',
+				quoteNotFound: '引用元が見つかりませんでした',
+				quoteUnavailable: '引用元を表示できません',
+				quoteImage: '引用元の画像',
+				gifAlt: 'ALT',
+				gifAltDone: 'ALT 済み'
 			}
 		},
 		api: {

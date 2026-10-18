@@ -357,14 +357,19 @@ export function altState(text, max) {
  * ALT テキストの画面を開く。画像の縮小表示と入力欄を出し、書記素で残りを数える。
  * 上限を超えたら「完了」を押せなくする。Ctrl+Enter でも「完了」と同じ扱いにする。
  * @param {SheetHost} host 重ねる画面の持ち主
- * @param {{previewUrl: string, alt: string}} input 画像の URL と今の ALT テキスト
+ * @param {{previewUrl: string, alt: string, maxGraphemes?: number}} input 画像の URL と今の ALT テキスト。
+ *   maxGraphemes は ALT の上限 (書記素)。省略すると compose.maxAltGraphemes
  * @param {HTMLElement} opener 開いたボタン
  * @param {(alt: string) => void} onSave 「完了」で、前後の空白を除いた文を受け取る
  * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
 export function openAltSheet(host, input, opener, onSave, options) {
-	const {classes, text, maxAltGraphemes} = host.config;
+	const {classes, text} = host.config;
+	// 上限は画像の ALT が既定。GIF のように送る先の上限が短いものは input で差し替える
+	const maxAltGraphemes = Number.isInteger(input?.maxGraphemes) && input.maxGraphemes > 0
+		? input.maxGraphemes
+		: host.config.maxAltGraphemes;
 	let field = null;
 	host.open({
 		title: text.altTitle,

@@ -15,6 +15,9 @@ import {
 	EXT_BRIDGE, checkXrpcRequest, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
 	waitForLightboxHistory, toBlobRef, checkUploadBlob, isBlobRef, BlobInbox, readBlobMessage
 } from '../src/inject/page-bridge.js';
+import {buildPostEmbed} from '../src/content/reply-embed.js';
+import {buildReplyRecord} from '../src/content/reply-text.js';
+import {buildGifExternal} from '../src/content/klipy.js';
 
 /** 検査に使う自分の DID */
 const SELF_DID = 'did:plc:self0000000000000000000';
@@ -82,7 +85,7 @@ test('checkXrpcRequest: 返信の作成は通り、record はそのまま写さ�
 	assert.strictEqual(result.needsReplyCheck, false);
 });
 
-test('checkXrpcRequest: 許していない embed の種類 (external) を持つ投稿は落ちる', () => {
+test('checkXrpcRequest: 形の欠けた embed (external の中身が無い) を持つ投稿は落ちる', () => {
 	const result = checkPostCreate(replyRecord({embed: {$type: 'app.bsky.embed.external'}}));
 	assert.strictEqual(result.ok, false);
 	assert.strictEqual(result.reason, 'post-record-not-allowed');
@@ -765,4 +768,116 @@ test('toBlobRef: 想定したキーだけで組み直す', () => {
 		$type: 'blob', ref: {$link: 'bafk', extra: 1}, mimeType: 'image/png', size: 10, evil: true
 	});
 	assert.deepStrictEqual(ref, {$type: 'blob', ref: {$link: 'bafk'}, mimeType: 'image/png', size: 10});
+});
+
+const THUMB = {$type: 'blob', ref: {$link: 'bafthumb'}, mimeType: 'image/jpeg', size: 1000};
+const POST_REF = {uri: 'at://did:plc:x/app.bsky.feed.post/abc', cid: 'bafypost'};
+
+/** 検査を通る external の embed を作る。over に undefined を渡したキーは消す */
+function externalEmbed(over = {}) {
+	const external = {uri: 'https://example.com/a', title: 't', description: 'd', thumb: THUMB, ...over};
+	for (const key of Object.keys(external)) {
+		if (external[key] === undefined) {
+			delete external[key];
+		}
+	}
+	return {$type: 'app.bsky.embed.external', external};
+}
+
+test('checkPostEmbed: external は http(s) の uri と画像の thumb だけを通す', () => {
+	assert.strictEqual(checkPostEmbed(externalEmbed()), true);
+	assert.strictEqual(checkPostEmbed(externalEmbed({thumb: undefined})), true);
+	assert.strictEqual(checkPostEmbed(externalEmbed({uri: 'javascript:alert(1)'})), false);
+	assert.strictEqual(checkPostEmbed(externalEmbed({uri: 'https://e.com/' + 'a'.repeat(3000)})), false);
+	for (const uri of [' https://a', 'https://a b', 'https://a\tb', 'https:a.com', 'https://a\n']) {
+		assert.strictEqual(checkPostEmbed(externalEmbed({uri})), false, JSON.stringify(uri));
+	}
+	assert.strictEqual(checkPostEmbed(externalEmbed({title: 'あ'.repeat(301)})), false);
+	assert.strictEqual(checkPostEmbed(externalEmbed({description: 'あ'.repeat(1001)})), false);
+	assert.strictEqual(checkPostEmbed(externalEmbed({thumb: {...THUMB, mimeType: 'text/plain'}})), false);
+	assert.strictEqual(checkPostEmbed(externalEmbed({thumb: {...THUMB, size: 1000001}})), false);
+	assert.strictEqual(checkPostEmbed(externalEmbed({extra: 1})), false);
+	assert.strictEqual(checkPostEmbed({...externalEmbed(), extra: 1}), false);
+});
+
+test('checkPostEmbed: record は投稿の AT URI と CID だけを通す', () => {
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.record', record: POST_REF}), true);
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.record',
+		record: {uri: 'at://did:plc:x/app.bsky.feed.generator/f', cid: 'c'}}), false);
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.record', record: {...POST_REF, extra: 1}}), false);
+	assert.strictEqual(checkPostEmbed({$type: 'app.bsky.embed.record', record: {uri: POST_REF.uri, cid: ''}}), false);
+});
+
+test('checkPostEmbed: recordWithMedia は record と images / gallery / external の media だけを通す', () => {
+	const rec = {$type: 'app.bsky.embed.record', record: POST_REF};
+	const withMedia = (media, record = rec) => ({$type: 'app.bsky.embed.recordWithMedia', record, media});
+	assert.strictEqual(checkPostEmbed(withMedia(imagesEmbed(2))), true);
+	assert.strictEqual(checkPostEmbed(withMedia(galleryEmbed(2))), true);
+	assert.strictEqual(checkPostEmbed(withMedia(externalEmbed())), true);
+	assert.strictEqual(checkPostEmbed(withMedia(rec)), false);
+	assert.strictEqual(checkPostEmbed(withMedia(imagesEmbed(1), POST_REF)), false);
+	assert.strictEqual(checkPostEmbed(withMedia(withMedia(imagesEmbed(1)))), false);
+});
+
+test('checkPostRecord: external 付きでも返信でなければ通さない', () => {
+	const result = checkPostCreate({
+		$type: 'app.bsky.feed.post', text: 'a', createdAt: '2026-10-18T00:00:00.000Z',
+		embed: externalEmbed()
+	});
+	assert.strictEqual(result.ok, false);
+	assert.strictEqual(result.reason, BRIDGE_PROTOCOL.reasons.postNotReply);
+});
+
+test('入力欄と橋渡しのつなぎ目: buildPostEmbed の 5 通りを buildReplyRecord で record にすると checkPostRecord を通る', () => {
+	const RULES = BRIDGE_PROTOCOL.postRecord;
+	const uploaded = (count) => Array.from({length: count}, () => ({blob: blobRef(), alt: 'alt', width: 800, height: 600}));
+	const gifItem = {
+		id: '1', title: '長'.repeat(RULES.external.maxTitleGraphemes + 50),
+		gifUrl: 'https://static.klipy.com/ii/a/b/x.gif', width: 200, height: 100,
+		previewUrl: 'https://static.klipy.com/ii/a/b/x.jpg', tinyUrl: '', tinyWidth: 0, tinyHeight: 0,
+		playerUrl: null, mp4Slug: 'm', webmSlug: 'w'
+	};
+	const gifAlt = 'あ'.repeat(RULES.external.maxDescriptionGraphemes + 50);
+	const limits = {
+		maxTitleGraphemes: RULES.external.maxTitleGraphemes,
+		maxDescriptionGraphemes: RULES.external.maxDescriptionGraphemes
+	};
+	const gif = buildGifExternal(gifItem, gifAlt, blobRef(), limits);
+	const card = {
+		$type: RULES.embedTypes.external,
+		external: {uri: 'https://example.com/a', title: 'T', description: 'D', thumb: blobRef()}
+	};
+	const quote = {uri: 'at://did:plc:q/app.bsky.feed.post/3kq', cid: 'bafyreiq'};
+	const cases = [
+		{name: '画像', parts: {images: uploaded(2), external: null, quote: null}, type: RULES.embedTypes.images},
+		{name: 'GIF', parts: {images: [], external: gif, quote: null}, type: RULES.embedTypes.external},
+		{name: 'カード', parts: {images: [], external: card, quote: null}, type: RULES.embedTypes.external},
+		{name: '引用だけ', parts: {images: [], external: null, quote}, type: RULES.embedTypes.record},
+		{name: '引用 + gallery 6 枚', parts: {images: uploaded(6), external: null, quote}, type: RULES.embedTypes.recordWithMedia}
+	];
+	for (const one of cases) {
+		const record = buildReplyRecord({
+			text: 'a',
+			reply: {
+				root: {uri: 'at://did:plc:a/app.bsky.feed.post/1', cid: 'c1'},
+				parent: {uri: 'at://did:plc:a/app.bsky.feed.post/2', cid: 'c2'}
+			},
+			createdAt: '2026-10-19T00:00:00.000Z',
+			langs: ['ja'],
+			facets: [],
+			embed: buildPostEmbed(one.parts, RULES.maxImages),
+			labels: null
+		});
+		assert.strictEqual(record.embed.$type, one.type, one.name);
+		assert.deepStrictEqual(checkPostRecord(record), {ok: true}, one.name);
+	}
+	const withMedia = buildPostEmbed(cases[4].parts, RULES.maxImages);
+	assert.strictEqual(withMedia.media.$type, RULES.embedTypes.gallery);
+
+	// 上限を付けずに組んだ GIF は橋渡しに拒まれる (上限が要ることの確認)
+	const unlimited = buildReplyRecord({
+		text: 'a', reply: replyRecord().reply, createdAt: '2026-10-19T00:00:00.000Z', langs: null, facets: [],
+		embed: buildPostEmbed({images: [], external: buildGifExternal(gifItem, gifAlt, blobRef()), quote: null}, RULES.maxImages)
+	});
+	assert.strictEqual(checkPostRecord(unlimited).ok, false);
 });

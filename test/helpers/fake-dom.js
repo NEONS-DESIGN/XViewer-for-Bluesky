@@ -14,11 +14,12 @@
 export class FakeEvent {
 	/**
 	 * @param {string} type 種類
-	 * @param {{key?: string}} [init] キーボードのキーなど
+	 * @param {{key?: string, bubbles?: boolean}} [init] キーボードのキーなど。bubbles を false にすると浮上しない (video の source の error など)
 	 */
 	constructor(type, init = {}) {
 		this.type = type;
 		this.key = init.key;
+		this.bubbles = init.bubbles !== false;
 		this.defaultPrevented = false;
 		this.target = null;
 		this.stopped = false;
@@ -227,7 +228,7 @@ class FakeElement {
 		for (let node = this; node; node = node.parentNode) path.push(node);
 		const phases = [
 			...[...path].reverse().map((node) => [node, true]),
-			...path.map((node) => [node, false])
+			...(event.bubbles ? path : [this]).map((node) => [node, false])
 		];
 		for (const [node, capture] of phases) {
 			if (event.stopped) break;
@@ -264,6 +265,7 @@ class FakeElement {
 	 */
 	matches(selector) {
 		return selector.split(',').map((part) => part.trim()).some((part) => {
+			if (/^\.[\w-]+$/.test(part)) return this.classList.contains(part.slice(1));
 			const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(part);
 			if (attr) {
 				const [, name, value] = attr;

@@ -48,7 +48,7 @@ test('使う図形がすべて揃っている', async () => {
 	const {ICON_SHAPES} = await import('../src/common/icon-shapes.js');
 	for (const name of ['lightMode', 'darkMode', 'gridView', 'visibility', 'bugReport', 'chatBubble', 'repeat',
 		'favorite', 'formatQuote', 'chevronRight', 'chevronLeft', 'openInNew', 'viewSidebar', 'lock', 'bookmark', 'error',
-		'image', 'mood', 'crop', 'close', 'translate', 'warning', 'check']) {
+		'image', 'mood', 'crop', 'close', 'translate', 'warning', 'check', 'gifBox', 'playArrow']) {
 		assert.match(ICON_SHAPES[name].path, /^M/i, name);
 		assert.strictEqual(ICON_SHAPES[name].viewBox, '0 -960 960 960', name);
 	}

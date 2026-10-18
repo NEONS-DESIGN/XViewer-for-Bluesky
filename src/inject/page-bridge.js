@@ -531,15 +531,16 @@ function isAspectRatio(ratio) {
 
 /**
  * 埋め込む Blob が、余分なキーを持たない厳密な BlobRef で、サイズが
- * アップロードの上限に収まるか。
+ * 上限に収まるか。
  * @param {*} blob
+ * @param {number} [maxBytes] サイズの上限 (既定はアップロードの上限)
  * @returns {boolean}
  */
-function isStrictEmbedBlob(blob) {
+function isStrictEmbedBlob(blob, maxBytes = BRIDGE_PROTOCOL.upload.maxBytes.default) {
 	return hasOnlyKeys(blob, ['$type', 'ref', 'mimeType', 'size'])
 		&& hasOnlyKeys(blob.ref, ['$link'])
 		&& isBlobRef(blob, EXT_BRIDGE.postRecord.imageMimeTypes)
-		&& blob.size <= BRIDGE_PROTOCOL.upload.maxBytes.default;
+		&& blob.size <= maxBytes;
 }
 
 /**
@@ -566,31 +567,99 @@ function isEmbedImage(item, requireRatio, extraKeys) {
 }
 
 /**
- * record.embed が、返信に付けてよい画像の embed (images 1〜4 件 / gallery 1〜10 件) か。
- * 余分なキーは拒む
+ * images の embed (1〜4 件) の形か。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isImagesEmbed(embed) {
+	const rule = EXT_BRIDGE.postRecord;
+	return !!embed && embed.$type === rule.embedTypes.images
+		&& hasOnlyKeys(embed, ['$type', 'images'])
+		&& Array.isArray(embed.images)
+		&& embed.images.length >= 1 && embed.images.length <= rule.maxImages
+		&& embed.images.every((item) => isEmbedImage(item, false, []));
+}
+
+/**
+ * gallery の embed (1〜10 件) の形か。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isGalleryEmbed(embed) {
+	const rule = EXT_BRIDGE.postRecord;
+	return !!embed && embed.$type === rule.embedTypes.gallery
+		&& hasOnlyKeys(embed, ['$type', 'items'])
+		&& Array.isArray(embed.items)
+		&& embed.items.length >= 1 && embed.items.length <= rule.maxGalleryItems
+		&& embed.items.every((item) => isEmbedImage(item, true, ['$type'])
+			&& item.$type === rule.galleryImageType);
+}
+
+/**
+ * external (リンクカード) の embed の形か。uri は http(s) だけ、thumb は
+ * 無いか、上限内の画像の BlobRef だけを通す。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isExternalEmbed(embed) {
+	const rule = EXT_BRIDGE.postRecord;
+	if (!embed || embed.$type !== rule.embedTypes.external
+		|| !hasOnlyKeys(embed, ['$type', 'external'])) {
+		return false;
+	}
+	const card = embed.external;
+	if (!hasOnlyKeys(card, ['uri', 'title', 'description', 'thumb'])
+		|| typeof card.uri !== 'string' || typeof card.title !== 'string'
+		|| typeof card.description !== 'string') {
+		return false;
+	}
+	if (new TextEncoder().encode(card.uri).length > rule.external.maxUriBytes
+		|| !new RegExp(rule.external.uriPattern).test(card.uri)
+		|| countGraphemes(card.title) > rule.external.maxTitleGraphemes
+		|| countGraphemes(card.description) > rule.external.maxDescriptionGraphemes) {
+		return false;
+	}
+	return card.thumb === undefined
+		|| isStrictEmbedBlob(card.thumb, rule.external.maxThumbBytes);
+}
+
+/**
+ * record (引用) の embed の形か。引用先は投稿の AT URI と CID だけを通す。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isRecordEmbed(embed) {
+	return !!embed && embed.$type === EXT_BRIDGE.postRecord.embedTypes.record
+		&& hasOnlyKeys(embed, ['$type', 'record'])
+		&& hasOnlyKeys(embed.record, ['uri', 'cid'])
+		&& isPostStrongRef(embed.record);
+}
+
+/**
+ * recordWithMedia の media に置いてよい embed (images / gallery / external) か。
+ * @param {*} embed
+ * @returns {boolean}
+ */
+function isMediaEmbed(embed) {
+	return isImagesEmbed(embed) || isGalleryEmbed(embed) || isExternalEmbed(embed);
+}
+
+/**
+ * record.embed が、返信に付けてよい embed (images / gallery / external / record /
+ * recordWithMedia) か。余分なキーは拒む
  * @param {*} embed
  * @returns {boolean}
  */
 export function checkPostEmbed(embed) {
 	try {
-		const rule = EXT_BRIDGE.postRecord;
 		if (!embed || typeof embed !== 'object') {
 			return false;
 		}
-		if (embed.$type === rule.embedTypes.images) {
-			return hasOnlyKeys(embed, ['$type', 'images'])
-				&& Array.isArray(embed.images)
-				&& embed.images.length >= 1 && embed.images.length <= rule.maxImages
-				&& embed.images.every((item) => isEmbedImage(item, false, []));
+		if (embed.$type === EXT_BRIDGE.postRecord.embedTypes.recordWithMedia) {
+			return hasOnlyKeys(embed, ['$type', 'record', 'media'])
+				&& isRecordEmbed(embed.record) && isMediaEmbed(embed.media);
 		}
-		if (embed.$type === rule.embedTypes.gallery) {
-			return hasOnlyKeys(embed, ['$type', 'items'])
-				&& Array.isArray(embed.items)
-				&& embed.items.length >= 1 && embed.items.length <= rule.maxGalleryItems
-				&& embed.items.every((item) => isEmbedImage(item, true, ['$type'])
-					&& item.$type === rule.galleryImageType);
-		}
-		return false;
+		return isMediaEmbed(embed) || isRecordEmbed(embed);
 	} catch (error) {
 		return false;
 	}
@@ -627,9 +696,9 @@ export function checkSelfLabels(labels) {
 
 /**
  * 橋渡しから作ってよい投稿 (返信) の record かを検査する。
- * **返信でない投稿は通さず、embed は画像 (images / gallery) だけ、labels は
+ * **返信でない投稿は通さず、embed は画像・リンクカード・引用だけ、labels は
  * 自己ラベルだけを通す。** 作れる投稿を返信に絞ることで、ページ上の誰かが
- * この橋渡しを撃っても単独の投稿や外部リンク付きの投稿を作れないようにする
+ * この橋渡しを撃っても返信でない投稿を作れないようにする
  * @param {*} record createRecord の body.record
  * @returns {{ok: true}|{ok: false, reason: string}}
  */

@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#f9fafb" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>XViewer for Bluesky - A browser extension to browse Bluesky media like X</title>
-<meta name="description" content="An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text, counts and replies and reply with images, repost, like or bookmark without closing the image. Works on Chrome, Brave and Edge.">
+<meta name="description" content="An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text, counts and replies and reply with images, a GIF, a link card or a quote, repost, like or bookmark without closing the image. Works on Chrome, Brave and Edge.">
 <!-- lang:head -->
 <link rel="canonical" href="https://xvbluesky.neonsdesign.com/en/">
 <link rel="alternate" hreflang="ja" href="https://xvbluesky.neonsdesign.com/">
@@ -19,7 +19,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="XViewer for Bluesky">
 <meta property="og:title" content="XViewer for Bluesky">
-<meta property="og:description" content="A browser extension that turns Bluesky's Media tab into a thumbnail grid and lets you read post details and replies, reply with images and like without closing the image. Works on Chrome, Brave and Edge.">
+<meta property="og:description" content="A browser extension that turns Bluesky's Media tab into a thumbnail grid and lets you read post details and replies, reply with images or GIFs and like without closing the image. Works on Chrome, Brave and Edge.">
 <meta property="og:url" content="https://xvbluesky.neonsdesign.com/en/">
 <meta property="og:image" content="https://xvbluesky.neonsdesign.com/assets/img/og-lightbox.jpg">
 <meta property="og:image:type" content="image/jpeg">
@@ -52,7 +52,7 @@
 			"url": "https://xvbluesky.neonsdesign.com/en/",
 			"name": "XViewer for Bluesky",
 			"inLanguage": "en",
-			"description": "The website of a browser extension that shows a Bluesky profile's media as a thumbnail grid and lets you read post details and replies, reply with images and like without closing the image."
+			"description": "The website of a browser extension that shows a Bluesky profile's media as a thumbnail grid and lets you read post details and replies, reply with images or GIFs and like without closing the image."
 		},
 		{
 			"@type": "SoftwareApplication",
@@ -63,7 +63,7 @@
 			"operatingSystem": "Windows, macOS, Linux, ChromeOS",
 			"softwareRequirements": "A Chromium-based browser (Chrome / Brave / Edge), Chrome 120 or later",
 			"inLanguage": "ja",
-			"description": "An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text, counts and replies and reply with images, repost, quote, like or bookmark without closing the image. The extension's interface is in Japanese.",
+			"description": "An unofficial browser extension that turns the Media tab of a Bluesky profile into a grid of square thumbnails, and lets you check a post's text, counts and replies and reply with images, a GIF, a link card or a quote, and repost, quote, like or bookmark without closing the image. The extension's interface is in Japanese.",
 			"isAccessibleForFree": true,
 			"license": "https://opensource.org/licenses/MIT",
 			"sameAs": "https://github.com/NEONS-DESIGN/XViewer-for-Bluesky",
@@ -84,6 +84,7 @@
 				"Reply, repost, quote, like and bookmark without closing the image",
 				"Lists replies under the panel, where you can write and send a reply on the spot and delete your own, and open images attached to replies",
 				"Attaches up to 10 images to a reply, with alt text, cropping, content warnings, post languages and emoji, just like Bluesky's own reply screen",
+				"Attaches a GIF, a link card or a quote of a post to a reply, and shows GIFs, link cards and quotes in the reply list",
 				"Keeps the lightbox open when you click the image itself",
 				"Adds fixed buttons to move between a profile's tabs",
 				"Removes the NSFW blur from tiles in the media grid (optional)"
@@ -160,7 +161,7 @@
 			<h1>See <span class="brand-bluesky">Bluesky</span> media the way you see it on <span class="brand-x">X</span>.</h1>
 			<p class="lede">
 				A profile's Media tab becomes a grid of square thumbnails.
-				Open an image and the post's text, date, counts and replies appear on the right, where you can reply (with images), repost, like or bookmark right away.
+				Open an image and the post's text, date, counts and replies appear on the right, where you can reply (with images or a GIF), repost, like or bookmark right away.
 				Clicking the image itself no longer closes it, so you won't be thrown back to the list halfway through.
 			</p>
 			<div class="cta-row">
@@ -196,11 +197,11 @@
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-article"></use></svg></span>Post details panel</h3>
-					<p>When you open an image, the author, text, date, counts and an "Open post" button appear on the right, with the replies listed below, newest first. Images attached to replies show as thumbnails; click one to switch to that image. It works wherever you open an image on Bluesky, not only from the grid. Links, mentions and hashtags in the text work too. The panel can be collapsed.</p>
+					<p>When you open an image, the author, text, date, counts and an "Open post" button appear on the right, with the replies listed below, newest first. Images attached to replies show as thumbnails; click one to switch to that image. GIFs, link cards and quotes in replies show as cards too. It works wherever you open an image on Bluesky, not only from the grid. Links, mentions and hashtags in the text work too. The panel can be collapsed.</p>
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-like"></use></svg></span>React without closing</h3>
-					<p>Reply, repost, quote, like and bookmark without closing the image. Replies are written and sent from a text box in the panel, with up to 10 images. You can add alt text, crop, set content warnings, pick post languages and insert emoji, and you can delete your own replies. A like or other reaction shows up the moment you press it, and if the request fails it goes back and tells you. It uses Bluesky's own sign-in as is and never touches your login credentials.</p>
+					<p>Reply, repost, quote, like and bookmark without closing the image. Replies are written and sent from a text box in the panel, with up to 10 images or one GIF. A link pasted into the text becomes a link card, and a post URL becomes a quote. You can add alt text, crop, set content warnings, pick post languages and insert emoji, and you can delete your own replies. A like or other reaction shows up the moment you press it, and if the request fails it goes back and tells you. It uses Bluesky's own sign-in as is and never touches your login credentials.</p>
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-click"></use></svg></span>Clicking the image keeps it open</h3>
@@ -252,8 +253,10 @@
 					<ul class="feature-list">
 						<li>The repost button opens a menu to choose between repost and quote</li>
 						<li>Replies are listed below the panel, newest first, and "Show replies" opens the replies to a reply</li>
-						<li>You can send a reply right from the text box in the panel. Quote opens Bluesky's own composer on top of the lightbox</li>
+						<li>You can send a reply right from the text box in the panel. The "Quote" item of the repost button opens Bluesky's own composer on top of the lightbox</li>
 						<li>A reply can carry up to 10 images (pick, paste or drop them on the text box). Alt text, cropping, content warnings, post languages and emoji work just like Bluesky's own reply screen</li>
+						<li>GIFs come from the same GIF search Bluesky uses (KLIPY). A link pasted into the text becomes a link card, a Bluesky post URL becomes a quote, and links in the text are sent in the same shortened form as Bluesky's own app</li>
+						<li>GIFs in the reply list play muted. (When your OS is set to reduce motion, they play only when you click them) Link cards open in a new tab, and quotes take you to the quoted post</li>
 						<li>The action buttons are not shown when you are signed out</li>
 						<li>"Open post" takes you to the post without reloading the page</li>
 					</ul>
@@ -372,7 +375,7 @@
 							<td>Lightbox</td>
 							<td class="child">Reply list</td>
 							<td class="default">On</td>
-							<td>Lists the replies below the panel when you open an image. With "Reply and like" also on, you can write replies (with images) and delete your own right there</td>
+							<td>Lists the replies below the panel when you open an image. With "Reply and like" also on, you can write replies (with images, a GIF, a link card or a quote) and delete your own right there</td>
 						</tr>
 						<tr>
 							<td>Lightbox</td>
@@ -431,7 +434,7 @@
 		<div class="wrap">
 			<div class="section-head center">
 				<h2>Your data stays with Bluesky</h2>
-				<p>This extension has no server of its own. The only traffic is to Bluesky's public API, and Bluesky's own requests that it borrows to load replies and to send the reactions and replies (including attached images) you choose.</p>
+				<p>This extension has no server of its own. The only traffic is to Bluesky's public API, Bluesky's own requests that it borrows to load replies and to send the reactions and replies (including attached images) you choose, and Bluesky's relay services for GIFs and link cards in replies (<code>gifs.bsky.app</code> / <code>cardyb.bsky.app</code>) and the GIF provider. GIF search terms and link URLs go to the same places Bluesky's own reply screen sends them.</p>
 			</div>
 			<div class="card-grid">
 				<div class="card">
@@ -464,7 +467,7 @@
 				<ul>
 					<li>Use it at your own risk. Neither the author nor Bluesky Social PBC is responsible for any damage caused by using this extension</li>
 					<li>Each like, repost, bookmark or reply you send goes to Bluesky from your account. Likes, reposts and replies are public, just as when you use Bluesky directly</li>
-					<li>A reply is posted only when you press "Send" or Ctrl+Enter (Cmd+Enter on Mac) in the panel's text box. Attached images are uploaded to your account's server (PDS) only at that moment. A quote is posted only when you send it from Bluesky's own composer</li>
+					<li>A reply is posted only when you press "Send" or Ctrl+Enter (Cmd+Enter on Mac) in the panel's text box. Attached images and the thumbnails of link cards and GIFs are uploaded to your account's server (PDS) only at that moment. In Bluesky's own composer opened from the "Quote" item of the repost button, a post is made only when you send it</li>
 					<li>The only posts the extension can delete are your own replies in the reply list, and only after you press "Delete" and then confirm. It never creates or deletes posts that are not replies, and never follows, blocks or sends DMs</li>
 					<li>It has no way to collect images. There is no downloading and no bulk automation; it only fetches the posts of the profile you are viewing</li>
 					<li>Changes on Bluesky's side may stop it from working</li>

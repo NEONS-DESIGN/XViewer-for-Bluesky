@@ -1,0 +1,37 @@
+{
+	"next": "Mg==",
+	"results": [
+		{
+			"id": "1001",
+			"title": "Cat Typing",
+			"content_description": "",
+			"media_formats": {
+				"gif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat.gif", "duration": 2, "preview": "", "dims": [498, 280], "size": 100},
+				"tinygif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat_tiny.gif", "duration": 2, "preview": "", "dims": [220, 124], "size": 50},
+				"preview": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat_preview.jpg", "duration": 0, "preview": "", "dims": [498, 280], "size": 10},
+				"webm": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat_w.webm", "duration": 2, "preview": "", "dims": [498, 280], "size": 40},
+				"tinywebm": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat_tw.webm", "duration": 2, "preview": "", "dims": [220, 124], "size": 20},
+				"mp4": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/cat_m.mp4", "duration": 2, "preview": "", "dims": [498, 280], "size": 60}
+			}
+		},
+		{
+			"id": "1002",
+			"title": "No Preview",
+			"content_description": "desc",
+			"media_formats": {
+				"gif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/np.gif", "dims": [100, 100]},
+				"tinygif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/np_tiny.gif", "dims": [50, 50]}
+			}
+		},
+		{
+			"id": "1003",
+			"title": "Bad Dims",
+			"content_description": "",
+			"media_formats": {
+				"gif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/bd.gif", "dims": [0, 10]},
+				"tinygif": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/bd_tiny.gif", "dims": [10, 10]},
+				"preview": {"url": "https://static.klipy.com/ii/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ab/cd/bd_p.jpg", "dims": [10, 10]}
+			}
+		}
+	]
+}

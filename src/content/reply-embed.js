@@ -122,14 +122,14 @@ export function acceptImages(currentCount, files, accept, max) {
  * 送信できるかと、残りの文字数 (書記素) を返す。
  * 本文 (trim 後) か添付が 1 つ以上あり、本文が上限内であること。
  * @param {string} text
- * @param {number} attachmentCount
+ * @param {number} contentCount 画像の枚数 + GIF + 送るカード + 引用
  * @param {{maxGraphemes: number, maxBytes: number}} limits
  * @returns {{ok: boolean, remaining: number}}
  */
-export function canSubmitComposer(text, attachmentCount, limits) {
+export function canSubmitComposer(text, contentCount, limits) {
 	const value = typeof text === 'string' ? text : '';
 	const remaining = limits.maxGraphemes - countGraphemes(value);
-	const hasContent = value.trim() !== '' || attachmentCount > 0;
+	const hasContent = value.trim() !== '' || contentCount > 0;
 	const ok = hasContent && remaining >= 0
 		&& utf8Encoder.encode(value).length <= limits.maxBytes;
 	return {ok, remaining};
@@ -219,5 +219,116 @@ export function buildOwnEmbedView(images, did, cdn, legacyMax) {
 			const {thumb, fullsize} = urls(image);
 			return {thumbnail: thumb, fullsize, alt: image.alt, aspectRatio: toAspectRatio(image)};
 		})
+	};
+}
+
+/**
+ * 投稿に付ける添付の部品。
+ * @typedef {Object} EmbedParts
+ * @property {UploadedImage[]} images
+ * @property {Object|null} external app.bsky.embed.external の embed そのもの (GIF かカード)
+ * @property {{uri: string, cid: string}|null} quote 引用する投稿
+ */
+
+/**
+ * 添付の部品から投稿の embed を作る。画像と external が両方あるときは画像を使う。
+ * @param {EmbedParts} parts
+ * @param {number} legacyMax images に収める枚数の上限
+ * @returns {Object|null} 何も無ければ null
+ */
+export function buildPostEmbed(parts, legacyMax) {
+	if (!parts) {
+		return null;
+	}
+	const media = buildMediaEmbed(parts.images, legacyMax) || parts.external || null;
+	const record = parts.quote
+		? {$type: RECORD_RULES.embedTypes.record, record: parts.quote}
+		: null;
+	if (media && record) {
+		return {$type: RECORD_RULES.embedTypes.recordWithMedia, media, record};
+	}
+	return media || record;
+}
+
+/**
+ * コンテンツの警告 (自己ラベル) の入口を出す条件。ラベルの対象はメディアだけ。
+ * @param {{imageCount: number, hasGif: boolean, hasCard: boolean}} input
+ * @returns {boolean}
+ */
+export function hasLabelableMedia(input) {
+	return Boolean(input) && (input.imageCount > 0 || Boolean(input.hasGif) || Boolean(input.hasCard));
+}
+
+/**
+ * BlobRef から CID を読む。
+ * @param {*} blob
+ * @returns {string|null}
+ */
+function blobCid(blob) {
+	const cid = blob && blob.ref && blob.ref.$link;
+	return typeof cid === 'string' && cid !== '' ? cid : null;
+}
+
+/**
+ * external の embed から view を作る。thumb は CID が読めるときだけ CDN の URL にする。
+ * @param {Object} external app.bsky.embed.external の embed
+ * @param {string} did
+ * @param {{thumb: string}} cdn
+ * @returns {Object|null}
+ */
+function buildExternalView(external, did, cdn) {
+	const source = external && external.external;
+	if (!source || typeof source.uri !== 'string') {
+		return null;
+	}
+	const view = {uri: source.uri, title: source.title, description: source.description};
+	const cid = blobCid(source.thumb);
+	if (cid) {
+		view.thumb = `${cdn.thumb}/${did}/${cid}`;
+	}
+	return {$type: RECORD_RULES.embedTypes.external + VIEW_SUFFIX, external: view};
+}
+
+/**
+ * 投稿した自分の返信の embed view を作る (取り直さずに描くため)。
+ * @param {{images: UploadedImage[], external: Object|null, quoteView: Object|null}} parts
+ * @param {string} did 自分の DID
+ * @param {{thumb: string, fullsize: string}} cdn
+ * @param {number} legacyMax
+ * @returns {Object|null}
+ */
+export function buildOwnPostEmbedView(parts, did, cdn, legacyMax) {
+	if (!parts) {
+		return null;
+	}
+	const media = buildOwnEmbedView(parts.images, did, cdn, legacyMax)
+		|| (parts.external ? buildExternalView(parts.external, did, cdn) : null);
+	const record = parts.quoteView
+		? {$type: RECORD_RULES.embedTypes.record + VIEW_SUFFIX, record: parts.quoteView}
+		: null;
+	if (media && record) {
+		return {$type: RECORD_RULES.embedTypes.recordWithMedia + VIEW_SUFFIX, media, record};
+	}
+	return media || record;
+}
+
+/**
+ * getPosts の PostView を、引用の viewRecord に写す。
+ * @param {Object} post
+ * @returns {Object|null} uri / cid / record が無ければ null
+ */
+export function toQuoteViewRecord(post) {
+	if (!post || typeof post.uri !== 'string' || typeof post.cid !== 'string' || !post.record) {
+		return null;
+	}
+	return {
+		$type: RECORD_RULES.embedTypes.record + '#viewRecord',
+		uri: post.uri,
+		cid: post.cid,
+		author: post.author,
+		value: post.record,
+		indexedAt: post.indexedAt,
+		labels: Array.isArray(post.labels) ? post.labels : [],
+		embeds: post.embed ? [post.embed] : []
 	};
 }
