@@ -8,6 +8,8 @@ import test from 'node:test';
 import assert from 'node:assert';
 
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
+import {EXT_CONFIG} from '../src/common/config.js';
+import {callBridge} from '../src/content/bridge-client.js';
 import {uploadBlob} from '../src/content/blob-transfer.js';
 
 const ORIGIN = 'https://bsky.app';
@@ -73,6 +75,68 @@ test('uploadBlob: 橋渡しが失敗を返したら理由をそのまま返す',
 	try {
 		const result = await uploadBlob(new Blob(['a'], {type: 'image/png'}));
 		assert.deepStrictEqual(result, {ok: false, blob: null, reason: 'blob-not-allowed'});
+	} finally {
+		fakes.restore();
+	}
+});
+
+/**
+ * 返事をしない偽の document と、待ち時間を控えてすぐ発火する setTimeout を置く。
+ * @returns {{delays: number[], restore: Function}}
+ */
+function installSilentFakes() {
+	const delays = [];
+	const saved = {
+		window: globalThis.window,
+		document: globalThis.document,
+		setTimeout: globalThis.setTimeout
+	};
+	globalThis.window = {location: {origin: ORIGIN}, postMessage: () => {}};
+	globalThis.document = {
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		dispatchEvent: () => true
+	};
+	globalThis.setTimeout = (fn, ms) => {
+		delays.push(ms);
+		fn();
+		return 1;
+	};
+	return {
+		delays,
+		restore: () => {
+			globalThis.window = saved.window;
+			globalThis.document = saved.document;
+			globalThis.setTimeout = saved.setTimeout;
+		}
+	};
+}
+
+test('uploadBlob: 応答を待つ上限に uploadTimeoutMs を使う (ほかの操作より長い)', async () => {
+	const bridge = EXT_CONFIG.mediaGrid.bridge;
+	assert.ok(bridge.uploadTimeoutMs > bridge.timeoutMs);
+	const fakes = installSilentFakes();
+	try {
+		const result = await uploadBlob(new Blob(['a'], {type: 'image/png'}));
+		assert.deepStrictEqual(fakes.delays, [bridge.uploadTimeoutMs]);
+		assert.deepStrictEqual(result, {ok: false, blob: null, reason: 'timeout'});
+	} finally {
+		fakes.restore();
+	}
+});
+
+test('callBridge: timeoutMs を渡さない・正の数でないときは既定の timeoutMs で待つ', async () => {
+	const bridge = EXT_CONFIG.mediaGrid.bridge;
+	const fakes = installSilentFakes();
+	try {
+		await callBridge(bridge.actions.getSession, {});
+		await callBridge(bridge.actions.getSession, {}, {timeoutMs: 0});
+		await callBridge(bridge.actions.getSession, {}, {timeoutMs: NaN});
+		await callBridge(bridge.actions.getSession, {}, null);
+		await callBridge(bridge.actions.getSession, {}, {timeoutMs: 1234});
+		assert.deepStrictEqual(fakes.delays, [
+			bridge.timeoutMs, bridge.timeoutMs, bridge.timeoutMs, bridge.timeoutMs, 1234
+		]);
 	} finally {
 		fakes.restore();
 	}

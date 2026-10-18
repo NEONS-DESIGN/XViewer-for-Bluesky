@@ -61,11 +61,11 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	/**
 	 * upload-blob が受け付ける Blob の条件と、預かり箱の寸法。
 	 * 検査は受け手の page-bridge.js が持つ。maxBytes は MIME ごとの上限で、
-	 * default は載っていない MIME の上限
+	 * default は載っていない MIME の上限。通すのは画像だけ
 	 */
 	upload: {
-		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'text/vtt'],
-		maxBytes: {'text/vtt': 100000, default: 2000000},
+		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+		maxBytes: {default: 2000000},
 		/** 預けた Blob を取りに来なかったときに捨てるまでの時間 */
 		inboxTtlMs: 30000,
 		/** 預かり箱の件数の上限。超えたら古いものから捨てる */
@@ -95,7 +95,7 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		getPosts: 'app.bsky.feed.getPosts',
 		/** パネルの返信の一覧を読む (読み取りのみ) */
 		getPostThread: 'app.bsky.feed.getPostThread',
-		/** 画像・字幕の Blob を PDS へ置く (upload-blob 専用。call-xrpc には通さない) */
+		/** 画像の Blob を PDS へ置く (upload-blob 専用。call-xrpc には通さない) */
 		uploadBlob: 'com.atproto.repo.uploadBlob',
 		createRecord: 'com.atproto.repo.createRecord',
 		deleteRecord: 'com.atproto.repo.deleteRecord',

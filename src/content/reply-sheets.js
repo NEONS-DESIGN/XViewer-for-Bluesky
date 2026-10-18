@@ -35,6 +35,14 @@ export {
  * @property {boolean} [closeOnly] 「キャンセル」「完了」の代わりに「閉じる」だけを出す
  */
 
+/**
+ * 画面を開く側が添える情報。
+ * @typedef {Object} SheetOptions
+ * @property {Node|null} [owner] 画面の持ち主 (入力欄の外枠)。開いたボタンが描き直されて
+ *   入れ替わっても、持ち主を外すときに画面を閉じられるようにする
+ * @property {() => void} [restoreFocus] SheetSpec の restoreFocus の代わりに使う戻し先
+ */
+
 /** 見出しの id とラジオの組の名前を重ならないようにする連番 */
 let sheetSerial = 0;
 
@@ -50,7 +58,7 @@ export class SheetHost {
 		this.panelEl = panelEl;
 		this.config = config;
 		this.doc = panelEl.ownerDocument;
-		/** @type {{spec: SheetSpec, layer: HTMLElement, doneButton: HTMLButtonElement|null, opener: HTMLElement|null, cleanup: (Function|null)}|null} */
+		/** @type {{spec: SheetSpec, layer: HTMLElement, doneButton: HTMLButtonElement|null, opener: HTMLElement|null, owner: (Node|null), restoreFocus: (Function|undefined), cleanup: (Function|null)}|null} */
 		this.current = null;
 		this.onKeyDown = this.onKeyDown.bind(this);
 		this.onPanelFocusIn = this.onPanelFocusIn.bind(this);
@@ -62,13 +70,20 @@ export class SheetHost {
 	 * 開いたら画面の最初の操作要素へフォーカスを移す。
 	 * @param {SheetSpec} spec 画面の定義
 	 * @param {HTMLElement|null} opener 開いたボタン (閉じたらここへフォーカスを返す)
+	 * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
 	 * @returns {void}
 	 */
-	open(spec, opener) {
+	open(spec, opener, options) {
 		if (this.current) this.cancel(false);
 		try {
 			const {layer, body, doneButton, cancelButton} = this.buildLayer(spec);
-			const entry = {spec, layer, doneButton, opener: opener || null, cleanup: null};
+			const restoreFocus = options && typeof options.restoreFocus === 'function'
+				? options.restoreFocus
+				: spec.restoreFocus;
+			const entry = {
+				spec, layer, doneButton, opener: opener || null,
+				owner: (options && options.owner) || null, restoreFocus, cleanup: null
+			};
 			this.current = entry;
 			doneButton?.addEventListener('click', () => {
 				if (this.current === entry && !doneButton.disabled) this.finish();
@@ -246,9 +261,9 @@ export class SheetHost {
 	}
 
 	/**
-	 * 閉じる画面のフォーカスの戻し先へ移す。開いたボタン → spec.restoreFocus →
+	 * 閉じる画面のフォーカスの戻し先へ移す。開いたボタン → restoreFocus (開くときの options か spec) →
 	 * パネルの (画面の外の) 最初の操作要素の順に試し、body へ落とさない。
-	 * @param {{spec: SheetSpec, layer: HTMLElement, opener: HTMLElement|null}} entry 閉じる画面
+	 * @param {{spec: SheetSpec, layer: HTMLElement, opener: HTMLElement|null, restoreFocus: (Function|undefined)}} entry 閉じる画面
 	 * @returns {void}
 	 */
 	returnFocus(entry) {
@@ -257,7 +272,7 @@ export class SheetHost {
 			entry.opener.focus();
 			return;
 		}
-		safeCall(entry.spec.restoreFocus);
+		safeCall(entry.restoreFocus);
 		if (inPanel(this.doc.activeElement)) return;
 		const fallback = Array.from(this.panelEl.querySelectorAll(this.config.sheetFocusable))
 			.find((item) => inPanel(item) && this.isFocusable(item));
@@ -300,14 +315,18 @@ export class SheetHost {
 	}
 
 	/**
-	 * 開いている画面が、container の中のボタンから開かれたものか (入力欄を外すときに閉じるかの判断に使う)。
+	 * 開いている画面が container のものか (入力欄を外すときに閉じるかの判断に使う)。
+	 * 開くときに渡した持ち主が container (かその中) であるか、開いたボタンが container の中にあれば真。
+	 * 開いたボタンが描き直しで外れていても、持ち主で判断できる。
 	 * @param {Node|null} container 入力欄などの外枠
 	 * @returns {boolean}
 	 */
 	isOpenedFrom(container) {
-		const opener = this.current ? this.current.opener : null;
+		const entry = this.current;
+		if (!entry || !container || typeof container.contains !== 'function') return false;
 		try {
-			return !!opener && !!container && typeof container.contains === 'function' && container.contains(opener);
+			if (entry.owner && (entry.owner === container || container.contains(entry.owner))) return true;
+			return !!entry.opener && container.contains(entry.opener);
 		} catch (error) {
 			return false;
 		}
@@ -341,9 +360,10 @@ export function altState(text, max) {
  * @param {{previewUrl: string, alt: string}} input 画像の URL と今の ALT テキスト
  * @param {HTMLElement} opener 開いたボタン
  * @param {(alt: string) => void} onSave 「完了」で、前後の空白を除いた文を受け取る
+ * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
-export function openAltSheet(host, input, opener, onSave) {
+export function openAltSheet(host, input, opener, onSave, options) {
 	const {classes, text, maxAltGraphemes} = host.config;
 	let field = null;
 	host.open({
@@ -381,7 +401,7 @@ export function openAltSheet(host, input, opener, onSave) {
 			sync();
 		},
 		onDone: () => safeCall(onSave, (field?.value || '').trim())
-	}, opener);
+	}, opener, options);
 }
 
 /**
@@ -391,9 +411,10 @@ export function openAltSheet(host, input, opener, onSave) {
  * @param {{adult: string|null, graphic: boolean}} input 今の選択
  * @param {HTMLElement} opener 開いたボタン
  * @param {(selection: {adult: string|null, graphic: boolean}) => void} onSave 「完了」で選択を受け取る
+ * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
-export function openLabelSheet(host, input, opener, onSave) {
+export function openLabelSheet(host, input, opener, onSave, options) {
 	const {classes, text, labels} = host.config;
 	const selection = {
 		adult: labels.adult.indexOf(input?.adult) !== -1 ? input.adult : null,
@@ -426,7 +447,7 @@ export function openLabelSheet(host, input, opener, onSave) {
 			body.append(createElement(doc, 'p', classes.note, text.labelDescription), adultGroup, otherGroup);
 		},
 		onDone: () => safeCall(onSave, {adult: selection.adult, graphic: selection.graphic})
-	}, opener);
+	}, opener, options);
 }
 
 /**
@@ -525,9 +546,10 @@ function createEmojiListener(host, frame, error, origin, onPick) {
  * @param {SheetHost} host 重ねる画面の持ち主
  * @param {HTMLElement} opener 開いたボタン
  * @param {(native: string) => void} onPick 選んだ絵文字 (文字そのもの)
+ * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
-export function openEmojiSheet(host, opener, onPick) {
+export function openEmojiSheet(host, opener, onPick, options) {
 	const {classes, text, emoji} = host.config;
 	host.open({
 		title: text.emojiTitle,
@@ -558,5 +580,5 @@ export function openEmojiSheet(host, opener, onPick) {
 			body.append(frame);
 			return () => win.removeEventListener('message', onMessage);
 		}
-	}, opener);
+	}, opener, options);
 }

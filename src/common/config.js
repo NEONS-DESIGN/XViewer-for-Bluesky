@@ -295,7 +295,12 @@ export const EXT_CONFIG = {
 			 * 本体がフィードの単独画像を開くときと同じ値 (2026-09-09 実測)
 			 */
 			lightboxLayout: 'single',
-			timeoutMs: 15000
+			timeoutMs: 15000,
+			/**
+			 * upload-blob の応答を待つ上限。画像 (最大 2MB) を PDS へ送り終えるまで
+			 * 待つため、ほかの操作の timeoutMs より長くとる
+			 */
+			uploadTimeoutMs: 60000
 		}
 	},
 
@@ -529,7 +534,8 @@ export const EXT_CONFIG = {
 			/** 画像の縮小の条件 (長辺の上限・バイト数の上限・品質の下限と刻み) */
 			image: {
 				maxDimension: 4000,
-				maxBytes: 2000000,
+				/** 橋渡しが受け付ける上限と同じ値 (超えると upload-blob で落ちる) */
+				maxBytes: BRIDGE_PROTOCOL.upload.maxBytes.default,
 				minQuality: 0.13,
 				scaleStep: 0.8,
 				maxScaleRetries: 4,

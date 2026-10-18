@@ -7,7 +7,8 @@ import test from 'node:test';
 import assert from 'node:assert';
 
 import {EXT_CONFIG} from '../src/common/config.js';
-import {FakeDocument, FakeEvent} from './helpers/fake-dom.js';
+import {FakeDocument, FakeEvent, click} from './helpers/fake-dom.js';
+import {SheetHost} from '../src/content/reply-sheets.js';
 import {
 	ReplyComposer, pickPastedImages, hasImageItems, uploadAll, runSubmit, defaultLanguages
 } from '../src/content/reply-composer.js';
@@ -528,6 +529,55 @@ test('ReplyComposer: 送信中も画像のドラッグの既定の動作を止�
 		text.dataTransfer = {items: itemList([item('string', 'text/plain', null)])};
 		composer.onDragOver(text);
 		assert.strictEqual(text.defaultPrevented, false);
+	} finally {
+		restore();
+	}
+});
+
+/**
+ * 本物の SheetHost を持つパネルの中に入力欄を作る。
+ * @returns {{composer: ReplyComposer, host: SheetHost, panel: Object, restore: () => void}}
+ */
+function makeComposerWithSheets() {
+	const made = makeComposer({});
+	const doc = globalThis.document;
+	const panel = doc.createElement('aside');
+	doc.body.append(panel);
+	const host = new SheetHost(panel, EXT_CONFIG.lightboxReplies.compose);
+	made.composer.deps.sheets = host;
+	panel.append(made.composer.el);
+	return {composer: made.composer, host, panel, restore: made.restore};
+}
+
+test('ReplyComposer: ALT の画面を開いた後に添付を描き直しても、入力欄を外せば画面も閉じる', async () => {
+	const {composer, host, restore} = makeComposerWithSheets();
+	try {
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		const attachment = composer.attachments[0];
+		click(attachment.cell.altButton);
+		assert.strictEqual(host.isOpen(), true);
+		composer.renderAttachments();
+		assert.strictEqual(host.isOpenedFrom(composer.el), true);
+		composer.destroy();
+		assert.strictEqual(host.isOpen(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: ALT の画面を閉じたとき、描き直したマスの ALT ボタンへフォーカスを戻す', async () => {
+	const {composer, host, panel, restore} = makeComposerWithSheets();
+	try {
+		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		const attachment = composer.attachments[0];
+		const before = attachment.cell.altButton;
+		click(before);
+		composer.renderAttachments();
+		const after = attachment.cell.altButton;
+		assert.ok(after !== before, '描き直してもボタンが同じ');
+		click(panel.querySelector(`[data-role="${EXT_CONFIG.lightboxReplies.compose.sheetRoles.done}"]`));
+		assert.strictEqual(host.isOpen(), false);
+		assert.ok(globalThis.document.activeElement === after, '描き直した ALT ボタンへ戻らない');
 	} finally {
 		restore();
 	}

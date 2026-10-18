@@ -53,6 +53,19 @@ export const THIRD_PARTY = Object.freeze([
 		]),
 		licenseFile: 'LICENSES/Apache-2.0.txt',
 		url: 'https://github.com/google/material-design-icons'
+	}),
+	Object.freeze({
+		name: 'Emoji Mart (emoji-mart / @emoji-mart/data)',
+		note: '返信欄の絵文字の選択画面',
+		copyright: 'Copyright (c) Missive.',
+		license: 'MIT License',
+		attribution: Object.freeze([
+			'Licensed under the MIT License.',
+			'The above copyright notice and this permission notice shall be included in all'
+				+ ' copies or substantial portions of the Software.'
+		]),
+		licenseFile: 'LICENSES/MIT-emoji-mart.txt',
+		url: 'https://github.com/missive/emoji-mart'
 	})
 ]);
 

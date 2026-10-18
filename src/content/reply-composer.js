@@ -431,6 +431,22 @@ export class ReplyComposer {
 	}
 
 	/**
+	 * 重ねる画面に添える情報。持ち主はこの入力欄で、開いたボタンが描き直されて外れていたら
+	 * focusTarget が返す要素 (無ければ「画像を追加」) へフォーカスを戻す。
+	 * @param {() => (HTMLElement|null|undefined)} [focusTarget] 描き直した後の戻し先
+	 * @returns {import('./reply-sheets.js').SheetOptions}
+	 */
+	sheetOptions(focusTarget) {
+		return {
+			owner: this.el,
+			restoreFocus: () => {
+				const target = (typeof focusTarget === 'function' && focusTarget()) || this.imageTool;
+				if (target && this.el.contains(target)) target.focus({preventScroll: true});
+			}
+		};
+	}
+
+	/**
 	 * ALT テキストの画面を開く。
 	 * @param {import('./reply-attachments.js').Attachment} attachment
 	 * @param {HTMLButtonElement} button
@@ -442,7 +458,7 @@ export class ReplyComposer {
 			(alt) => {
 				attachment.alt = alt;
 				updateAttachmentCell(attachment, this.attachments.indexOf(attachment), this.compose);
-			});
+			}, this.sheetOptions(() => attachment.cell && attachment.cell.altButton));
 	}
 
 	/**
@@ -455,7 +471,8 @@ export class ReplyComposer {
 		if (!this.deps.sheets || this.busy) return;
 		const prepared = attachment.prepared;
 		openCropSheet(this.deps.sheets, {source: prepared.source, image: prepared.natural, crop: prepared.crop},
-			button, (crop) => this.recrop(attachment, crop));
+			button, (crop) => this.recrop(attachment, crop),
+			this.sheetOptions(() => attachment.cell && attachment.cell.cropButton));
 	}
 
 	/**
@@ -492,7 +509,7 @@ export class ReplyComposer {
 		openLabelSheet(this.deps.sheets, {...this.labels}, this.labelsButton, (selection) => {
 			this.labels = {adult: selection.adult || null, graphic: selection.graphic === true};
 			this.renderLabels();
-		});
+		}, this.sheetOptions(() => this.labelsButton));
 	}
 
 	/**
@@ -506,7 +523,7 @@ export class ReplyComposer {
 			this.languagesTouched = true;
 			this.deps.saveLanguages(this.languages.slice());
 			this.renderLanguages();
-		});
+		}, this.sheetOptions(() => this.languageButton));
 	}
 
 	/**
@@ -515,7 +532,8 @@ export class ReplyComposer {
 	 */
 	openEmoji() {
 		if (!this.deps.sheets || this.busy) return;
-		openEmojiSheet(this.deps.sheets, this.emojiTool, (native) => this.insertText(native));
+		openEmojiSheet(this.deps.sheets, this.emojiTool, (native) => this.insertText(native),
+			this.sheetOptions(() => this.emojiTool));
 	}
 
 	/**

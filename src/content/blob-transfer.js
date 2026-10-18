@@ -9,7 +9,7 @@ import {callBridge} from './bridge-client.js';
 
 /**
  * Blob を預けて upload-blob を呼び、PDS が返した BlobRef を受け取る。
- * @param {Blob} blob アップロードする画像・字幕
+ * @param {Blob} blob アップロードする画像
  * @returns {Promise<{ok: boolean, blob: Object|null, reason: string|null}>}
  *   blob は成功時の BlobRef。reject はしない
  */
@@ -20,7 +20,12 @@ export async function uploadBlob(blob) {
 			{type: BRIDGE_PROTOCOL.blobMessageType, id, blob},
 			window.location.origin
 		);
-		const result = await callBridge(EXT_CONFIG.mediaGrid.bridge.actions.uploadBlob, {blobId: id});
+		const bridge = EXT_CONFIG.mediaGrid.bridge;
+		const result = await callBridge(
+			bridge.actions.uploadBlob,
+			{blobId: id},
+			{timeoutMs: bridge.uploadTimeoutMs}
+		);
 		if (result && result.ok === true && result.blob) {
 			return {ok: true, blob: result.blob, reason: null};
 		}

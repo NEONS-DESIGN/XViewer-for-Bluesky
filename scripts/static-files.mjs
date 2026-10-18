@@ -45,9 +45,11 @@ export function staticFilesFor(outDir) {
 		]),
 		// ライセンス文。配布する zip は出力先をそのまま固めるので、ここに無いと受け取った人に届かない。
 		// Apache-2.0 はライセンス本文の写しを渡すことを求める。(Material Symbols の図形を同梱している)
+		// MIT は著作権表示と許諾の文を写しに含めることを求める。(emoji-mart を emoji/emoji.js に束ねている)
 		['LICENSE', `${outDir}/LICENSE`],
 		['NOTICE', `${outDir}/NOTICE`],
 		['LICENSES/Apache-2.0.txt', `${outDir}/LICENSES/Apache-2.0.txt`],
+		['LICENSES/MIT-emoji-mart.txt', `${outDir}/LICENSES/MIT-emoji-mart.txt`],
 	].map((pair) => Object.freeze(pair)));
 }
 

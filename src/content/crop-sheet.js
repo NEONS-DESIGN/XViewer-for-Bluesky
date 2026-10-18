@@ -325,9 +325,10 @@ class CropEditor {
  * @param {{source: File, image: {width: number, height: number}, crop: CropRect|null}} input 元の画像・その大きさ・今の切り抜き
  * @param {HTMLElement} opener 開いたボタン
  * @param {(crop: CropRect|null) => void} onSave 「完了」で枠を受け取る
+ * @param {import('./reply-sheets.js').SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
-export function openCropSheet(host, input, opener, onSave) {
+export function openCropSheet(host, input, opener, onSave, options) {
 	const config = host.config;
 	let editor = null;
 	host.open({
@@ -360,5 +361,5 @@ export function openCropSheet(host, input, opener, onSave) {
 				console.error('[XViewer] 切り抜きを保存できませんでした', error);
 			}
 		}
-	}, opener);
+	}, opener, options);
 }

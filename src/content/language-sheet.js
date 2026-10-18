@@ -88,9 +88,10 @@ function normalizeSelection(given, codes, max) {
  * @param {{selected: string[]}} input 今選んでいるコード
  * @param {HTMLElement} opener 開いたボタン
  * @param {(codes: string[]) => void} onSave 「完了」で選んだコード (選んだ順) を受け取る
+ * @param {import('./reply-sheets.js').SheetOptions} [options] 持ち主とフォーカスの戻し先
  * @returns {void}
  */
-export function openLanguageSheet(host, input, opener, onSave) {
+export function openLanguageSheet(host, input, opener, onSave, options) {
 	const {classes, text, languageCodes, maxLanguages, emoji} = host.config;
 	const selected = normalizeSelection(input?.selected, languageCodes, maxLanguages);
 	host.open({
@@ -142,5 +143,5 @@ export function openLanguageSheet(host, input, opener, onSave) {
 			sync();
 		},
 		onDone: () => safeCall(onSave, selected.slice())
-	}, opener);
+	}, opener, options);
 }

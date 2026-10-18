@@ -618,18 +618,20 @@ const UPLOAD = BRIDGE_PROTOCOL.upload;
 
 test('checkUploadBlob: 許した MIME で上限以下なら通る', () => {
 	assert.deepStrictEqual(checkUploadBlob({type: 'image/jpeg', size: 2000000}), {ok: true});
-	assert.deepStrictEqual(checkUploadBlob({type: 'text/vtt', size: 100000}), {ok: true});
+	assert.deepStrictEqual(checkUploadBlob({type: 'image/gif', size: 1}), {ok: true});
 });
 
 test('checkUploadBlob: 上限を 1 バイト超えると落ちる', () => {
 	const expected = {ok: false, reason: 'blob-not-allowed'};
 	assert.deepStrictEqual(checkUploadBlob({type: 'image/jpeg', size: 2000001}), expected);
-	assert.deepStrictEqual(checkUploadBlob({type: 'text/vtt', size: 100001}), expected);
+	assert.deepStrictEqual(checkUploadBlob({type: 'image/webp', size: 2000001}), expected);
 });
 
 test('checkUploadBlob: 許していない MIME・0 バイト・数でない size は落ちる', () => {
 	for (const info of [
 		{type: 'video/mp4', size: 10},
+		{type: 'text/vtt', size: 10},
+		{type: 'image/svg+xml', size: 10},
 		{type: 'application/octet-stream', size: 10},
 		{type: 'image/png', size: 0},
 		{type: 'image/png', size: '1'},

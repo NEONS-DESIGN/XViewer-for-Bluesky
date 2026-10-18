@@ -383,3 +383,31 @@ test('SheetHost: isOpenedFrom は開いたボタンが入れ物の中にある�
 	host.open(inputSpec(doc, {done: 0, cancel: 0}), opener);
 	assert.strictEqual(host.isOpenedFrom(form), false);
 });
+
+test('SheetHost: 開いたボタンが描き直しで外れても、持ち主 (owner) で isOpenedFrom が真になる', () => {
+	const {doc, panel} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	const form = doc.createElement('div');
+	const inner = doc.createElement('button');
+	form.append(inner);
+	panel.append(form);
+	host.open(inputSpec(doc, {done: 0, cancel: 0}), inner, {owner: form});
+	inner.remove();
+	assert.strictEqual(host.isOpenedFrom(form), true);
+	assert.strictEqual(host.isOpenedFrom(panel), true);
+	assert.strictEqual(host.isOpenedFrom(doc.createElement('div')), false);
+	host.close(false);
+	assert.strictEqual(host.isOpenedFrom(form), false);
+});
+
+test('SheetHost: options の restoreFocus は spec の restoreFocus より優先する', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	const fromSpec = doc.createElement('button');
+	const fromOptions = doc.createElement('button');
+	panel.append(fromSpec, fromOptions);
+	host.open({...inputSpec(doc, {done: 0, cancel: 0}), onDone: () => opener.remove(),
+		restoreFocus: () => fromSpec.focus()}, opener, {restoreFocus: () => fromOptions.focus()});
+	click(panel.querySelector(`[data-role="${ROLES.done}"]`));
+	assert.strictEqual(doc.activeElement, fromOptions);
+});

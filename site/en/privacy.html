@@ -107,7 +107,7 @@
 			<p>This extension collects no personal information.</p>
 			<p>
 				It has no server of its own and never sends data anywhere other than Bluesky.
-				The only thing it stores is the settings you choose. The details follow.
+				The only things it stores are the settings you choose and the post languages you use for replies. The details follow.
 			</p>
 		</div>
 
@@ -141,16 +141,21 @@
 			They are never stored, and never sent anywhere the author or any third party can reach.
 			The same goes for text you type into the reply box in the panel: it is only posted to Bluesky as a reply when you send it, and the extension never stores it or sends it anywhere else.
 		</p>
+		<p>
+			Images you attach to a reply are handled the same way. Images you pick, paste or drop are resized and turned into JPEG in your browser's memory,
+			and are uploaded to the server that holds your account's data (your PDS) and attached to the reply only when you send it.
+			Images you do not send are discarded when the reply box closes, and are neither stored nor sent.
+		</p>
 
 		<h2>3. Information it stores</h2>
 		<p>
-			The extension stores only the settings you choose in the popup and whether the post details panel is collapsed.
-			They are kept in the browser's sync storage (<code>chrome.storage.sync</code>),
+			The extension stores only the settings you choose in the popup, whether the post details panel is collapsed, and the post languages you pick in the reply box.
+			The settings and the collapsed state are kept in the browser's sync storage (<code>chrome.storage.sync</code>),
 			which lives in your browser and, if you have browser sync turned on, in that browser account
 			(your Google account for Chrome, Microsoft account for Edge, Mozilla account for Firefox).
 			Neither the author nor any third party can read it.
 		</p>
-		<p>The following 9 values are stored. Each is either true/false or one of a fixed set of choices.</p>
+		<p>The following 9 values are kept in sync storage. Each is either true/false or one of a fixed set of choices.</p>
 		<ul>
 			<li>Whether to show the media grid</li>
 			<li>Whether to remove the NSFW blur</li>
@@ -163,7 +168,11 @@
 			<li>Whether the post details panel is collapsed</li>
 		</ul>
 		<p>
-			IDs of posts or accounts you view, your browsing history, records of your likes or reposts, and the replies you write are never stored.
+			Separately, the post languages you pick in the reply box (up to 3 language codes, such as <code>en</code>) are kept as a single value
+			in this browser's local storage (<code>chrome.storage.local</code>), so they become the default for your next reply. This value is not synced and never leaves this browser.
+		</p>
+		<p>
+			IDs of posts or accounts you view, your browsing history, records of your likes or reposts, the replies you write, and the images you attach are never stored.
 		</p>
 		<p>
 			When debug mode is on, the extension writes its internal state (the current tab, whether the grid is running, how many items were fetched, etc.)
@@ -174,7 +183,8 @@
 		<h3>Deleting stored information</h3>
 		<p>
 			Pressing "Reset settings" in the popup restores the stored values to their defaults.
-			Removing the extension from your browser deletes its storage entirely.
+			The post languages are replaced whenever you pick languages again in the reply box.
+			Removing the extension from your browser deletes both storage areas entirely.
 		</p>
 
 		<h2>4. Where it connects</h2>
@@ -190,12 +200,16 @@
 			This is the same loading that happens when you browse Bluesky normally.
 		</p>
 		<p>
-			When it loads the reply list, and when you like, repost, bookmark, send a reply or delete your own reply from the panel,
+			When it loads the reply list, and when you like, repost, bookmark, send a reply (including uploading the images attached to it) or delete your own reply from the panel,
 			the extension borrows the signed-in client that Bluesky keeps in the page
 			and sends the request to the server that holds your account's data (your PDS). Bluesky decides where to send it and handles the tokens;
 			the extension does not read the tokens. It is the same request Bluesky makes when you press its own buttons.
 			The reply list is read from the public API above only when that client cannot be borrowed.
 			Quote only opens Bluesky's own composer; the post is made by Bluesky when you send it.
+		</p>
+		<p>
+			The emoji picker in the reply box is a page bundled with the extension (Emoji Mart) opened inside the panel, and the list of emoji is bundled too.
+			Nothing is loaded from outside, and the emoji you pick only goes into the text box.
 		</p>
 		<p>
 			No analytics, advertising or crash reporting of any kind is built in.
@@ -207,6 +221,7 @@
 		<p>
 			Used to store the settings described above. Settings are changed in the toolbar popup
 			and read by the script running on Bluesky pages, so a way to share values between the two is needed.
+			It is also used to remember the post languages you pick in the reply box.
 		</p>
 		<h3><code>https://public.api.bsky.app/*</code></h3>
 		<p>
@@ -226,7 +241,9 @@
 		</p>
 		<p>
 			What can be done through the borrowed client is limited to adding and removing your own likes, reposts and bookmarks, fetching post details and replies, and creating and deleting replies in your own account.
-			Only text replies that point to the post they answer can be created; images and embeds cannot be attached.
+			Only replies that point to the post they answer can be created. The only things that can be attached are images (up to 10, with alt text) and content warnings for adult content or graphic media (labels the author sets on their own post);
+			other embeds such as link cards, quotes and videos cannot be attached.
+			Only JPEG, PNG, WebP and GIF files of up to 2MB can be uploaded as images.
 			A post can be deleted only after the extension has checked with Bluesky that it is a reply in your own account.
 			Creating or deleting posts that are not replies, following, blocking and sending DMs are not possible through it.
 		</p>

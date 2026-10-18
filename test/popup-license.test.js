@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import {readFileSync, existsSync} from 'node:fs';
 import {PROJECT_LICENSE, THIRD_PARTY} from '../src/popup/license-panel.js';
+import {staticFilesFor} from '../scripts/static-files.mjs';
 
 const LICENSE = readFileSync(new URL('../LICENSE', import.meta.url), 'utf8');
 const NOTICE = readFileSync(new URL('../NOTICE', import.meta.url), 'utf8');
@@ -26,5 +27,24 @@ test('第三者の帰属は NOTICE と同じ文', () => {
 		assert.ok(squash(NOTICE).includes(squash(item.attribution.join(' '))), `${item.name} の帰属文が NOTICE と違う`);
 		assert.ok(NOTICE.includes(item.url), `${item.name} の配布元が NOTICE と違う`);
 		assert.ok(existsSync(new URL(`../${item.licenseFile}`, import.meta.url)), `${item.licenseFile} が無い`);
+	}
+});
+
+test('同梱している本文は配布物に入り、著作権表示を含む', () => {
+	const copied = staticFilesFor('dist').map(([from]) => from);
+	for (const item of THIRD_PARTY) {
+		assert.ok(copied.includes(item.licenseFile), `${item.licenseFile} が配布物に入らない`);
+		const body = readFileSync(new URL(`../${item.licenseFile}`, import.meta.url), 'utf8');
+		assert.ok(body.includes(item.copyright) || item.license.startsWith('Apache'),
+			`${item.licenseFile} に ${item.copyright} が無い`);
+	}
+	assert.ok(copied.includes('NOTICE'), 'NOTICE が配布物に入らない');
+});
+
+test('実行時の依存 (dependencies) はすべて第三者の成果物に載っている', () => {
+	const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+	for (const name of Object.keys(pkg.dependencies || {})) {
+		assert.ok(THIRD_PARTY.some((item) => item.name.includes(name)), `${name} の帰属が無い`);
+		assert.ok(NOTICE.includes(name), `${name} が NOTICE に無い`);
 	}
 });

@@ -157,6 +157,18 @@ test('入力欄の部品のクラスはすべて content.css に書いてあり�
 	assert.ok(text.tooManyImages.includes(String(compose.maxImages)), '上限の枚数と文言が食い違う');
 });
 
+test('添付画像の縮小の上限は橋渡しの upload-blob の上限と同じ', () => {
+	const image = EXT_CONFIG.lightboxReplies.compose.image;
+	assert.strictEqual(image.maxBytes, BRIDGE_PROTOCOL.upload.maxBytes.default);
+	assert.ok(BRIDGE_PROTOCOL.upload.mimeTypes.includes('image/jpeg'), '縮小後の JPEG を橋渡しが通さない');
+});
+
+test('upload-blob の待ち時間はほかの橋渡しの操作より長い', () => {
+	const bridge = EXT_CONFIG.mediaGrid.bridge;
+	assert.ok(Number.isFinite(bridge.uploadTimeoutMs) && bridge.uploadTimeoutMs > bridge.timeoutMs);
+	assert.ok(bridge.uploadTimeoutMs > BRIDGE_PROTOCOL.upload.arriveTimeoutMs);
+});
+
 test('ライトボックスのパネルは既定で有効', () => {
 	const panel = EXT_CONFIG.lightboxPanel;
 	assert.equal(typeof panel, 'object');

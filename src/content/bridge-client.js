@@ -11,10 +11,14 @@ let sequence = 0;
  * 解決時・タイムアウト時のどちらでも購読を外し、タイマーを消す。
  * @param {string} action EXT_CONFIG.mediaGrid.bridge.actions のいずれか
  * @param {Object} payload
+ * @param {{timeoutMs?: number}} [options] timeoutMs はこの 1 回だけの待ち時間の上限。
+ *   正の数でなければ EXT_CONFIG.mediaGrid.bridge.timeoutMs を使う
  * @returns {Promise<{ok: boolean, reason: string|null}>} reject はしない
  */
-export function callBridge(action, payload) {
+export function callBridge(action, payload, options = {}) {
 	const bridge = EXT_CONFIG.mediaGrid.bridge;
+	const requested = options && options.timeoutMs;
+	const timeoutMs = Number.isFinite(requested) && requested > 0 ? requested : bridge.timeoutMs;
 	sequence += 1;
 	const id = sequence;
 
@@ -47,7 +51,7 @@ export function callBridge(action, payload) {
 		timer = setTimeout(() => {
 			cleanup();
 			resolve({ok: false, reason: 'timeout'});
-		}, bridge.timeoutMs);
+		}, timeoutMs);
 
 		try {
 			document.dispatchEvent(new CustomEvent(bridge.requestEvent, {

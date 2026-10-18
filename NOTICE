@@ -24,3 +24,18 @@ limitations under the License.
 該当箇所: src/common/icon-shapes.js の ICON_SHAPES (Rounded / weight 400 / FILL 1 の
 パスデータ。npm の @material-symbols/svg-400 から scripts/build-symbols.mjs で
 生成したもの)
+
+---
+
+Emoji Mart (emoji-mart / @emoji-mart/data)
+
+Copyright (c) Missive.
+
+Licensed under the MIT License.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+配布元: https://github.com/missive/emoji-mart
+該当箇所: 返信欄の絵文字の選択画面 (dist/emoji/emoji.js に npm の emoji-mart と
+@emoji-mart/data を束ねて同梱している)
+本文: LICENSES/MIT-emoji-mart.txt

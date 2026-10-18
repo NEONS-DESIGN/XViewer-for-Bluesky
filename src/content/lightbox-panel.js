@@ -22,6 +22,7 @@ import {createIcon} from '../common/icons.js';
 import {callBridge} from './bridge-client.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
 import {installPanelFocusGuard} from './panel-focus-guard.js';
+import {installPanelDropGuard} from './panel-drop-guard.js';
 import {LightboxReplies} from './lightbox-replies.js';
 import {SheetHost} from './reply-sheets.js';
 import {
@@ -496,6 +497,12 @@ export class LightboxPanel {
 		 * @type {(() => void)|null}
 		 */
 		this.releaseFocusGuard = null;
+		/**
+		 * パネルに付けたファイルのドロップを止めるリスナーを外す関数。
+		 * mountPanel() で付け、unmountPanel() で外す
+		 * @type {(() => void)|null}
+		 */
+		this.releaseDropGuard = null;
 		/** 返信欄を出すか。ポップアップのトグル */
 		this.repliesEnabled = EXT_CONFIG.lightboxReplies.defaultEnabled;
 		/**
@@ -872,6 +879,11 @@ export class LightboxPanel {
 		} catch (error) {
 			console.error('[XViewer] パネルのフォーカスの扱いを付けられませんでした', error);
 		}
+		try {
+			this.releaseDropGuard = installPanelDropGuard(panel, EXT_CONFIG.lightboxReplies.compose.noDropEffect);
+		} catch (error) {
+			console.error('[XViewer] パネルのドロップの扱いを付けられませんでした', error);
+		}
 		this.updateToggle();
 		ExtDebug.log('パネルを生成', {畳んでいる: this.collapsed});
 	}
@@ -901,6 +913,14 @@ export class LightboxPanel {
 					console.error('[XViewer] パネルのフォーカスの扱いを外せませんでした', error);
 				}
 				this.releaseFocusGuard = null;
+			}
+			if (this.releaseDropGuard) {
+				try {
+					this.releaseDropGuard();
+				} catch (error) {
+					console.error('[XViewer] パネルのドロップの扱いを外せませんでした', error);
+				}
+				this.releaseDropGuard = null;
 			}
 			this.panelEl = null;
 			this.toggleEl = null;
