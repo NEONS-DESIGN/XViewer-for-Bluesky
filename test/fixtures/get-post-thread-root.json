@@ -38,7 +38,7 @@
 				"post": {
 					"uri": "at://did:plc:bob/app.bsky.feed.post/r2",
 					"cid": "cid-r2",
-					"author": {"did": "did:plc:bob", "handle": "bob.example.com"},
+					"author": {"did": "did:plc:bob", "handle": "bob.example.com", "labels": [{"val": "nudity"}]},
 					"record": {
 						"$type": "app.bsky.feed.post",
 						"text": "",

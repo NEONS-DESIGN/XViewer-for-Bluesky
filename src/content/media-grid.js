@@ -10,7 +10,9 @@ import {
 	currentTabs, getPageInfo, getSelectedTabIndex, isLightboxVisible, isLightboxStatePushed,
 	subscribeTabStateChange
 } from './page.js';
-import {shouldBlur, MediaStore, MediaFetcher} from './media-source.js';
+import {
+	shouldBlur, matchBlurLabels, formatBlurLabels, MediaStore, MediaFetcher
+} from './media-source.js';
 
 /**
  * グリッドを差し込む場所を探す。
@@ -250,11 +252,7 @@ export class MediaGrid {
 			tile.classList.add(config.blurClass);
 			const label = document.createElement('span');
 			label.className = config.blurLabelClass;
-			const matched = entry.labels.filter((value) => config.blurLabels.includes(value));
-			// マップに無いラベル値 (ラベラーが独自追加したもの) は生の値のまま出す。空表示にはしない
-			label.textContent = matched
-				.map((value) => (config.blurLabelNames && config.blurLabelNames[value]) || value)
-				.join('・');
+			label.textContent = formatBlurLabels(matchBlurLabels(entry.labels, config), config);
 			tile.appendChild(label);
 		}
 

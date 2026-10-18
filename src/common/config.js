@@ -492,6 +492,25 @@ export const EXT_CONFIG = {
 		warnRemaining: 20,
 		/** 投稿を引き直さずに組み立てるときの、返信の record の collection */
 		postCollection: BRIDGE_PROTOCOL.collections.post,
+		/**
+		 * 返信に付いた画像のサムネイル。押すとライトボックスをその返信の画像で開き直す。
+		 * 本体は開いている間の openLightbox を無視するため、閉じてから開く (2026-10-18 実測)
+		 */
+		media: {
+			/** 並べる枚数の上限。超えた分は最後の 1 枚に「+N」を重ねる */
+			maxThumbs: 4,
+			/**
+			 * 1 枚だけのときの縦横比 (幅 / 高さ) の範囲。画像の比をこの範囲に収めて枠を作り、
+			 * 縦長の画像で返信欄が間延びしないようにする
+			 */
+			singleAspect: {min: 3 / 4, max: 16 / 9},
+			/**
+			 * 閉じたことがパネルとライトボックスの操作性の調整に伝わるまで待つ上限 (ms)。
+			 * 開閉の通知は次のフレームで届くため、待たずに開くと古いライトボックスの
+			 * 後始末が飛ばされる。上限を過ぎたら待たずに開く
+			 */
+			closeWaitMs: 1500
+		},
 		api: {
 			origin: EXT_SHARED.publicApiOrigin,
 			threadPath: '/xrpc/app.bsky.feed.getPostThread',
@@ -521,6 +540,13 @@ export const EXT_CONFIG = {
 			replyTo: 'ext-lb-reply-replyto',
 			text: 'ext-lb-reply-text',
 			embed: 'ext-lb-reply-embed',
+			media: 'ext-lb-reply-media',
+			mediaItem: 'ext-lb-reply-media-item',
+			mediaBlurred: 'is-blurred',
+			mediaLabel: 'ext-lb-reply-media-label',
+			mediaMore: 'ext-lb-reply-media-more',
+			/** 区画に付けると、ぼかしを CSS で打ち消す (NSFW のぼかし解除) */
+			unblur: 'ext-lb-replies-unblur',
 			meta: 'ext-lb-reply-meta',
 			metaButton: 'ext-lb-reply-meta-button',
 			toggle: 'ext-lb-reply-toggle',
@@ -564,7 +590,9 @@ export const EXT_CONFIG = {
 			labelAuthor: '作者',
 			labelSelf: 'あなた',
 			replyTo: '返信先',
-			hasEmbed: '添付あり'
+			hasEmbed: '添付あり',
+			openMedia: '画像を開く',
+			showBlurred: 'ぼかしを外す'
 		}
 	},
 

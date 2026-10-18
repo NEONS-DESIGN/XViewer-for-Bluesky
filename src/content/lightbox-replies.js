@@ -8,14 +8,17 @@
  * 書き込み (返信・削除) は呼び出し層 (PostActions) を通し、橋渡しの白名簿が
  * 「返信の作成」と「返信であると確かめた投稿の削除」だけを通す。
  *
- * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / reply-text.js
+ * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / reply-text.js / media-source.js
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
 import {
+	extractMediaFromEmbed, toLightboxImages, matchBlurLabels, formatBlurLabels
+} from './media-source.js';
+import {
 	detectRichText, buildFacets, resolveReplyRef, buildReplyRecord, primaryLanguage,
 	parseThreadReplies, flattenThreadBranch, sortNewestFirst, formatReplyDate, canSubmitReply,
-	insertVisible, fitTextareaHeight
+	insertVisible, fitTextareaHeight, mediaAspectRatio
 } from './reply-text.js';
 
 /**
@@ -27,7 +30,20 @@ import {
  * @property {(target: {route: string, params: Object}) => Promise<void>} leaveTo
  *   ライトボックスを閉じて SPA 遷移する
  * @property {(delta: number) => void} adjustReplyCount 投稿の返信数を増減する
+ * @property {(request: ReplyMediaRequest) => Promise<void>} openMedia
+ *   ライトボックスを返信の画像で開き直す
  * @property {import('./post-actions.js').PostActions} actions 呼び出し層
+ */
+
+/**
+ * 返信の画像を開く依頼。
+ * @typedef {Object} ReplyMediaRequest
+ * @property {Object[]} images ライトボックスに渡す形 (toLightboxImages の結果)
+ * @property {number} index 開く画像の位置
+ * @property {string} postUri 返信の AT URI (パネルはこれで投稿を引く)
+ * @property {string} authorDid
+ * @property {string} handle 開けなかったときに投稿ページへ移るのに使う
+ * @property {string} rkey
  */
 
 /**
@@ -71,6 +87,13 @@ export class LightboxReplies {
 	constructor(config, host) {
 		this.config = config;
 		this.host = host;
+		/**
+		 * 返信の画像を取り出す設定。ライトボックスは動画を表示できないため、
+		 * グリッドの設定に関わらず動画を落とす
+		 */
+		this.mediaConfig = {...EXT_CONFIG.mediaGrid, excludeVideos: true};
+		/** NSFW のぼかしを解除するか (グリッドと同じポップアップのトグル) */
+		this.unblurEnabled = EXT_CONFIG.mediaGrid.unblur.defaultEnabled;
 		/**
 		 * 取得の世代。投稿が変わる・区画を外すたびに進め、古い応答を捨てる
 		 * (MediaFetcher.generation と同じ考え方)
@@ -162,6 +185,18 @@ export class LightboxReplies {
 			});
 		} catch (error) {
 			console.error('[XViewer] 返信欄の描画に失敗しました', error);
+		}
+	}
+
+	/**
+	 * NSFW のぼかし解除を反映する。描いた画像は作り直さず、区画のクラスだけで打ち消す。
+	 * @param {boolean} enabled
+	 * @returns {void}
+	 */
+	setUnblur(enabled) {
+		this.unblurEnabled = enabled === true;
+		if (this.sectionEl) {
+			this.sectionEl.classList.toggle(this.config.classes.unblur, this.unblurEnabled);
 		}
 	}
 
@@ -429,6 +464,7 @@ export class LightboxReplies {
 		const text = this.config.text;
 		const section = document.createElement('section');
 		section.className = c.section;
+		section.classList.toggle(c.unblur, this.unblurEnabled);
 		const sentinel = document.createElement('div');
 		sentinel.className = c.sentinel;
 		const header = document.createElement('div');
@@ -751,6 +787,8 @@ export class LightboxReplies {
 			createdAt: record.createdAt,
 			replyCount: 0,
 			hasEmbed: false,
+			embed: null,
+			labels: [],
 			replyRef: record.reply,
 			parentUri: record.reply.parent.uri,
 			parentHandle: !target.isPost && target.uri !== target.anchorUri ? target.handle : null
@@ -930,7 +968,11 @@ export class LightboxReplies {
 			}
 			body.appendChild(paragraph);
 		}
-		if (item.hasEmbed) {
+		const media = this.buildMedia(item);
+		if (media) {
+			body.appendChild(media);
+		} else if (item.hasEmbed) {
+			// 画像以外の添付 (動画・リンクカード・引用) は文字で知らせるだけにする
 			const embed = document.createElement('p');
 			embed.className = c.embed;
 			embed.textContent = text.hasEmbed;
@@ -957,6 +999,77 @@ export class LightboxReplies {
 			}
 		}
 		return li;
+	}
+
+	/**
+	 * 返信に付いた画像のサムネイルを並べる。押すとライトボックスをその画像で開き直す。
+	 * NSFW ラベル付きはグリッドと同じく、1 回目の押下でぼかしを外すだけにする。
+	 * @param {Object} item ReplyItem
+	 * @returns {HTMLElement|null} 画像が無ければ null
+	 */
+	buildMedia(item) {
+		const media = extractMediaFromEmbed(item.embed, this.mediaConfig);
+		if (media.length === 0) {
+			return null;
+		}
+		const c = this.config.classes;
+		const text = this.config.text;
+		const images = toLightboxImages(media);
+		const blurText = formatBlurLabels(matchBlurLabels(item.labels, this.mediaConfig), this.mediaConfig);
+		const shown = media.slice(0, this.config.media.maxThumbs);
+		const rest = media.length - shown.length;
+		const wrap = document.createElement('div');
+		wrap.className = c.media;
+		wrap.dataset.count = String(shown.length);
+		if (shown.length === 1) {
+			wrap.style.aspectRatio = String(mediaAspectRatio(shown[0].dimensions, this.config.media.singleAspect));
+		}
+		const openLabel = (alt) => (alt ? `${text.openMedia}: ${alt}` : text.openMedia);
+		shown.forEach((entry, index) => {
+			const button = document.createElement('button');
+			button.type = 'button';
+			button.className = c.mediaItem;
+			button.setAttribute('aria-label', openLabel(entry.alt));
+			const img = document.createElement('img');
+			img.src = entry.thumbUrl;
+			img.alt = '';
+			img.loading = 'lazy';
+			img.decoding = 'async';
+			button.appendChild(img);
+			if (blurText) {
+				button.classList.add(c.mediaBlurred);
+				const label = document.createElement('span');
+				label.className = c.mediaLabel;
+				label.textContent = blurText;
+				button.appendChild(label);
+				if (!this.unblurEnabled) {
+					button.setAttribute('aria-label', `${text.showBlurred}: ${blurText}`);
+				}
+			}
+			if (rest > 0 && index === shown.length - 1) {
+				const more = document.createElement('span');
+				more.className = c.mediaMore;
+				more.textContent = `+${rest}`;
+				button.appendChild(more);
+			}
+			button.addEventListener('click', () => {
+				if (!this.unblurEnabled && button.classList.contains(c.mediaBlurred)) {
+					button.classList.remove(c.mediaBlurred);
+					button.setAttribute('aria-label', openLabel(entry.alt));
+					return;
+				}
+				this.host.openMedia({
+					images,
+					index,
+					postUri: item.uri,
+					authorDid: item.authorDid,
+					handle: item.handle,
+					rkey: item.rkey
+				});
+			});
+			wrap.appendChild(button);
+		});
+		return wrap;
 	}
 
 	/**

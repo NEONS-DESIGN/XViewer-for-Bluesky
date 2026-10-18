@@ -126,6 +126,48 @@ export function extractLabels(post) {
 }
 
 /**
+ * extractMediaFromEmbed の結果を、本体のライトボックスが受け付ける最小構成に直す。
+ * @param {Object[]} media {type, thumbUrl, fullsizeUrl, alt, dimensions} の配列
+ * @returns {Object[]} {type, uri, thumbUri, alt, dimensions} の配列
+ */
+export function toLightboxImages(media) {
+	if (!Array.isArray(media)) {
+		return [];
+	}
+	return media.map((m) => ({
+		type: m.type,
+		uri: m.fullsizeUrl || m.thumbUrl,
+		thumbUri: m.thumbUrl,
+		alt: m.alt,
+		dimensions: m.dimensions
+	}));
+}
+
+/**
+ * ラベル値のうち、ぼかしの対象になるものを返す。
+ * @param {string[]} labels extractLabels の結果
+ * @param {Object} config EXT_CONFIG.mediaGrid
+ * @returns {string[]} 空ならぼかさない
+ */
+export function matchBlurLabels(labels, config) {
+	if (!Array.isArray(labels) || !config || !Array.isArray(config.blurLabels)) {
+		return [];
+	}
+	return labels.filter((value) => config.blurLabels.includes(value));
+}
+
+/**
+ * ぼかしに重ねるラベルの表示名。マップに無い値 (ラベラーが独自に足したもの) は生の値のまま出す。
+ * @param {string[]} matched matchBlurLabels の結果
+ * @param {Object} config EXT_CONFIG.mediaGrid
+ * @returns {string}
+ */
+export function formatBlurLabels(matched, config) {
+	const names = (config && config.blurLabelNames) || {};
+	return matched.map((value) => names[value] || value).join('・');
+}
+
+/**
  * フィードの 1 要素を 0 件または 1 件の MediaEntry に変換する。
  * 1 投稿 = 1 エントリとし、先頭のメディアだけをタイル表示に使う。
  * @param {Object} feedItem
@@ -151,14 +193,7 @@ export function toMediaEntries(feedItem, config) {
 			return [];
 		}
 		const labels = extractLabels(post);
-		// ライトボックスに渡す配列。本体が受け付ける最小構成 (設計文書 2.4)
-		const siblings = media.map((m) => ({
-			type: m.type,
-			uri: m.fullsizeUrl || m.thumbUrl,
-			thumbUri: m.thumbUrl,
-			alt: m.alt,
-			dimensions: m.dimensions
-		}));
+		const siblings = toLightboxImages(media);
 
 		const head = media[0];
 		return [{

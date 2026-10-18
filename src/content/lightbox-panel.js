@@ -507,8 +507,15 @@ export class LightboxPanel {
 			buildSegment: (segment) => this.buildSegment(segment),
 			leaveTo: (target) => this.leaveTo(target),
 			adjustReplyCount: (delta) => this.adjustReplyCount(delta),
+			openMedia: (request) => this.openReplyMedia(request),
 			actions: this.actions
 		});
+		/**
+		 * ライトボックスが閉じたと伝わるのを待っている関数。
+		 * 開閉の通知が「閉じた」を伝えたときにまとめて呼ぶ
+		 * @type {Set<() => void>}
+		 */
+		this.closeWaiters = new Set();
 	}
 
 	/**
@@ -522,7 +529,8 @@ export class LightboxPanel {
 				config.storageKey,
 				config.collapsedStorageKey,
 				EXT_CONFIG.postActions.storageKey,
-				EXT_CONFIG.lightboxReplies.storageKey
+				EXT_CONFIG.lightboxReplies.storageKey,
+				EXT_CONFIG.mediaGrid.unblur.storageKey
 			]);
 			this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
 			this.collapsed = stored[config.collapsedStorageKey] ?? config.defaultCollapsed;
@@ -530,6 +538,8 @@ export class LightboxPanel {
 				?? EXT_CONFIG.postActions.defaultEnabled;
 			this.repliesEnabled = stored[EXT_CONFIG.lightboxReplies.storageKey]
 				?? EXT_CONFIG.lightboxReplies.defaultEnabled;
+			this.replies.setUnblur(stored[EXT_CONFIG.mediaGrid.unblur.storageKey]
+				?? EXT_CONFIG.mediaGrid.unblur.defaultEnabled);
 		} catch (error) {
 			console.error('[XViewer] パネルの設定の読み込みに失敗しました', error);
 		}
@@ -537,6 +547,11 @@ export class LightboxPanel {
 			chrome.storage.onChanged.addListener((changes, area) => {
 				if (area !== 'sync') {
 					return;
+				}
+				const unblurKey = EXT_CONFIG.mediaGrid.unblur.storageKey;
+				if (changes[unblurKey]) {
+					this.replies.setUnblur(changes[unblurKey].newValue
+						?? EXT_CONFIG.mediaGrid.unblur.defaultEnabled);
 				}
 				const repliesKey = EXT_CONFIG.lightboxReplies.storageKey;
 				if (changes[EXT_CONFIG.postActions.storageKey] || changes[repliesKey]) {
@@ -569,6 +584,7 @@ export class LightboxPanel {
 					this.open();
 				} else {
 					this.teardown();
+					this.releaseCloseWaiters();
 				}
 			});
 			// タブを閉じる・遷移で離れるときにも本体の変更を必ず戻す
@@ -1633,6 +1649,71 @@ export class LightboxPanel {
 			// callBridge は仕様上 reject しないが、finally にしておくことで
 			// 「遷移に失敗したのに right が戻らない」経路を構造的に無くす
 			this.teardown();
+		}
+	}
+
+	/**
+	 * ライトボックスを返信の画像で開き直す。パネルは開き直したライトボックスの
+	 * postUri (返信) で引き直す。
+	 *
+	 * 本体は開いている間の openLightbox を無視するため、閉じてから開く
+	 * (2026-10-18 実測)。開閉の通知は次のフレームで届くので、閉じたと伝わるのを
+	 * 待ってから開く。待たずに開くと通知が「開いたまま」に見え、パネルと
+	 * 操作性の調整が閉じたライトボックスの後始末を飛ばす。
+	 * 開けなかったときは返信の投稿ページへ移る
+	 * @param {import('./lightbox-replies.js').ReplyMediaRequest} request
+	 * @returns {Promise<void>}
+	 */
+	async openReplyMedia(request) {
+		const bridge = EXT_CONFIG.mediaGrid.bridge;
+		try {
+			const closed = this.waitForClose(EXT_CONFIG.lightboxReplies.media.closeWaitMs);
+			await callBridge(bridge.actions.closeLightbox, {});
+			await closed;
+			const result = await callBridge(bridge.actions.openLightbox, {
+				images: request.images,
+				index: request.index,
+				metricsContext: {
+					postUri: request.postUri,
+					postAuthorDid: request.authorDid || undefined,
+					layout: bridge.lightboxLayout
+				}
+			});
+			if (result && result.ok) {
+				return;
+			}
+			ExtDebug.log('返信の画像を開けなかった', {理由: result && result.reason});
+			await callBridge(bridge.actions.navigate, {
+				route: bridge.routes.post,
+				params: {name: request.handle, rkey: request.rkey}
+			});
+		} catch (error) {
+			console.error('[XViewer] 返信の画像を開けませんでした', error);
+		}
+	}
+
+	/**
+	 * ライトボックスが閉じたと伝わるまで待つ。上限を過ぎたら待たずに解決する。
+	 * @param {number} timeoutMs
+	 * @returns {Promise<void>}
+	 */
+	waitForClose(timeoutMs) {
+		return new Promise((resolve) => {
+			let timer = null;
+			const done = () => {
+				clearTimeout(timer);
+				this.closeWaiters.delete(done);
+				resolve();
+			};
+			this.closeWaiters.add(done);
+			timer = setTimeout(done, timeoutMs);
+		});
+	}
+
+	/** 閉じたと伝わるのを待っている呼び出しをすべて解決する。 */
+	releaseCloseWaiters() {
+		for (const done of [...this.closeWaiters]) {
+			done();
 		}
 	}
 }

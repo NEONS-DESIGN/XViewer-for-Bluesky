@@ -4,6 +4,7 @@
  * getPostThread の応答の整形を持つ。**DOM も通信も config も知らない。**
  * 値 (上限など) は引数で受け取る。
  */
+import {extractLabels} from './media-source.js';
 
 /**
  * 投稿への参照 (com.atproto.repo.strongRef)。
@@ -34,6 +35,8 @@
  * @property {string} createdAt record.createdAt。無ければ indexedAt
  * @property {number} replyCount
  * @property {boolean} hasEmbed 画像・リンクカードなどの添付を持つか
+ * @property {Object|null} embed post.embed (画像の取り出しは描く側が行う)
+ * @property {string[]} labels 投稿と作者に付いたラベル値
  * @property {ReplyRef|null} replyRef record.reply。この返信へ返信するとき root を引き継ぐのに使う
  * @property {string|null} parentUri 直接の返信先の AT URI
  * @property {string|null} parentHandle 開いた返信の中で、親が起点でないときの親の handle
@@ -287,6 +290,8 @@ function toReplyItem(node) {
 				: (typeof post.indexedAt === 'string' ? post.indexedAt : ''),
 			replyCount: typeof post.replyCount === 'number' ? post.replyCount : 0,
 			hasEmbed: !!post.embed,
+			embed: post.embed && typeof post.embed === 'object' ? post.embed : null,
+			labels: extractLabels(post),
 			replyRef: reply,
 			parentUri: reply && reply.parent && typeof reply.parent.uri === 'string'
 				? reply.parent.uri
@@ -438,4 +443,20 @@ export function canSubmitReply(text, limits) {
 	const remaining = limits.maxGraphemes - countGraphemes(value);
 	const ok = value.trim() !== '' && remaining >= 0 && utf8Length(value) <= limits.maxBytes;
 	return {ok, remaining};
+}
+
+/**
+ * 1 枚だけの画像の枠の縦横比 (幅 / 高さ) を、範囲に収めて返す。
+ * 寸法が読めなければ正方形にする。
+ * @param {{width: number, height: number}|null} dimensions aspectRatio
+ * @param {{min: number, max: number}} range
+ * @returns {number}
+ */
+export function mediaAspectRatio(dimensions, range) {
+	const width = dimensions && dimensions.width;
+	const height = dimensions && dimensions.height;
+	if (!(width > 0) || !(height > 0)) {
+		return 1;
+	}
+	return Math.min(range.max, Math.max(range.min, width / height));
 }

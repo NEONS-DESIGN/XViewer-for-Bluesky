@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
 	countGraphemes, detectRichText, buildFacets, resolveReplyRef, buildReplyRecord,
 	primaryLanguage, parseThreadReplies, flattenThreadBranch, sortNewestFirst,
-	formatReplyDate, canSubmitReply, insertVisible, fitTextareaHeight
+	formatReplyDate, canSubmitReply, insertVisible, fitTextareaHeight, mediaAspectRatio
 } from '../src/content/reply-text.js';
 
 /** fixture を読む。 */
@@ -131,6 +131,12 @@ test('parseThreadReplies: 1 段目の返信を整形し、見つからない・�
 	assert.strictEqual(bob.displayName, 'bob.example.com');
 	assert.strictEqual(bob.avatarUrl, null);
 	assert.strictEqual(bob.hasEmbed, true);
+	// 画像の取り出しは描く側が行うため、embed はそのまま渡す
+	assert.strictEqual(bob.embed.$type, 'app.bsky.embed.images#view');
+	assert.strictEqual(alice.embed, null);
+	// 作者のラベルも拾う (ぼかしの判定に使う)
+	assert.deepStrictEqual(bob.labels, ['nudity']);
+	assert.deepStrictEqual(alice.labels, []);
 	assert.deepStrictEqual(bob.facets, []);
 	// record.createdAt が無ければ indexedAt で補う
 	assert.strictEqual(bob.createdAt, '2026-10-03T00:00:00.000Z');
@@ -199,4 +205,14 @@ test('fitTextareaHeight: 枠線ぶんを足した高さにし、上限に届く�
 	assert.deepStrictEqual(fitTextareaHeight(400, 2, 222), {height: 222, scroll: true});
 	// 上限が読めない (none など) ときは伸ばし続け、スクロールバーは出さない
 	assert.deepStrictEqual(fitTextareaHeight(400, 2, NaN), {height: 402, scroll: false});
+});
+
+test('mediaAspectRatio: 画像の比を範囲に収め、寸法が読めなければ正方形', () => {
+	const range = {min: 3 / 4, max: 16 / 9};
+	assert.strictEqual(mediaAspectRatio({width: 400, height: 300}, range), 4 / 3);
+	// 縦長・横長に寄りすぎた画像は端で止める
+	assert.strictEqual(mediaAspectRatio({width: 100, height: 1000}, range), 3 / 4);
+	assert.strictEqual(mediaAspectRatio({width: 3000, height: 100}, range), 16 / 9);
+	assert.strictEqual(mediaAspectRatio(null, range), 1);
+	assert.strictEqual(mediaAspectRatio({width: 0, height: 100}, range), 1);
 });

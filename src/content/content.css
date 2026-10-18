@@ -650,6 +650,102 @@
 	font-size: 12px;
 }
 
+/*
+ * 返信に付いた画像。1 枚なら画像の比 (JS が範囲に収めて style に書く) の枠、
+ * 2 枚以上なら正方形を横に並べる
+ */
+.ext-lb-reply-media {
+	display: grid;
+	grid-template-columns: repeat(var(--ext-lb-reply-media-columns, 1), minmax(0, 1fr));
+	gap: 4px;
+	margin-top: 6px;
+	max-width: 100%;
+	border-radius: 8px;
+	overflow: hidden;
+}
+
+.ext-lb-reply-media[data-count="2"] {
+	--ext-lb-reply-media-columns: 2;
+}
+
+.ext-lb-reply-media[data-count="3"] {
+	--ext-lb-reply-media-columns: 3;
+}
+
+.ext-lb-reply-media[data-count="4"] {
+	--ext-lb-reply-media-columns: 4;
+}
+
+.ext-lb-reply-media-item {
+	position: relative;
+	display: block;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 1px solid var(--ext-lb-border);
+	background: var(--ext-lb-border);
+	cursor: pointer;
+	overflow: hidden;
+	aspect-ratio: 1;
+}
+
+.ext-lb-reply-media[data-count="1"] .ext-lb-reply-media-item {
+	aspect-ratio: auto;
+	height: 100%;
+}
+
+.ext-lb-reply-media-item:focus-visible {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: -2px;
+}
+
+.ext-lb-reply-media-item img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	transition: opacity 0.15s ease;
+}
+
+.ext-lb-reply-media-item:hover img {
+	opacity: 0.85;
+}
+
+.ext-lb-reply-media-item.is-blurred img {
+	filter: blur(16px);
+}
+
+.ext-lb-reply-media-label,
+.ext-lb-reply-media-more {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 4px;
+	color: #ffffff;
+	font-size: 11px;
+	font-weight: 700;
+	text-align: center;
+	text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+	pointer-events: none;
+}
+
+.ext-lb-reply-media-more {
+	background: rgba(0, 0, 0, 0.45);
+	font-size: 16px;
+}
+
+/* ぼかしを外したら (1 回押した・解除のトグル) ラベルも消す */
+.ext-lb-reply-media-item:not(.is-blurred) .ext-lb-reply-media-label,
+.ext-lb-replies-unblur .ext-lb-reply-media-label {
+	display: none;
+}
+
+.ext-lb-replies-unblur .ext-lb-reply-media-item.is-blurred img {
+	filter: none;
+}
+
 .ext-lb-reply-text {
 	margin: 2px 0 0;
 	font-size: 13px;

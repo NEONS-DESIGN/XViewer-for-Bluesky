@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
 import {EXT_CONFIG} from '../src/common/config.js';
-import {parseAuthorFeed, extractMediaFromEmbed, extractLabels, toMediaEntries} from '../src/content/media-source.js';
+import {
+	parseAuthorFeed, extractMediaFromEmbed, extractLabels, toMediaEntries,
+	toLightboxImages, matchBlurLabels, formatBlurLabels
+} from '../src/content/media-source.js';
 
 const config = EXT_CONFIG.mediaGrid;
 /** 動画除外を切ったときの挙動 (旧仕様) を確かめるための設定 */
@@ -241,4 +244,27 @@ test('extractLabels: val が文字列でない要素と null は落とし、labe
 	);
 	assert.deepStrictEqual(extractLabels({}), []);
 	assert.deepStrictEqual(extractLabels({labels: 'porn', author: {labels: null}}), []);
+});
+
+test('toLightboxImages: 原寸が無ければサムネイルで補い、配列でなければ空', () => {
+	const images = toLightboxImages([
+		{type: 'image', thumbUrl: 't1', fullsizeUrl: 'f1', alt: 'a', dimensions: {width: 2, height: 1}},
+		{type: 'image', thumbUrl: 't2', fullsizeUrl: null, alt: '', dimensions: null}
+	]);
+	assert.deepStrictEqual(images, [
+		{type: 'image', uri: 'f1', thumbUri: 't1', alt: 'a', dimensions: {width: 2, height: 1}},
+		{type: 'image', uri: 't2', thumbUri: 't2', alt: '', dimensions: null}
+	]);
+	assert.deepStrictEqual(toLightboxImages(null), []);
+});
+
+test('matchBlurLabels / formatBlurLabels: ぼかし対象だけを拾い、表示名に直す', () => {
+	const matched = matchBlurLabels(['spam', 'porn', 'custom-nsfw'], {
+		...config, blurLabels: [...config.blurLabels, 'custom-nsfw']
+	});
+	assert.deepStrictEqual(matched, ['porn', 'custom-nsfw']);
+	// マップに無い値は生の値のまま出す
+	assert.strictEqual(formatBlurLabels(matched, config), 'ポルノ・custom-nsfw');
+	assert.deepStrictEqual(matchBlurLabels(null, config), []);
+	assert.deepStrictEqual(matchBlurLabels(['spam'], config), []);
 });
