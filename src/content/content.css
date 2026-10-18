@@ -1296,11 +1296,22 @@
  *
  * **本体 DOM には触らない。** 目印は本体が付けている data-testid を使う
  * (aria-label はロケール依存のため使わない)。
- * ライトボックスの外で投稿作成モーダルを開いたときは兄弟にライトボックスが
- * 無く、この指定は何にも影響しない
+ *
+ * 上げるのは、後ろの兄弟にライトボックス (固定親の直下に aria-modal の
+ * ダイアログ) があるときだけ。本体の GIF の画面・ALT の画面などは投稿作成モーダルの
+ * 後ろの兄弟 (z-index: 0 の包み > 固定親 > ... > aria-modal の無いダイアログ) に
+ * 出るため、常に上げると背後に回って押せなくなる (2026-10-18 実測)。
+ * ライトボックスがあるときは、それらの包みを投稿作成モーダルよりさらに上げる。
+ * :has() は入れ子にできないため、ライトボックスは「直下に aria-modal の
+ * ダイアログを持つ兄弟」で見分ける (本体の小さな画面の包みの直下は固定親で、
+ * ダイアログではない)
  */
-[role="dialog"][aria-modal="true"]:has([data-testid="composePostView"]) {
+[role="dialog"][aria-modal="true"]:has([data-testid="composePostView"]):has(~ * > [role="dialog"][aria-modal="true"]) {
 	z-index: 20 !important;
+}
+
+[role="dialog"][aria-modal="true"]:has([data-testid="composePostView"]):has(~ * > [role="dialog"][aria-modal="true"]) ~ :not(:has(> [role="dialog"][aria-modal="true"])) {
+	z-index: 21 !important;
 }
 
 /*
