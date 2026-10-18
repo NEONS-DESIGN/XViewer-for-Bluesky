@@ -24,7 +24,7 @@ import { staticFilesFor } from './static-files.mjs';
 import { resolveTargets } from './browsers.mjs';
 import { minifyCssText } from './css-text-plugin.mjs';
 // 入口の表は副作用なしのモジュールに置く。(テストが manifest の参照先との突き合わせに読む)
-import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS } from './entry-points.mjs';
+import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS, EMOJI_ENTRY_POINTS } from './entry-points.mjs';
 
 /** 監視モードで起動するか。 */
 const WATCH = process.argv.includes('--watch');
@@ -88,6 +88,18 @@ function popupOptionsFor(target) {
 		...buildOptionsFor(target),
 		entryPoints: POPUP_ENTRY_POINTS,
 		format: 'esm',
+	};
+}
+
+/**
+ * 絵文字ピッカーのページの esbuild の設定を作る。popup と同じく ESM で束ねる。
+ * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
+ * @returns {import('esbuild').BuildOptions} esbuild の設定
+ */
+function emojiOptionsFor(target) {
+	return {
+		...popupOptionsFor(target),
+		entryPoints: EMOJI_ENTRY_POINTS,
 	};
 }
 
@@ -207,9 +219,11 @@ async function build(targets) {
 			const ctx = await context(buildOptionsFor(target));
 			const injectCtx = await context(injectOptionsFor(target));
 			const popupCtx = await context(popupOptionsFor(target));
+			const emojiCtx = await context(emojiOptionsFor(target));
 			await ctx.watch();
 			await injectCtx.watch();
 			await popupCtx.watch();
+			await emojiCtx.watch();
 			await emitAssets(target, packageVersion);
 			completed.add(target.name);
 		}
@@ -224,6 +238,7 @@ async function build(targets) {
 		await bundle(buildOptionsFor(target));
 		await bundle(injectOptionsFor(target));
 		await bundle(popupOptionsFor(target));
+		await bundle(emojiOptionsFor(target));
 		await emitAssets(target, packageVersion);
 		completed.add(target.name);
 	}

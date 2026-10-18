@@ -511,6 +511,236 @@ export const EXT_CONFIG = {
 			 */
 			closeWaitMs: 1500
 		},
+		/**
+		 * 返信欄の作成部分 (画像の添付・自己ラベル・言語)。
+		 * 上限のうち橋渡しと共有するものは BRIDGE_PROTOCOL から引く
+		 */
+		compose: {
+			/** 添付できる枚数の上限 (gallery の上限と同じ) */
+			maxImages: BRIDGE_PROTOCOL.postRecord.maxGalleryItems,
+			/** この枚数までは app.bsky.embed.images、超えたら app.bsky.embed.gallery にする */
+			legacyImagesMax: BRIDGE_PROTOCOL.postRecord.maxImages,
+			/** ALT 文の上限 (書記素) */
+			maxAltGraphemes: BRIDGE_PROTOCOL.postRecord.maxAltGraphemes,
+			/** 選べる言語の上限 */
+			maxLanguages: BRIDGE_PROTOCOL.postRecord.maxLangs,
+			/** 受け付ける画像の MIME タイプ */
+			acceptImageTypes: ['image/gif', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif'],
+			/** 画像の縮小の条件 (長辺の上限・バイト数の上限・品質の下限と刻み) */
+			image: {
+				maxDimension: 4000,
+				maxBytes: 2000000,
+				minQuality: 0.13,
+				scaleStep: 0.8,
+				maxScaleRetries: 4,
+				qualitySteps: 7
+			},
+			/** 切り抜きの枠 (縦横比の選択肢・最小の辺・矢印キーの刻み。ratio が null は自由) */
+			crop: {
+				aspects: [
+					{id: 'free', ratio: null},
+					{id: '1:1', ratio: 1},
+					{id: '4:3', ratio: 4 / 3},
+					{id: '3:4', ratio: 3 / 4},
+					{id: '16:9', ratio: 16 / 9}
+				],
+				minSize: 32,
+				keyStep: 8,
+				keyStepLarge: 32
+			},
+			/** 自己ラベル。adult は排他の選択肢、graphic は独立 */
+			labels: {
+				adult: BRIDGE_PROTOCOL.postRecord.adultLabels.slice(),
+				graphic: BRIDGE_PROTOCOL.postRecord.otherLabels[0]
+			},
+			/** 選べる言語 (ISO 639-1 の 2 文字コード。Bluesky 本体の言語一覧と同じ並び) */
+			languageCodes: [
+				'aa', 'ab', 'af', 'ak', 'sq', 'am', 'ar', 'an', 'hy', 'as', 'av', 'ae', 'ay', 'az', 'ba', 'bm', 'eu',
+				'be', 'bn', 'bh', 'bi', 'bo', 'bs', 'br', 'bg', 'my', 'ca', 'cs', 'ch', 'ce', 'zh', 'cu', 'cv', 'kw',
+				'co', 'cr', 'cy', 'da', 'de', 'dv', 'nl', 'dz', 'el', 'en', 'eo', 'et', 'ee', 'fo', 'fa', 'fj', 'fi',
+				'fr', 'fy', 'ff', 'ka', 'gd', 'ga', 'gl', 'gv', 'gn', 'gu', 'ht', 'ha', 'he', 'hz', 'hi', 'ho', 'hr',
+				'hu', 'ig', 'is', 'io', 'ii', 'iu', 'ie', 'ia', 'id', 'ik', 'it', 'jv', 'ja', 'kl', 'kn', 'ks', 'kr',
+				'kk', 'km', 'ki', 'rw', 'ky', 'kv', 'kg', 'ko', 'kj', 'ku', 'lo', 'la', 'lv', 'li', 'ln', 'lt', 'lb',
+				'lu', 'lg', 'mk', 'mh', 'ml', 'mi', 'mr', 'ms', 'mg', 'mt', 'mn', 'na', 'nv', 'nr', 'nd', 'ng', 'ne',
+				'nn', 'nb', 'no', 'ny', 'oc', 'oj', 'or', 'om', 'os', 'pa', 'pi', 'pl', 'pt', 'ps', 'qu', 'rm', 'ro',
+				'rn', 'ru', 'sg', 'sa', 'si', 'sk', 'sl', 'se', 'sm', 'sn', 'sd', 'so', 'st', 'es', 'sc', 'sr', 'ss',
+				'su', 'sw', 'sv', 'ty', 'ta', 'tt', 'te', 'tg', 'tl', 'th', 'ti', 'to', 'tn', 'ts', 'tk', 'tr', 'tw',
+				'ug', 'uk', 'ur', 'uz', 've', 'vi', 'vo', 'wa', 'wo', 'xh', 'yi', 'yo', 'za', 'zu'
+			],
+			/** 選んだ言語を覚える chrome.storage.local のキー */
+			languageStorageKey: 'replyLanguages',
+			/** 投稿した自分の返信の画像を、取り直さずに描くための CDN の形 */
+			cdn: {
+				thumb: 'https://cdn.bsky.app/img/feed_thumbnail/plain',
+				fullsize: 'https://cdn.bsky.app/img/feed_fullsize/plain'
+			},
+			/** 絵文字ピッカー (拡張のページを iframe で出す。通知の型は両側で同じ値を使う) */
+			emoji: {
+				page: 'emoji/emoji.html',
+				selectType: 'ext:emoji-select',
+				closeType: 'ext:emoji-close',
+				readyType: 'ext:emoji-ready',
+				/** 通知を送る先の origin (iframe を載せる bsky.app) */
+				parentOrigin: 'https://bsky.app',
+				/** 問い合わせ (query) のキーと値 */
+				query: {theme: 'theme', locale: 'locale', themeDark: 'dark', themeLight: 'light', localeJa: 'ja'},
+				/** 1 行の絵文字数 (パネルの内幅 328px に合わせる) */
+				perLine: 8,
+				/** 閉じる操作に使うキー */
+				closeKey: 'Escape',
+				/** ピッカーを差し込む要素の id */
+				rootId: 'picker',
+				/** 本体がライトテーマのとき html に付けるクラス (ディムとダークは暗い配色のピッカーにする) */
+				lightThemeClass: 'theme--light'
+			},
+			/**
+			 * パネルに重ねる画面 (ALT テキスト・切り抜き・ラベル・言語・絵文字) の要素の目印。
+			 * data-role の値で、配線とテストはクラス名ではなくこれを見る
+			 */
+			sheetRoles: {
+				layer: 'sheet',
+				title: 'sheet-title',
+				done: 'sheet-done',
+				cancel: 'sheet-cancel',
+				/** Tab の順で画面の両端に置き、フォーカスを反対の端へ回す番兵 */
+				sentinel: 'sheet-sentinel'
+			},
+			/** 重ねる画面の中でフォーカスを受ける要素 (開いたときの移り先と Tab の循環に使う) */
+			sheetFocusable: 'button, input, textarea, select, iframe, [tabindex="0"]',
+			/** 切り抜きの枠の四隅 (crop-box.js の resizeBox の corner と同じ名前) */
+			cropCorners: ['nw', 'ne', 'sw', 'se'],
+			/** キーで大きさを変えるときに動かす角 */
+			cropKeyCorner: 'se',
+			/** 切り抜きの枠の role。矢印キーを読み上げソフトに取られず枠へ届かせる */
+			cropBoxRole: 'application',
+			/** 重ねる画面のクラス名 (content.css と対応する) */
+			classes: {
+				panelOpen: 'ext-lb-sheet-open',
+				sheet: 'ext-lb-sheet',
+				sentinel: 'ext-lb-sheet-sentinel',
+				wide: 'is-wide',
+				header: 'ext-lb-sheet-header',
+				title: 'ext-lb-sheet-title',
+				body: 'ext-lb-sheet-body',
+				foot: 'ext-lb-sheet-foot',
+				button: 'ext-lb-sheet-button',
+				primary: 'is-primary',
+				note: 'ext-lb-sheet-note',
+				error: 'ext-lb-sheet-error',
+				warn: 'is-warn',
+				altPreview: 'ext-lb-sheet-alt-preview',
+				altFrame: 'ext-lb-sheet-alt-frame',
+				altInput: 'ext-lb-sheet-alt-input',
+				altRemaining: 'ext-lb-sheet-alt-remaining',
+				cropAspects: 'ext-lb-crop-aspects',
+				cropAspect: 'ext-lb-crop-aspect',
+				cropStage: 'ext-lb-crop-stage',
+				cropFrame: 'ext-lb-crop-frame',
+				cropImage: 'ext-lb-crop-image',
+				cropBox: 'ext-lb-crop-box',
+				cropShadeClip: 'ext-lb-crop-shade-clip',
+				cropShade: 'ext-lb-crop-shade',
+				cropHandle: 'ext-lb-crop-handle',
+				cropSize: 'ext-lb-crop-size',
+				cropTools: 'ext-lb-crop-tools',
+				labelGroup: 'ext-lb-label-group',
+				labelGroupTitle: 'ext-lb-label-group-title',
+				option: 'ext-lb-sheet-option',
+				langSearch: 'ext-lb-lang-search',
+				langList: 'ext-lb-lang-list',
+				langCount: 'ext-lb-lang-count',
+				emojiFrame: 'ext-lb-emoji-frame',
+				/** 以下は入力欄 (reply-composer.js) の部品 */
+				composer: 'ext-lb-composer',
+				dragOver: 'is-dragover',
+				fileInput: 'ext-lb-composer-file',
+				attachments: 'ext-lb-composer-attachments',
+				attachment: 'ext-lb-composer-attachment',
+				attachmentImage: 'ext-lb-composer-attachment-image',
+				attachmentTools: 'ext-lb-composer-attachment-tools',
+				attachmentButton: 'ext-lb-composer-attachment-button',
+				altButton: 'ext-lb-composer-alt',
+				altDone: 'is-done',
+				labelsButton: 'ext-lb-composer-labels',
+				labelsActive: 'is-active',
+				suggest: 'ext-lb-composer-suggest',
+				suggestText: 'ext-lb-composer-suggest-text',
+				suggestAccept: 'ext-lb-composer-suggest-accept',
+				suggestDismiss: 'ext-lb-composer-suggest-dismiss',
+				toolbar: 'ext-lb-composer-toolbar',
+				tool: 'ext-lb-composer-tool',
+				languageButton: 'ext-lb-composer-lang',
+				languageText: 'ext-lb-composer-lang-text'
+			},
+			/** 送信中に押せなくする入力欄の中の要素 */
+			busyControls: 'button, textarea',
+			/** 画像のドラッグ&ドロップで見せる操作の種類 (dataTransfer.dropEffect) */
+			dropEffect: 'copy',
+			/** 送信中に画像を重ねたときの dropEffect (受けないことを見せる) */
+			noDropEffect: 'none',
+			/** 重ねる画面の文言。ラベルの画面は Bluesky 本体と同じ文言 (2026-10-18 実測) */
+			text: {
+				sheetDone: '完了',
+				sheetCancel: 'キャンセル',
+				sheetClose: '閉じる',
+				altTitle: 'ALT テキストを追加',
+				altLabel: 'ALT テキスト',
+				altPlaceholder: '画像の内容を説明する',
+				altPreview: '添付する画像',
+				altRemaining: '残り {count}',
+				cropTitle: '画像を切り抜く',
+				cropAspects: '縦横比',
+				aspectNames: {free: '自由', '1:1': '1:1', '4:3': '4:3', '3:4': '3:4', '16:9': '16:9'},
+				cropBox: '切り抜く範囲。矢印キーで移動、Shift+矢印で大きさを変える (Ctrl で大きく動かす)',
+				cropCorner: {nw: '左上の角', ne: '右上の角', sw: '左下の角', se: '右下の角'},
+				cropSize: '{width} x {height} px',
+				cropReset: '元に戻す',
+				cropFailed: '画像を表示できませんでした',
+				labelTitle: 'コンテンツの警告を追加',
+				labelDescription: '投稿するメディアに該当するコンテンツ警告ラベルを追加してください。',
+				labelAdult: '成人向けコンテンツ',
+				labelNone: 'なし',
+				labelOther: 'その他',
+				labelNames: {
+					sexual: 'きわどい',
+					nudity: 'ヌード',
+					porn: '成人向け（ポルノ等）',
+					'graphic-media': '生々しいメディア（グロ・事故・戦争・災害等）'
+				},
+				langTitle: '投稿言語を選択',
+				langSearch: '言語を検索',
+				langCount: '{count}/{max} 個を選択中',
+				langEmpty: '該当する言語がありません',
+				emojiTitle: '絵文字',
+				emojiFrame: '絵文字を選ぶ',
+				emojiFailed: '絵文字を読み込めませんでした',
+				/** 以下は入力欄 (reply-composer.js) の文言 */
+				addImage: '画像を追加',
+				emoji: '絵文字',
+				alt: 'ALT',
+				altDone: 'ALT 済み',
+				crop: '切り抜き',
+				remove: '画像を外す',
+				labels: 'ラベル',
+				language: '投稿言語を選択',
+				languageCurrent: '投稿言語: {names}',
+				labelsCurrent: 'コンテンツの警告: {names}',
+				suggest: '{言語}で返信しますか？',
+				suggestAccept: 'はい',
+				suggestDismiss: '提案を閉じる',
+				sending: '送信中 {done}/{total}',
+				tooManyImages: '画像は 10 枚までです',
+				unsupportedImage: 'この形式の画像は添付できません',
+				imageLoadFailed: '画像を読み込めませんでした',
+				uploadFailed: '画像を送れませんでした',
+				attachment: '添付画像 {index}',
+				attachments: '添付画像',
+				/** 複数の知らせを 1 行にまとめるときの区切り */
+				noticeSeparator: '。',
+				/** 複数の言語・ラベルの名前をボタンに並べるときの区切り */
+				listSeparator: '、'
+			}
+		},
 		api: {
 			origin: EXT_SHARED.publicApiOrigin,
 			threadPath: '/xrpc/app.bsky.feed.getPostThread',

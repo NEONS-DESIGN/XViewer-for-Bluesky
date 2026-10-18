@@ -28,6 +28,13 @@ const ICON_SOURCES = {
 	lock: { file: 'lock-fill', label: '誤操作の防止 (画像のクリックで閉じない)' },
 	bookmark: { file: 'bookmark-fill', label: 'ブックマーク (しおり)' },
 	error: { file: 'error-fill', label: 'エラーの通知 (感嘆符つきの丸)' },
+	image: { file: 'image-fill', label: '返信に画像を添付 (写真)' },
+	mood: { file: 'mood-fill', label: '絵文字を入れる (笑顔)' },
+	crop: { file: 'crop-fill', label: '添付した画像の切り抜き' },
+	close: { file: 'close-fill', label: '添付した画像を外す・提案を閉じる (バツ印)' },
+	translate: { file: 'translate-fill', label: '投稿言語の選択 (文字と翻訳)' },
+	warning: { file: 'warning-fill', label: 'コンテンツの警告ラベル (三角の感嘆符)' },
+	check: { file: 'check-fill', label: 'ALT テキストを付けた印 (チェック)' },
 };
 
 /** 原本の置き場。 */

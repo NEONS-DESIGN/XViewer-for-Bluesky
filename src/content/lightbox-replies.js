@@ -8,7 +8,11 @@
  * 書き込み (返信・削除) は呼び出し層 (PostActions) を通し、橋渡しの白名簿が
  * 「返信の作成」と「返信であると確かめた投稿の削除」だけを通す。
  *
- * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / reply-text.js / media-source.js
+ * 入力欄は部品 (reply-composer.js) が組む。ここは宛先・世代・送信中の印・言語の保存と、
+ * 送れた返信の一覧への差し込みだけを持つ。
+ *
+ * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / reply-text.js / media-source.js /
+ *       reply-composer.js / reply-embed.js / blob-transfer.js / image-prepare.js
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
@@ -16,10 +20,12 @@ import {
 	extractMediaFromEmbed, toLightboxImages, matchBlurLabels, formatBlurLabels
 } from './media-source.js';
 import {
-	detectRichText, buildFacets, resolveReplyRef, buildReplyRecord, primaryLanguage,
-	parseThreadReplies, flattenThreadBranch, sortNewestFirst, formatReplyDate, canSubmitReply,
-	insertVisible, fitTextareaHeight, mediaAspectRatio
+	parseThreadReplies, flattenThreadBranch, sortNewestFirst, formatReplyDate, insertVisible, mediaAspectRatio
 } from './reply-text.js';
+import {ReplyComposer, defaultLanguages} from './reply-composer.js';
+import {normalizeLanguages} from './reply-embed.js';
+import {uploadBlob} from './blob-transfer.js';
+import {prepareImage} from './image-prepare.js';
 
 /**
  * パネルが返信欄に渡す口。
@@ -33,6 +39,8 @@ import {
  * @property {(request: ReplyMediaRequest) => Promise<void>} openMedia
  *   ライトボックスを返信の画像で開き直す
  * @property {import('./post-actions.js').PostActions} actions 呼び出し層
+ * @property {() => (import('./reply-sheets.js').SheetHost|null)} [getSheets]
+ *   パネルに重ねる画面の持ち主 (パネルの要素ごとに 1 つ)
  */
 
 /**
@@ -55,16 +63,6 @@ import {
  * @property {boolean} isPost 宛先が画像の投稿そのものか
  * @property {string|null} anchorUri 宛先が返信のとき、その返信が入っている 1 段目の返信
  * @property {string|null} handle 宛先の作者のハンドル
- */
-
-/**
- * 入力欄 1 つ分の要素。
- * @typedef {Object} ReplyForm
- * @property {HTMLElement} el 外枠
- * @property {HTMLTextAreaElement} textarea
- * @property {HTMLElement} remaining 残りの文字数
- * @property {HTMLButtonElement} submit
- * @property {ReplyTarget} target
  */
 
 /**
@@ -134,12 +132,14 @@ export class LightboxReplies {
 		this.confirmingButton = null;
 		/** @type {Map<string, ReplyRow>} */
 		this.rows = new Map();
-		/** @type {Set<ReplyForm>} 描いている入力欄 */
-		this.forms = new Set();
-		/** @type {{form: ReplyForm, button: HTMLButtonElement}|null} 返信への返信の入力欄 */
+		/** @type {Set<ReplyComposer>} 描いている入力欄 */
+		this.composers = new Set();
+		/** @type {{composer: ReplyComposer, button: HTMLButtonElement}|null} 返信への返信の入力欄 */
 		this.rowForm = null;
-		/** @type {ReplyForm|null} 投稿への入力欄 */
-		this.mainForm = null;
+		/** @type {ReplyComposer|null} 投稿への入力欄 */
+		this.mainComposer = null;
+		/** @type {Promise<string[]>|null} 覚えている投稿言語 (読むのは 1 回だけ) */
+		this.languagesPromise = null;
 		/** @type {IntersectionObserver|null} 「上部へ」の出し入れ */
 		this.observer = null;
 		this.sectionEl = null;
@@ -230,6 +230,18 @@ export class LightboxReplies {
 	/** 区画の DOM と、それに結び付いた状態を外す。 */
 	removeDom() {
 		try {
+			for (const composer of this.composers) {
+				composer.destroy();
+			}
+			const sheets = this.getSheets();
+			if (sheets && sheets.isOpen()) {
+				// 重ねる画面は入力欄から開くもの。区画を外すなら一緒に閉じる
+				sheets.close(false);
+			}
+		} catch (error) {
+			console.error('[XViewer] 返信欄の入力欄の撤去に失敗しました', error);
+		}
+		try {
 			if (this.observer) {
 				this.observer.disconnect();
 			}
@@ -249,9 +261,9 @@ export class LightboxReplies {
 			this.headingEl = null;
 			this.sentinelEl = null;
 			this.rows = new Map();
-			this.forms = new Set();
+			this.composers = new Set();
 			this.rowForm = null;
-			this.mainForm = null;
+			this.mainComposer = null;
 			this.confirmingButton = null;
 		}
 	}
@@ -270,10 +282,10 @@ export class LightboxReplies {
 	 * @returns {{hasDraft: boolean, confirming: boolean}}
 	 */
 	readKeyState() {
-		// フォーカスがどこにあっても、書きかけが 1 つでもあれば Escape で閉じさせない
+		// フォーカスがどこにあっても、書きかけ (本文か添付) が 1 つでもあれば Escape で閉じさせない
 		let hasDraft = false;
-		for (const form of this.forms) {
-			if (form.textarea.isConnected && form.textarea.value.trim() !== '') {
+		for (const composer of this.composers) {
+			if (composer.hasDraft()) {
 				hasDraft = true;
 			}
 		}
@@ -286,11 +298,11 @@ export class LightboxReplies {
 	 */
 	focusComposer() {
 		try {
-			if (!this.mainForm || !this.sectionEl || !this.sectionEl.isConnected) {
+			if (!this.mainComposer || !this.sectionEl || !this.sectionEl.isConnected) {
 				return false;
 			}
 			this.sectionEl.scrollIntoView({block: 'start', behavior: this.scrollBehavior()});
-			this.mainForm.textarea.focus({preventScroll: true});
+			this.mainComposer.focus();
 			return true;
 		} catch (error) {
 			return false;
@@ -549,9 +561,10 @@ export class LightboxReplies {
 		if (!this.formSlot || !this.post) {
 			return;
 		}
-		if (this.mainForm) {
-			this.forms.delete(this.mainForm);
-			this.mainForm = null;
+		if (this.mainComposer) {
+			this.composers.delete(this.mainComposer);
+			this.mainComposer.destroy();
+			this.mainComposer = null;
 		}
 		this.formSlot.textContent = '';
 		if (this.replyDisabled) {
@@ -566,200 +579,122 @@ export class LightboxReplies {
 		}
 		const raw = this.post.raw || {};
 		const record = raw.record || {};
-		this.mainForm = this.buildForm({
+		this.mainComposer = this.createComposer({
 			uri: this.post.postUri,
 			cid: this.post.cid,
 			replyRef: record.reply || null,
 			isPost: true,
 			anchorUri: null,
 			handle: this.post.handle
-		}, this.config.text.placeholder);
-		this.formSlot.appendChild(this.mainForm.el);
-		this.syncForm(this.mainForm);
+		}, this.config.text.placeholder, record.langs);
+		this.formSlot.appendChild(this.mainComposer.el);
+		this.mainComposer.sync();
 	}
 
 	/**
-	 * 入力欄を 1 つ作る。
+	 * 重ねる画面の持ち主をパネルから受け取る。無ければ null (ALT などの画面を開かない)。
+	 * @returns {import('./reply-sheets.js').SheetHost|null}
+	 */
+	getSheets() {
+		try {
+			return typeof this.host.getSheets === 'function' ? this.host.getSheets() || null : null;
+		} catch (error) {
+			return null;
+		}
+	}
+
+	/**
+	 * 入力欄の部品を 1 つ作る。宛先・世代・送信中の印・言語の保存はここから口として渡す。
 	 * @param {ReplyTarget} target 返信の宛先
 	 * @param {string} placeholder
-	 * @returns {ReplyForm}
+	 * @param {*} parentLangs 宛先の record.langs (言語の提案に使う)
+	 * @returns {ReplyComposer}
 	 */
-	buildForm(target, placeholder) {
-		const c = this.config.classes;
-		const text = this.config.text;
-		const el = document.createElement('div');
-		el.className = c.form;
-		const row = document.createElement('div');
-		row.className = c.formRow;
-		const avatar = document.createElement('img');
-		avatar.className = c.formAvatar;
-		avatar.alt = '';
-		if (this.selfProfile && this.selfProfile.avatarUrl) {
-			avatar.src = this.selfProfile.avatarUrl;
-		} else {
-			avatar.hidden = true;
-		}
-		const textarea = document.createElement('textarea');
-		textarea.className = c.input;
-		textarea.rows = 1;
-		textarea.placeholder = placeholder;
-		textarea.setAttribute('aria-label', placeholder);
-		// 枠と余白は外側の入れ物が持つ (欄に余白があるとスクロール時に文字が枠に接する)
-		const frame = document.createElement('div');
-		frame.className = c.inputFrame;
-		frame.appendChild(textarea);
-		row.appendChild(avatar);
-		row.appendChild(frame);
-		const foot = document.createElement('div');
-		foot.className = c.formFoot;
-		const remaining = document.createElement('span');
-		remaining.className = c.remaining;
-		const submit = document.createElement('button');
-		submit.type = 'button';
-		submit.className = c.submit;
-		submit.textContent = text.submit;
-		foot.appendChild(remaining);
-		foot.appendChild(submit);
-		el.appendChild(row);
-		el.appendChild(foot);
-
-		/** @type {ReplyForm} */
-		const form = {el, textarea, remaining, submit, target};
-		textarea.addEventListener('input', () => this.syncForm(form));
-		textarea.addEventListener('keydown', (event) => {
-			if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
-				event.preventDefault();
-				this.submit(form);
-			}
-		});
-		submit.addEventListener('click', () => this.submit(form));
-		this.forms.add(form);
-		this.syncForm(form);
-		return form;
+	createComposer(target, placeholder, parentLangs) {
+		const composer = new ReplyComposer(this.config, {
+			actions: this.host.actions,
+			sheets: this.getSheets(),
+			uploadBlob,
+			prepareImage,
+			getSelfProfile: () => this.selfProfile,
+			getSessionDid: () => this.sessionDid,
+			isCurrent: (generation) => generation === this.generation,
+			getGeneration: () => this.generation,
+			isPosting: () => this.posting,
+			setPosting: (posting) => {
+				this.posting = posting === true;
+			},
+			onPosted: (result, record, posted, embedView) => {
+				this.insertOwnReply(posted, this.buildOwnItem(result, record, posted, embedView), composer);
+			},
+			resolveHandle: (handle) => this.resolveHandle(handle),
+			parentLangs: Array.isArray(parentLangs) ? parentLangs : null,
+			loadLanguages: () => this.loadLanguages(),
+			saveLanguages: (codes) => this.saveLanguages(codes)
+		}, target, placeholder);
+		this.composers.add(composer);
+		return composer;
 	}
 
 	/**
-	 * 入力欄の高さ・残りの文字数・送信ボタンの状態を本文に合わせる。
-	 * @param {ReplyForm} form
+	 * ハンドルを DID に引く (本文中のメンションの facets に使う)。
+	 * @param {string} handle
+	 * @returns {Promise<string|null>} 引けなければ null
+	 */
+	async resolveHandle(handle) {
+		const json = await this.fetchPublicJson(this.config.api.resolveHandlePath, {handle});
+		return json && typeof json.did === 'string' ? json.did : null;
+	}
+
+	/**
+	 * 覚えている投稿言語を読む。無ければブラウザの言語。読むのは 1 回だけで、以後は覚えた値を返す。
+	 * @returns {Promise<string[]>}
+	 */
+	loadLanguages() {
+		if (!this.languagesPromise) {
+			this.languagesPromise = this.readStoredLanguages();
+		}
+		return this.languagesPromise;
+	}
+
+	/**
+	 * chrome.storage.local から投稿言語を読む。読めない・空ならブラウザの言語。
+	 * @returns {Promise<string[]>}
+	 */
+	async readStoredLanguages() {
+		const compose = this.config.compose;
+		try {
+			const key = compose.languageStorageKey;
+			const stored = await chrome.storage.local.get(key);
+			const codes = normalizeLanguages(stored && stored[key], compose.maxLanguages, compose.languageCodes);
+			if (codes.length > 0) {
+				return codes;
+			}
+		} catch (error) {
+			console.error('[XViewer] 投稿言語の読み込みに失敗しました', error);
+		}
+		return defaultLanguages(navigator.language, compose);
+	}
+
+	/**
+	 * 選んだ投稿言語を覚え、次の入力欄の既定にする。
+	 * @param {string[]} codes
 	 * @returns {void}
 	 */
-	syncForm(form) {
-		const c = this.config.classes;
-		const check = canSubmitReply(form.textarea.value, this.config.limits);
-		form.remaining.textContent = `${this.config.text.remaining} ${check.remaining}`;
-		form.remaining.classList.toggle(c.warn, check.remaining <= this.config.warnRemaining);
-		form.submit.disabled = !check.ok || this.posting;
-		// DOM に入る前は scrollHeight が 0 で、そのまま当てると欄が潰れる
-		// (2026-10-18 実機で確認)。入れた後に呼び直す
-		if (!form.textarea.isConnected) {
+	saveLanguages(codes) {
+		const compose = this.config.compose;
+		const normalized = normalizeLanguages(codes, compose.maxLanguages, compose.languageCodes);
+		if (normalized.length === 0) {
 			return;
 		}
+		this.languagesPromise = Promise.resolve(normalized);
 		try {
-			const textarea = form.textarea;
-			const style = window.getComputedStyle(textarea);
-			const border = (parseFloat(style.borderTopWidth) || 0)
-				+ (parseFloat(style.borderBottomWidth) || 0);
-			// 一度高さを外してから測ると、消して短くなったときも縮む
-			textarea.style.height = '';
-			const fitted = fitTextareaHeight(
-				textarea.scrollHeight, border, parseFloat(style.maxHeight)
-			);
-			textarea.style.height = `${fitted.height}px`;
-			textarea.style.overflowY = fitted.scroll ? 'auto' : 'hidden';
-		} catch (error) {
-			console.error('[XViewer] 入力欄の高さの調整に失敗しました', error);
-		}
-	}
-
-	/**
-	 * 返信を送る。
-	 * @param {ReplyForm} form
-	 * @returns {Promise<void>}
-	 */
-	async submit(form) {
-		if (this.posting) {
-			return;
-		}
-		const value = form.textarea.value;
-		if (!canSubmitReply(value, this.config.limits).ok) {
-			return;
-		}
-		const generation = this.generation;
-		const postUri = this.postUri;
-		const hadFocus = document.activeElement === form.textarea;
-		this.posting = true;
-		this.setFormBusy(form, true);
-		this.clearError(form.el);
-		try {
-			const detected = detectRichText(value);
-			const didByHandle = await this.resolveMentions(detected.mentions);
-			const language = primaryLanguage(navigator.language);
-			const record = buildReplyRecord({
-				text: value,
-				reply: resolveReplyRef(form.target),
-				createdAt: new Date().toISOString(),
-				langs: language ? [language] : null,
-				facets: buildFacets(detected, didByHandle)
+			Promise.resolve(chrome.storage.local.set({[compose.languageStorageKey]: normalized})).catch((error) => {
+				console.error('[XViewer] 投稿言語の保存に失敗しました', error);
 			});
-			const result = await this.host.actions.createReply(record);
-			if (generation !== this.generation || postUri !== this.postUri) {
-				return;
-			}
-			if (!result.ok) {
-				ExtDebug.log('返信の投稿が失敗', {理由: result.reason});
-				this.showError(form.el, this.config.text.postFailed);
-				return;
-			}
-			form.textarea.value = '';
-			this.insertOwnReply(form.target, this.buildOwnItem(result, record, form.target));
 		} catch (error) {
-			console.error('[XViewer] 返信の投稿に失敗しました', error);
-			if (generation === this.generation) {
-				this.showError(form.el, this.config.text.postFailed);
-			}
-		} finally {
-			if (generation === this.generation) {
-				this.posting = false;
-			}
-			this.setFormBusy(form, false);
-			this.syncForm(form);
-			if (hadFocus && form.textarea.isConnected) {
-				form.textarea.focus({preventScroll: true});
-			}
+			console.error('[XViewer] 投稿言語の保存に失敗しました', error);
 		}
-	}
-
-	/**
-	 * 送信中の見た目にする / 戻す。
-	 * @param {ReplyForm} form
-	 * @param {boolean} busy
-	 * @returns {void}
-	 */
-	setFormBusy(form, busy) {
-		form.textarea.disabled = busy;
-		form.submit.disabled = busy;
-		if (busy) {
-			form.submit.setAttribute('aria-busy', 'true');
-		} else {
-			form.submit.removeAttribute('aria-busy');
-		}
-	}
-
-	/**
-	 * 本文中のメンションを DID に引く。引けなかったものは含めない。
-	 * @param {Array<{handle: string}>} mentions
-	 * @returns {Promise<Map<string, string>>}
-	 */
-	async resolveMentions(mentions) {
-		const map = new Map();
-		const handles = Array.from(new Set(mentions.map((mention) => mention.handle)));
-		await Promise.all(handles.map(async (handle) => {
-			const json = await this.fetchPublicJson(this.config.api.resolveHandlePath, {handle});
-			if (json && typeof json.did === 'string') {
-				map.set(handle, json.did);
-			}
-		}));
-		return map;
 	}
 
 	/**
@@ -767,9 +702,10 @@ export class LightboxReplies {
 	 * @param {{uri: string, cid: string}} result createReply の応答
 	 * @param {Object} record 送った record
 	 * @param {ReplyTarget} target
+	 * @param {Object|null} embedView 添付した画像の embed view (取り直さずに描く)。無ければ null
 	 * @returns {Object} ReplyItem
 	 */
-	buildOwnItem(result, record, target) {
+	buildOwnItem(result, record, target, embedView) {
 		const profile = this.selfProfile || {
 			did: this.sessionDid, handle: this.sessionDid, displayName: this.sessionDid, avatarUrl: null
 		};
@@ -786,9 +722,12 @@ export class LightboxReplies {
 			facets: Array.isArray(record.facets) ? record.facets : [],
 			createdAt: record.createdAt,
 			replyCount: 0,
-			hasEmbed: false,
-			embed: null,
-			labels: [],
+			hasEmbed: !!embedView,
+			embed: embedView || null,
+			labels: record.labels && Array.isArray(record.labels.values)
+				? record.labels.values.map((label) => label.val)
+				: [],
+			langs: Array.isArray(record.langs) ? record.langs : null,
 			replyRef: record.reply,
 			parentUri: record.reply.parent.uri,
 			parentHandle: !target.isPost && target.uri !== target.anchorUri ? target.handle : null
@@ -799,9 +738,11 @@ export class LightboxReplies {
 	 * 投稿した返信を差し込む。投稿への返信は一覧の先頭、返信への返信は開いた返信の末尾。
 	 * @param {ReplyTarget} target
 	 * @param {Object} item ReplyItem
+	 * @param {ReplyComposer} [composer] 送った入力欄。返信への返信の入力欄なら閉じる
+	 *   (送信中に閉じられて別の入力欄が開いていれば、そちらは閉じない)
 	 * @returns {void}
 	 */
-	insertOwnReply(target, item) {
+	insertOwnReply(target, item, composer) {
 		if (target.isPost) {
 			if (!Array.isArray(this.items)) {
 				this.items = [];
@@ -816,7 +757,9 @@ export class LightboxReplies {
 			}
 			return;
 		}
-		this.closeRowForm(false);
+		if (!composer || (this.rowForm && this.rowForm.composer === composer)) {
+			this.closeRowForm(false);
+		}
 		const anchorRow = this.rows.get(target.anchorUri);
 		if (target.uri === target.anchorUri && anchorRow) {
 			anchorRow.item.replyCount += 1;
@@ -1151,24 +1094,24 @@ export class LightboxReplies {
 		if (opened) {
 			return;
 		}
-		const form = this.buildForm({
+		const composer = this.createComposer({
 			uri: row.item.uri,
 			cid: row.item.cid,
 			replyRef: row.item.replyRef,
 			isPost: false,
 			anchorUri: row.anchorUri,
 			handle: row.item.handle
-		}, this.config.text.replyPlaceholder);
+		}, this.config.text.replyPlaceholder, row.item.langs);
 		const meta = row.body.querySelector(`.${this.config.classes.meta}`);
 		if (meta && meta.nextSibling) {
-			row.body.insertBefore(form.el, meta.nextSibling);
+			row.body.insertBefore(composer.el, meta.nextSibling);
 		} else {
-			row.body.appendChild(form.el);
+			row.body.appendChild(composer.el);
 		}
-		this.syncForm(form);
+		composer.sync();
 		button.setAttribute('aria-expanded', 'true');
-		this.rowForm = {form, button};
-		form.textarea.focus({preventScroll: true});
+		this.rowForm = {composer, button};
+		composer.focus();
 	}
 
 	/**
@@ -1180,10 +1123,10 @@ export class LightboxReplies {
 		if (!this.rowForm) {
 			return;
 		}
-		const {form, button} = this.rowForm;
+		const {composer, button} = this.rowForm;
 		this.rowForm = null;
-		this.forms.delete(form);
-		form.el.remove();
+		this.composers.delete(composer);
+		composer.destroy();
 		button.setAttribute('aria-expanded', 'false');
 		if (restoreFocus && button.isConnected) {
 			button.focus({preventScroll: true});
@@ -1247,6 +1190,10 @@ export class LightboxReplies {
 		const text = this.config.text;
 		const branch = this.branches.get(anchorUri);
 		const open = !!(branch && branch.open);
+		// 中の行に返信への返信の入力欄があれば、描き直しで消える前に閉じる
+		if (this.rowForm && row.area.contains(this.rowForm.composer.el)) {
+			this.closeRowForm(false);
+		}
 		// 中の行の記録を外してから描き直す
 		for (const [uri, child] of this.rows) {
 			if (child.depth === 1 && child.anchorUri === anchorUri) {
@@ -1361,7 +1308,7 @@ export class LightboxReplies {
 		while (next && !next.querySelector(`.${c.deleteButton}`)) {
 			next = next.nextElementSibling;
 		}
-		if (this.rowForm && row.li.contains(this.rowForm.form.el)) {
+		if (this.rowForm && row.li.contains(this.rowForm.composer.el)) {
 			this.closeRowForm(false);
 		}
 		row.li.remove();

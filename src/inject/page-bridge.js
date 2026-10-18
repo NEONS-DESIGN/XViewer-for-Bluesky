@@ -495,10 +495,141 @@ function areAllowedFacets(facets, textBytes) {
 }
 
 /**
+ * 文字列の書記素 (ユーザーが 1 文字と感じる単位) の数を数える。
+ * @param {string} text
+ * @returns {number}
+ */
+function countGraphemes(text) {
+	let count = 0;
+	for (const unused of new Intl.Segmenter().segment(text)) {
+		count += 1;
+	}
+	return count;
+}
+
+/**
+ * 値が余分なキーを持たない素のオブジェクトで、キーが許した集合に収まるか。
+ * @param {*} value
+ * @param {string[]} allowed 許すキー
+ * @returns {boolean}
+ */
+function hasOnlyKeys(value, allowed) {
+	return !!value && typeof value === 'object' && !Array.isArray(value)
+		&& Object.keys(value).every((key) => allowed.includes(key));
+}
+
+/**
+ * aspectRatio が {width, height} の正の整数だけの形か。
+ * @param {*} ratio
+ * @returns {boolean}
+ */
+function isAspectRatio(ratio) {
+	return hasOnlyKeys(ratio, ['width', 'height'])
+		&& Number.isSafeInteger(ratio.width) && ratio.width > 0
+		&& Number.isSafeInteger(ratio.height) && ratio.height > 0;
+}
+
+/**
+ * 埋め込む Blob が、余分なキーを持たない厳密な BlobRef で、サイズが
+ * アップロードの上限に収まるか。
+ * @param {*} blob
+ * @returns {boolean}
+ */
+function isStrictEmbedBlob(blob) {
+	return hasOnlyKeys(blob, ['$type', 'ref', 'mimeType', 'size'])
+		&& hasOnlyKeys(blob.ref, ['$link'])
+		&& isBlobRef(blob, EXT_BRIDGE.postRecord.imageMimeTypes)
+		&& blob.size <= BRIDGE_PROTOCOL.upload.maxBytes.default;
+}
+
+/**
+ * 画像 1 件 ({image, alt, aspectRatio?}) が正しい形か。
+ * @param {*} item
+ * @param {boolean} requireRatio aspectRatio を必須にするか
+ * @param {string[]} extraKeys 画像 1 件に加えて許すキー ($type など)
+ * @returns {boolean}
+ */
+function isEmbedImage(item, requireRatio, extraKeys) {
+	const rule = EXT_BRIDGE.postRecord;
+	if (!hasOnlyKeys(item, ['image', 'alt', 'aspectRatio'].concat(extraKeys))) {
+		return false;
+	}
+	if (!isStrictEmbedBlob(item.image)
+		|| typeof item.alt !== 'string'
+		|| countGraphemes(item.alt) > rule.maxAltGraphemes) {
+		return false;
+	}
+	if (item.aspectRatio === undefined) {
+		return !requireRatio;
+	}
+	return isAspectRatio(item.aspectRatio);
+}
+
+/**
+ * record.embed が、返信に付けてよい画像の embed (images 1〜4 件 / gallery 1〜10 件) か。
+ * 余分なキーは拒む
+ * @param {*} embed
+ * @returns {boolean}
+ */
+export function checkPostEmbed(embed) {
+	try {
+		const rule = EXT_BRIDGE.postRecord;
+		if (!embed || typeof embed !== 'object') {
+			return false;
+		}
+		if (embed.$type === rule.embedTypes.images) {
+			return hasOnlyKeys(embed, ['$type', 'images'])
+				&& Array.isArray(embed.images)
+				&& embed.images.length >= 1 && embed.images.length <= rule.maxImages
+				&& embed.images.every((item) => isEmbedImage(item, false, []));
+		}
+		if (embed.$type === rule.embedTypes.gallery) {
+			return hasOnlyKeys(embed, ['$type', 'items'])
+				&& Array.isArray(embed.items)
+				&& embed.items.length >= 1 && embed.items.length <= rule.maxGalleryItems
+				&& embed.items.every((item) => isEmbedImage(item, true, ['$type'])
+					&& item.$type === rule.galleryImageType);
+		}
+		return false;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
+ * record.labels が、自己ラベルの規則 (成人向けは高々 1 つ + graphic-media、
+ * 計 2 つまで) に収まるか。
+ * @param {*} labels
+ * @returns {boolean}
+ */
+export function checkSelfLabels(labels) {
+	try {
+		const rule = EXT_BRIDGE.postRecord;
+		if (!hasOnlyKeys(labels, ['$type', 'values']) || labels.$type !== rule.selfLabelsType
+			|| !Array.isArray(labels.values)
+			|| labels.values.length < 1 || labels.values.length > rule.maxLabels) {
+			return false;
+		}
+		const seen = [];
+		for (const entry of labels.values) {
+			if (!hasOnlyKeys(entry, ['val']) || typeof entry.val !== 'string'
+				|| seen.includes(entry.val)
+				|| (!rule.adultLabels.includes(entry.val) && !rule.otherLabels.includes(entry.val))) {
+				return false;
+			}
+			seen.push(entry.val);
+		}
+		return seen.filter((val) => rule.adultLabels.includes(val)).length <= 1;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
  * 橋渡しから作ってよい投稿 (返信) の record かを検査する。
- * **返信でない投稿と、embed などを持つ投稿は通さない。** 作れる投稿を
- * 「本文だけの返信」に絞ることで、ページ上の誰かがこの橋渡しを撃っても
- * 単独の投稿や画像付きの投稿を作れないようにする
+ * **返信でない投稿は通さず、embed は画像 (images / gallery) だけ、labels は
+ * 自己ラベルだけを通す。** 作れる投稿を返信に絞ることで、ページ上の誰かが
+ * この橋渡しを撃っても単独の投稿や外部リンク付きの投稿を作れないようにする
  * @param {*} record createRecord の body.record
  * @returns {{ok: true}|{ok: false, reason: string}}
  */
@@ -534,6 +665,12 @@ export function checkPostRecord(record) {
 		return {ok: false, reason: reasons.postRecordNotAllowed};
 	}
 	if (record.facets !== undefined && !areAllowedFacets(record.facets, textBytes)) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	if (record.embed !== undefined && !checkPostEmbed(record.embed)) {
+		return {ok: false, reason: reasons.postRecordNotAllowed};
+	}
+	if (record.labels !== undefined && !checkSelfLabels(record.labels)) {
 		return {ok: false, reason: reasons.postRecordNotAllowed};
 	}
 	return {ok: true};
@@ -795,6 +932,254 @@ function getSession() {
 	return {ok: true, hasSession: did !== null, did};
 }
 
+/** アップロードの許可範囲と預かり箱の寸法 (BRIDGE_PROTOCOL.upload) */
+const UPLOAD = BRIDGE_PROTOCOL.upload;
+
+/** 預ける Blob の id の形。1 回だけ作って使い回す */
+const BLOB_ID_REGEX = new RegExp(UPLOAD.blobIdPattern);
+
+/**
+ * upload-blob に預けられた Blob の MIME・サイズが許した範囲かを確かめる。
+ * @param {{type: string, size: number}} info Blob の type と size
+ * @returns {{ok: true}|{ok: false, reason: string}}
+ */
+export function checkUploadBlob(info) {
+	const notAllowed = {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotAllowed};
+	if (!info || typeof info.type !== 'string' || !UPLOAD.mimeTypes.includes(info.type)) {
+		return notAllowed;
+	}
+	if (!Number.isSafeInteger(info.size) || info.size <= 0) {
+		return notAllowed;
+	}
+	const limits = UPLOAD.maxBytes;
+	const limit = Object.prototype.hasOwnProperty.call(limits, info.type)
+		? limits[info.type]
+		: limits.default;
+	return info.size <= limit ? {ok: true} : notAllowed;
+}
+
+/**
+ * 値が PDS の返す BlobRef の形か。
+ * @param {*} value uploadBlob の応答の blob
+ * @param {string[]} mimeTypes 許す MIME
+ * @returns {boolean} {$type: 'blob', ref: {$link}, mimeType, size} の形なら true
+ */
+export function isBlobRef(value, mimeTypes) {
+	try {
+		return Boolean(value)
+			&& value.$type === 'blob'
+			&& Boolean(value.ref)
+			&& typeof value.ref.$link === 'string'
+			&& value.ref.$link !== ''
+			&& mimeTypes.includes(value.mimeType)
+			&& Number.isSafeInteger(value.size)
+			&& value.size > 0;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
+ * 検査済みの BlobRef を、想定したキーだけで組み直す (応答の余計なキーを渡さない)。
+ * @param {Object} ref isBlobRef() を通った値
+ * @returns {{$type: string, ref: {$link: string}, mimeType: string, size: number}}
+ */
+export function toBlobRef(ref) {
+	return {$type: 'blob', ref: {$link: ref.ref.$link}, mimeType: ref.mimeType, size: ref.size};
+}
+
+/**
+ * 分離ワールドから postMessage で預けられた Blob の一時置き場。
+ * 取りに来ないものは ttl で捨て、件数が上限を超えたら古いものから捨てる。
+ */
+export class BlobInbox {
+	/**
+	 * @param {{ttlMs: number, maxEntries: number,
+	 *   setTimer: Function, clearTimer: Function}} options
+	 */
+	constructor({ttlMs, maxEntries, setTimer, clearTimer}) {
+		this.ttlMs = ttlMs;
+		this.maxEntries = maxEntries;
+		this.setTimer = setTimer;
+		this.clearTimer = clearTimer;
+		/** @type {Map<string, {blob: Blob, timer: *}>} 挿入順が古い順 */
+		this.entries = new Map();
+		/** @type {Map<string, Array<Function>>} 到着待ちの resolve */
+		this.waiters = new Map();
+	}
+
+	/**
+	 * Blob を預かる。同じ id が既にあれば最初のものを守り、後からのものは無視する
+	 * (ページ上のスクリプトも id を見られるため、差し替えさせない)。
+	 * @param {string} id
+	 * @param {Blob} blob
+	 * @returns {boolean} 預かれたら true。既にある id なら false
+	 */
+	put(id, blob) {
+		if (this.entries.has(id)) {
+			return false;
+		}
+		const timer = this.setTimer(() => this.discard(id), this.ttlMs);
+		this.entries.set(id, {blob, timer});
+		while (this.entries.size > this.maxEntries) {
+			this.discard(this.entries.keys().next().value);
+		}
+		const waiting = this.waiters.get(id);
+		if (waiting) {
+			this.waiters.delete(id);
+			const taken = this.take(id);
+			for (const resolve of waiting) {
+				resolve(taken);
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Blob の到着を待って取り出す。既にあれば直ちに取り出す。
+	 * 分離ワールドの postMessage は後から届くため、要求のほうが先に着くことがある。
+	 * @param {string} id
+	 * @param {number} timeoutMs 待つ上限
+	 * @returns {Promise<Blob|null>} 上限までに届かなければ null
+	 */
+	waitFor(id, timeoutMs) {
+		if (this.entries.has(id)) {
+			return Promise.resolve(this.take(id));
+		}
+		return new Promise((resolve) => {
+			const timer = this.setTimer(() => {
+				const list = this.waiters.get(id) || [];
+				const rest = list.filter((fn) => fn !== done);
+				if (rest.length > 0) {
+					this.waiters.set(id, rest);
+				} else {
+					this.waiters.delete(id);
+				}
+				resolve(null);
+			}, timeoutMs);
+			const done = (blob) => {
+				this.clearTimer(timer);
+				resolve(blob);
+			};
+			const list = this.waiters.get(id) || [];
+			list.push(done);
+			this.waiters.set(id, list);
+		});
+	}
+
+	/**
+	 * Blob を取り出して箱から消す。
+	 * @param {string} id
+	 * @returns {Blob|null} 無ければ null
+	 */
+	take(id) {
+		const entry = this.entries.get(id);
+		if (!entry) {
+			return null;
+		}
+		this.discard(id);
+		return entry.blob;
+	}
+
+	/**
+	 * 箱を空にする。
+	 * @returns {void}
+	 */
+	clear() {
+		for (const id of [...this.entries.keys()]) {
+			this.discard(id);
+		}
+	}
+
+	/**
+	 * 1 件を捨てる (タイマーも止める)。
+	 * @param {string} id
+	 * @returns {void}
+	 */
+	discard(id) {
+		const entry = this.entries.get(id);
+		if (entry) {
+			this.clearTimer(entry.timer);
+			this.entries.delete(id);
+		}
+	}
+}
+
+/**
+ * window の message イベントが、自分のページ自身から預けられた Blob かを確かめて読む。
+ * @param {MessageEvent} event
+ * @param {Window} win 自分の window
+ * @returns {{id: string, blob: Blob}|null} 条件を満たさなければ null
+ */
+export function readBlobMessage(event, win) {
+	try {
+		if (!event || event.source !== win || event.origin !== win.location.origin) {
+			return null;
+		}
+		const data = event.data;
+		if (!data || typeof data !== 'object' || data.type !== BRIDGE_PROTOCOL.blobMessageType) {
+			return null;
+		}
+		if (typeof data.id !== 'string' || !BLOB_ID_REGEX.test(data.id)) {
+			return null;
+		}
+		if (!(data.blob instanceof Blob)) {
+			return null;
+		}
+		return {id: data.id, blob: data.blob};
+	} catch (error) {
+		return null;
+	}
+}
+
+/** 起動部が作る預かり箱。Node のテストでは作られない */
+let blobInbox = null;
+
+/**
+ * 預かった Blob を本体の認証済み fetchHandler で PDS へアップロードする。
+ * **MIME・サイズの検査を通ったものだけが飛ぶ。** 認証は本体に任せ、トークンには触らない。
+ * @param {{blobId: string}} payload 預けたときの id
+ * @returns {Promise<{ok: boolean, blob?: Object, reason: string|null}>}
+ */
+async function uploadBlobAction(payload) {
+	const id = payload && payload.blobId;
+	const blob = (blobInbox && typeof id === 'string' && BLOB_ID_REGEX.test(id))
+		? await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs)
+		: null;
+	if (!blob) {
+		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotFound};
+	}
+	const checked = checkUploadBlob({type: blob.type, size: blob.size});
+	if (!checked.ok) {
+		return {ok: false, reason: checked.reason};
+	}
+	const clients = findClients();
+	if (!clients) {
+		return {ok: false, reason: 'no-client'};
+	}
+	const agent = clients.pdsClient && clients.pdsClient.agent;
+	if (!agent || typeof agent.fetchHandler !== 'function') {
+		return {ok: false, reason: 'no-agent'};
+	}
+	try {
+		const response = await agent.fetchHandler(`/xrpc/${NSID.uploadBlob}`, {
+			method: 'POST',
+			headers: {'content-type': blob.type, accept: 'application/json'},
+			body: blob
+		});
+		if (response.ok !== true) {
+			return {ok: false, reason: 'http-error'};
+		}
+		const json = await response.json();
+		if (!json || !isBlobRef(json.blob, UPLOAD.mimeTypes)) {
+			return {ok: false, reason: 'bad-response'};
+		}
+		return {ok: true, blob: toBlobRef(json.blob), reason: null};
+	} catch (error) {
+		return {ok: false, reason: 'fetch-failed'};
+	}
+}
+
 /**
  * 分離ワールドへ応答を返す。detail は JSON 文字列 (bridge-client.js が parse する)。
  * @param {number} id 要求の id
@@ -879,6 +1264,13 @@ function dispatchRequest(detail) {
 		reply(detail.id, getSession());
 		return;
 	}
+	if (detail.action === EXT_BRIDGE.actions.uploadBlob) {
+		uploadBlobAction(detail.payload).then(
+			(result) => reply(detail.id, result),
+			() => reply(detail.id, {ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed})
+		);
+		return;
+	}
 	reply(detail.id, {ok: false, reason: 'unknown-action'});
 }
 
@@ -890,6 +1282,18 @@ function dispatchRequest(detail) {
 if (typeof document !== 'undefined') {
 	try {
 		document.addEventListener(EXT_BRIDGE.requestEvent, handleRequest);
+		blobInbox = new BlobInbox({
+			ttlMs: UPLOAD.inboxTtlMs,
+			maxEntries: UPLOAD.inboxMaxEntries,
+			setTimer: (fn, ms) => setTimeout(fn, ms),
+			clearTimer: (handle) => clearTimeout(handle)
+		});
+		window.addEventListener('message', (event) => {
+			const message = readBlobMessage(event, window);
+			if (message && checkUploadBlob({type: message.blob.type, size: message.blob.size}).ok) {
+				blobInbox.put(message.id, message.blob);
+			}
+		});
 	} catch (error) {
 		console.error('[XViewer] 橋渡しの起動に失敗しました', error);
 	}

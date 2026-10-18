@@ -40,6 +40,7 @@ import {extractLabels} from './media-source.js';
  * @property {ReplyRef|null} replyRef record.reply。この返信へ返信するとき root を引き継ぐのに使う
  * @property {string|null} parentUri 直接の返信先の AT URI
  * @property {string|null} parentHandle 開いた返信の中で、親が起点でないときの親の handle
+ * @property {string[]|null} langs record.langs (返信への返信の言語の提案に使う)
  */
 
 /** getPostThread の中で、中身のある投稿を表す $type */
@@ -220,9 +221,10 @@ export function resolveReplyRef(target) {
 
 /**
  * 返信の record (app.bsky.feed.post) を組み立てる。
- * 空の facets と langs: null はキーごと出さない。
+ * 空の facets と langs: null、null の embed と labels はキーごと出さない。
  * @param {{text: string, reply: ReplyRef, createdAt: string,
- *   langs: string[]|null, facets: Array<Object>}} input
+ *   langs: string[]|null, facets: Array<Object>,
+ *   embed?: Object|null, labels?: Object|null}} input
  * @returns {Object}
  */
 export function buildReplyRecord(input) {
@@ -237,6 +239,12 @@ export function buildReplyRecord(input) {
 	}
 	if (Array.isArray(input.facets) && input.facets.length > 0) {
 		record.facets = input.facets;
+	}
+	if (input.embed) {
+		record.embed = input.embed;
+	}
+	if (input.labels) {
+		record.labels = input.labels;
 	}
 	return record;
 }
@@ -292,6 +300,9 @@ function toReplyItem(node) {
 			hasEmbed: !!post.embed,
 			embed: post.embed && typeof post.embed === 'object' ? post.embed : null,
 			labels: extractLabels(post),
+			langs: Array.isArray(record.langs)
+				? record.langs.filter((lang) => typeof lang === 'string')
+				: null,
 			replyRef: reply,
 			parentUri: reply && reply.parent && typeof reply.parent.uri === 'string'
 				? reply.parent.uri

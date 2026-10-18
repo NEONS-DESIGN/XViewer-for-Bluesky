@@ -16,6 +16,9 @@ export const INJECT_ENTRY_POINTS = Object.freeze({
 /** popup だけの束ねる入口。popup は拡張のページなので ESM で束ねる。 */
 export const POPUP_ENTRY_POINTS = Object.freeze({ 'popup/popup': 'src/popup/popup.js' });
 
+/** 絵文字ピッカーのページの入口。popup と同じく拡張のページなので ESM で束ねる。 */
+export const EMOJI_ENTRY_POINTS = Object.freeze({ 'emoji/emoji': 'src/emoji/emoji.js' });
+
 /**
  * 入口の表から出力ファイル名 (出力先からの相対) を作る。
  * @param {Readonly<Record<string, string>>} entryPoints 入口の表

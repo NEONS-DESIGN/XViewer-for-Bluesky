@@ -12,8 +12,8 @@ import assert from 'node:assert';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {
-	EXT_BRIDGE, checkXrpcRequest, checkPostRecord, isReplyPostResponse, buildQuery,
-	waitForLightboxHistory
+	EXT_BRIDGE, checkXrpcRequest, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
+	waitForLightboxHistory, toBlobRef, checkUploadBlob, isBlobRef, BlobInbox, readBlobMessage
 } from '../src/inject/page-bridge.js';
 
 /** 検査に使う自分の DID */
@@ -82,10 +82,171 @@ test('checkXrpcRequest: 返信の作成は通り、record はそのまま写さ�
 	assert.strictEqual(result.needsReplyCheck, false);
 });
 
-test('checkXrpcRequest: embed を持つ投稿は落ちる', () => {
-	const result = checkPostCreate(replyRecord({embed: {$type: 'app.bsky.embed.images'}}));
+test('checkXrpcRequest: 許していない embed の種類 (external) を持つ投稿は落ちる', () => {
+	const result = checkPostCreate(replyRecord({embed: {$type: 'app.bsky.embed.external'}}));
 	assert.strictEqual(result.ok, false);
 	assert.strictEqual(result.reason, 'post-record-not-allowed');
+});
+
+/** 検査を通る BlobRef を作る */
+function blobRef(overrides) {
+	return Object.assign({
+		$type: 'blob', ref: {$link: 'bafkreiabc'}, mimeType: 'image/jpeg', size: 1234
+	}, overrides);
+}
+
+/** 検査を通る images の embed を count 枚で作る */
+function imagesEmbed(count) {
+	const images = [];
+	for (let i = 0; i < count; i += 1) {
+		images.push({image: blobRef(), alt: 'alt'});
+	}
+	return {$type: 'app.bsky.embed.images', images};
+}
+
+/** 検査を通る gallery の embed を count 件で作る */
+function galleryEmbed(count) {
+	const items = [];
+	for (let i = 0; i < count; i += 1) {
+		items.push({
+			$type: 'app.bsky.embed.gallery#image',
+			image: blobRef(), alt: 'alt', aspectRatio: {width: 4, height: 3}
+		});
+	}
+	return {$type: 'app.bsky.embed.gallery', items};
+}
+
+test('checkPostEmbed: 画像 1〜4 枚の images は通り、5 枚は落ちる', () => {
+	for (let i = 1; i <= 4; i += 1) {
+		assert.strictEqual(checkPostEmbed(imagesEmbed(i)), true);
+	}
+	assert.strictEqual(checkPostEmbed(imagesEmbed(5)), false);
+	assert.strictEqual(checkPostEmbed(imagesEmbed(0)), false);
+	const withRatio = imagesEmbed(1);
+	withRatio.images[0].aspectRatio = {width: 1, height: 1};
+	assert.strictEqual(checkPostEmbed(withRatio), true);
+	withRatio.images[0].aspectRatio = {width: 0, height: 1};
+	assert.strictEqual(checkPostEmbed(withRatio), false);
+});
+
+test('checkPostEmbed: gallery は 1〜10 件で通り、11 件・aspectRatio 無し・item の $type 違いは落ちる', () => {
+	assert.strictEqual(checkPostEmbed(galleryEmbed(1)), true);
+	assert.strictEqual(checkPostEmbed(galleryEmbed(10)), true);
+	assert.strictEqual(checkPostEmbed(galleryEmbed(11)), false);
+	assert.strictEqual(checkPostEmbed(galleryEmbed(0)), false);
+	const noRatio = galleryEmbed(1);
+	delete noRatio.items[0].aspectRatio;
+	assert.strictEqual(checkPostEmbed(noRatio), false);
+	const badType = galleryEmbed(1);
+	badType.items[0].$type = 'app.bsky.embed.images#image';
+	assert.strictEqual(checkPostEmbed(badType), false);
+});
+
+test('checkPostEmbed: ALT 文はちょうど 2000 書記素で通り、2001 で落ちる', () => {
+	const embed = imagesEmbed(1);
+	embed.images[0].alt = '👍'.repeat(2000);
+	assert.strictEqual(checkPostEmbed(embed), true);
+	embed.images[0].alt = '👍'.repeat(2001);
+	assert.strictEqual(checkPostEmbed(embed), false);
+	embed.images[0].alt = 123;
+	assert.strictEqual(checkPostEmbed(embed), false);
+});
+
+test('checkPostEmbed: blob の参照が崩れたもの・mimeType が text/vtt のもの・余分なキーは落ちる', () => {
+	const broken = imagesEmbed(1);
+	broken.images[0].image = blobRef({ref: {}});
+	assert.strictEqual(checkPostEmbed(broken), false);
+	const vtt = imagesEmbed(1);
+	vtt.images[0].image = blobRef({mimeType: 'text/vtt'});
+	assert.strictEqual(checkPostEmbed(vtt), false);
+	const extraEmbed = imagesEmbed(1);
+	extraEmbed.extra = 1;
+	assert.strictEqual(checkPostEmbed(extraEmbed), false);
+	const extraImage = imagesEmbed(1);
+	extraImage.images[0].extra = 1;
+	assert.strictEqual(checkPostEmbed(extraImage), false);
+	const extraItem = galleryEmbed(1);
+	extraItem.items[0].extra = 1;
+	assert.strictEqual(checkPostEmbed(extraItem), false);
+	assert.strictEqual(checkPostEmbed(null), false);
+	assert.strictEqual(checkPostEmbed('x'), false);
+});
+
+test('checkPostEmbed: blob の余分なキー (blob 直下・ref の中) は落ち、size は 2000000 までが通る', () => {
+	const top = imagesEmbed(1);
+	top.images[0].image = blobRef({extra: 'x'});
+	assert.strictEqual(checkPostEmbed(top), false);
+	const inner = imagesEmbed(1);
+	inner.images[0].image = blobRef({ref: {$link: 'x', junk: {}}});
+	assert.strictEqual(checkPostEmbed(inner), false);
+	const edge = imagesEmbed(1);
+	edge.images[0].image = blobRef({size: 2000000});
+	assert.strictEqual(checkPostEmbed(edge), true);
+	edge.images[0].image = blobRef({size: 2000001});
+	assert.strictEqual(checkPostEmbed(edge), false);
+});
+
+test('checkPostEmbed: 複数コードポイントの書記素も 1 つと数える', () => {
+	for (const unit of ['👍🏽', '👨‍👩‍👧']) {
+		const embed = imagesEmbed(1);
+		embed.images[0].alt = unit.repeat(2000);
+		assert.strictEqual(checkPostEmbed(embed), true);
+		embed.images[0].alt = unit.repeat(2001);
+		assert.strictEqual(checkPostEmbed(embed), false);
+	}
+});
+
+test('checkPostEmbed: gallery 直下の余分なキーと小数の aspectRatio は落ちる', () => {
+	const extra = galleryEmbed(1);
+	extra.extra = 1;
+	assert.strictEqual(checkPostEmbed(extra), false);
+	const fraction = galleryEmbed(1);
+	fraction.items[0].aspectRatio = {width: 1.5, height: 1};
+	assert.strictEqual(checkPostEmbed(fraction), false);
+});
+
+test('checkSelfLabels: 重複・labels 直下の余分なキーは落ち、nudity 単独は通る', () => {
+	const type = 'com.atproto.label.defs#selfLabels';
+	assert.strictEqual(checkSelfLabels({$type: type, values: [{val: 'porn'}, {val: 'porn'}]}), false);
+	assert.strictEqual(checkSelfLabels({$type: type, values: [{val: 'nudity'}]}), true);
+	assert.strictEqual(checkSelfLabels({$type: type, values: [{val: 'porn'}], extra: 1}), false);
+});
+
+test('checkSelfLabels: 成人向け 1 つ + graphic-media は通り、成人向け 2 つ・未知の値・3 つ・$type 違いは落ちる', () => {
+	const make = (vals, type) => ({
+		$type: type || 'com.atproto.label.defs#selfLabels',
+		values: vals.map((val) => ({val}))
+	});
+	assert.strictEqual(checkSelfLabels(make(['porn'])), true);
+	assert.strictEqual(checkSelfLabels(make(['graphic-media'])), true);
+	assert.strictEqual(checkSelfLabels(make(['sexual', 'graphic-media'])), true);
+	assert.strictEqual(checkSelfLabels(make(['sexual', 'porn'])), false);
+	assert.strictEqual(checkSelfLabels(make(['spam'])), false);
+	assert.strictEqual(checkSelfLabels(make(['sexual', 'graphic-media', 'nudity'])), false);
+	assert.strictEqual(checkSelfLabels(make(['porn'], 'x#y')), false);
+	assert.strictEqual(checkSelfLabels(make([])), false);
+	assert.strictEqual(checkSelfLabels({
+		$type: 'com.atproto.label.defs#selfLabels', values: [{val: 'porn', extra: 1}]
+	}), false);
+});
+
+test('checkXrpcRequest: 画像とラベル付きの返信は通り、record がそのまま写される', () => {
+	const record = replyRecord({
+		embed: imagesEmbed(2),
+		labels: {$type: 'com.atproto.label.defs#selfLabels', values: [{val: 'porn'}]}
+	});
+	const result = checkPostCreate(record);
+	assert.strictEqual(result.ok, true);
+	assert.deepStrictEqual(result.body.record, record);
+});
+
+test('checkXrpcRequest: 画像付きでも reply の無い投稿は落ちる', () => {
+	const result = checkPostCreate({
+		$type: 'app.bsky.feed.post', text: 'a', createdAt: '2026-10-18T00:00:00.000Z',
+		embed: imagesEmbed(1)
+	});
+	assert.strictEqual(result.ok, false);
+	assert.strictEqual(result.reason, 'post-not-reply');
 });
 
 test('checkXrpcRequest: 本文が 3000 バイトを超える投稿は落ち、ちょうど 3000 バイトは通る', () => {
@@ -334,7 +495,14 @@ test('橋渡しの値は config.js と page-bridge.js が同じ BRIDGE_PROTOCOL 
 	assert.deepStrictEqual(EXT_BRIDGE.routeNames, Object.values(BRIDGE_PROTOCOL.routes));
 	assert.deepStrictEqual(EXT_BRIDGE.recordCollections, Object.values(BRIDGE_PROTOCOL.collections));
 	assert.deepStrictEqual(EXT_BRIDGE.composerModes, Object.values(BRIDGE_PROTOCOL.composerModes));
-	assert.deepStrictEqual(Object.keys(EXT_BRIDGE.xrpc).sort(), Object.values(BRIDGE_PROTOCOL.nsid).sort());
+	// call-xrpc の白名簿は nsid の全部。ただし uploadBlob は upload-blob 専用で、call-xrpc には通さない
+	const xrpcNsids = Object.values(BRIDGE_PROTOCOL.nsid)
+		.filter((nsid) => nsid !== BRIDGE_PROTOCOL.nsid.uploadBlob);
+	assert.deepStrictEqual(Object.keys(EXT_BRIDGE.xrpc).sort(), xrpcNsids.sort());
+	assert.strictEqual(
+		checkXrpcRequest({nsid: BRIDGE_PROTOCOL.nsid.uploadBlob, body: {}}, SELF_DID).ok,
+		false
+	);
 	// 呼び出し側が分岐に使う失敗理由も、検査が返す値と同じもの
 	assert.strictEqual(
 		checkXrpcRequest({
@@ -443,4 +611,156 @@ test('waitForLightboxHistory: popstate が来なくても上限で諦めて fals
 	const win = fakeWindow({lightbox: true});
 	assert.strictEqual(await waitForLightboxHistory(win, true, 30), false);
 	assert.strictEqual(win.listenerCount, 0);
+});
+
+/** upload-blob の検査で使う値 */
+const UPLOAD = BRIDGE_PROTOCOL.upload;
+
+test('checkUploadBlob: 許した MIME で上限以下なら通る', () => {
+	assert.deepStrictEqual(checkUploadBlob({type: 'image/jpeg', size: 2000000}), {ok: true});
+	assert.deepStrictEqual(checkUploadBlob({type: 'text/vtt', size: 100000}), {ok: true});
+});
+
+test('checkUploadBlob: 上限を 1 バイト超えると落ちる', () => {
+	const expected = {ok: false, reason: 'blob-not-allowed'};
+	assert.deepStrictEqual(checkUploadBlob({type: 'image/jpeg', size: 2000001}), expected);
+	assert.deepStrictEqual(checkUploadBlob({type: 'text/vtt', size: 100001}), expected);
+});
+
+test('checkUploadBlob: 許していない MIME・0 バイト・数でない size は落ちる', () => {
+	for (const info of [
+		{type: 'video/mp4', size: 10},
+		{type: 'application/octet-stream', size: 10},
+		{type: 'image/png', size: 0},
+		{type: 'image/png', size: '1'},
+		{type: 'image/png', size: NaN},
+		null
+	]) {
+		assert.strictEqual(checkUploadBlob(info).ok, false);
+	}
+});
+
+test('isBlobRef: 正しい形だけ真', () => {
+	const good = {$type: 'blob', ref: {$link: 'bafk'}, mimeType: 'image/png', size: 10};
+	const types = UPLOAD.mimeTypes;
+	assert.strictEqual(isBlobRef(good, types), true);
+	assert.strictEqual(isBlobRef({...good, $type: 'x'}, types), false);
+	assert.strictEqual(isBlobRef({...good, ref: {$link: ''}}, types), false);
+	assert.strictEqual(isBlobRef({...good, ref: null}, types), false);
+	assert.strictEqual(isBlobRef({...good, mimeType: 'video/mp4'}, types), false);
+	assert.strictEqual(isBlobRef({...good, size: -1}, types), false);
+	assert.strictEqual(isBlobRef({...good, size: 1.5}, types), false);
+	assert.strictEqual(isBlobRef(null, types), false);
+});
+
+/**
+ * 偽のタイマー。発火は fire() で手動に行う
+ * @returns {{setTimer: Function, clearTimer: Function, fire: Function}}
+ */
+function makeFakeTimers() {
+	const timers = new Map();
+	let next = 1;
+	return {
+		setTimer: (fn) => {
+			timers.set(next, fn);
+			return next++;
+		},
+		clearTimer: (handle) => timers.delete(handle),
+		fire: () => {
+			for (const [handle, fn] of [...timers]) {
+				timers.delete(handle);
+				fn();
+			}
+		}
+	};
+}
+
+test('BlobInbox: put した Blob を take で 1 回だけ取り出せる', () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...timers});
+	const blob = new Blob(['a']);
+	assert.strictEqual(inbox.put('id-00000001', blob), true);
+	assert.strictEqual(inbox.take('id-00000001'), blob);
+	assert.strictEqual(inbox.take('id-00000001'), null);
+});
+
+test('BlobInbox: ttl を過ぎたら消える', () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...timers});
+	inbox.put('id-00000001', new Blob(['a']));
+	timers.fire();
+	assert.strictEqual(inbox.take('id-00000001'), null);
+});
+
+test('BlobInbox: 上限を超えたら古いものから消える', () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 2, ...timers});
+	inbox.put('id-00000001', new Blob(['a']));
+	inbox.put('id-00000002', new Blob(['b']));
+	inbox.put('id-00000003', new Blob(['c']));
+	assert.strictEqual(inbox.take('id-00000001'), null);
+	assert.notStrictEqual(inbox.take('id-00000002'), null);
+	assert.notStrictEqual(inbox.take('id-00000003'), null);
+	inbox.put('id-00000004', new Blob(['d']));
+	inbox.clear();
+	assert.strictEqual(inbox.take('id-00000004'), null);
+});
+
+test('readBlobMessage: 条件を満たすものだけ読める', () => {
+	const win = {location: {origin: 'https://bsky.app'}};
+	const blob = new Blob(['a']);
+	const make = (override) => ({
+		source: win,
+		origin: 'https://bsky.app',
+		data: {type: BRIDGE_PROTOCOL.blobMessageType, id: 'abcd-1234-efgh', blob},
+		...override
+	});
+	const ok = readBlobMessage(make({}), win);
+	assert.strictEqual(ok.id, 'abcd-1234-efgh');
+	assert.strictEqual(ok.blob, blob);
+	assert.strictEqual(readBlobMessage(make({source: {}}), win), null);
+	assert.strictEqual(readBlobMessage(make({origin: 'https://evil.example'}), win), null);
+	assert.strictEqual(readBlobMessage(make({data: {type: 'x', id: 'abcd-1234', blob}}), win), null);
+	assert.strictEqual(readBlobMessage(make({data: {type: BRIDGE_PROTOCOL.blobMessageType, id: 'ABC!', blob}}), win), null);
+	assert.strictEqual(readBlobMessage(make({data: {type: BRIDGE_PROTOCOL.blobMessageType, id: 'abcd-1234', blob: 'x'}}), win), null);
+	assert.strictEqual(readBlobMessage(make({data: null}), win), null);
+});
+
+test('BlobInbox: 同じ id の put は最初のものを守る', () => {
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...makeFakeTimers()});
+	const first = new Blob(['a']);
+	assert.strictEqual(inbox.put('id-00000001', first), true);
+	assert.strictEqual(inbox.put('id-00000001', new Blob(['evil'])), false);
+	assert.strictEqual(inbox.take('id-00000001'), first);
+});
+
+test('BlobInbox.waitFor: 要求が先に着いても、後から put された Blob を受け取れる', async () => {
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...makeFakeTimers()});
+	const pending = inbox.waitFor('id-00000001', 5000);
+	const blob = new Blob(['a']);
+	inbox.put('id-00000001', blob);
+	assert.strictEqual(await pending, blob);
+	assert.strictEqual(inbox.take('id-00000001'), null);
+});
+
+test('BlobInbox.waitFor: 既にあれば直ちに取り出し、届かなければ上限で null', async () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...timers});
+	const blob = new Blob(['a']);
+	inbox.put('id-00000001', blob);
+	assert.strictEqual(await inbox.waitFor('id-00000001', 5000), blob);
+	const pending = inbox.waitFor('id-00000002', 5000);
+	timers.fire();
+	assert.strictEqual(await pending, null);
+	// 時間切れの後に届いた Blob は箱に残る (ttl で捨てられる)
+	const late = new Blob(['b']);
+	inbox.put('id-00000002', late);
+	assert.strictEqual(inbox.take('id-00000002'), late);
+});
+
+test('toBlobRef: 想定したキーだけで組み直す', () => {
+	const ref = toBlobRef({
+		$type: 'blob', ref: {$link: 'bafk', extra: 1}, mimeType: 'image/png', size: 10, evil: true
+	});
+	assert.deepStrictEqual(ref, {$type: 'blob', ref: {$link: 'bafk'}, mimeType: 'image/png', size: 10});
 });

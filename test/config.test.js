@@ -136,6 +136,27 @@ test('返信欄のクラスはすべて content.css に書いてあり、削除�
 	assert.ok(light.slice(0, light.indexOf('}')).includes('--ext-lb-danger:'), 'ライトに --ext-lb-danger が無い');
 });
 
+test('入力欄の部品のクラスはすべて content.css に書いてあり、文言が揃っている', () => {
+	const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'content.css'), 'utf8');
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	const keys = ['composer', 'dragOver', 'fileInput', 'attachments', 'attachment', 'attachmentImage',
+		'attachmentTools', 'attachmentButton', 'altButton', 'altDone', 'labelsButton', 'labelsActive',
+		'suggest', 'suggestText', 'suggestAccept', 'suggestDismiss', 'toolbar', 'tool', 'languageButton',
+		'languageText'];
+	for (const key of keys) {
+		const cls = compose.classes[key];
+		assert.ok(typeof cls === 'string' && css.includes(`.${cls}`), `${key} (${cls}) が content.css に無い`);
+	}
+	const text = compose.text;
+	assert.strictEqual(text.suggest, '{言語}で返信しますか？');
+	assert.strictEqual(text.sending, '送信中 {done}/{total}');
+	for (const key of ['addImage', 'emoji', 'alt', 'altDone', 'crop', 'remove', 'labels', 'language',
+		'suggestAccept', 'suggestDismiss', 'tooManyImages', 'unsupportedImage', 'imageLoadFailed', 'uploadFailed']) {
+		assert.ok(typeof text[key] === 'string' && text[key] !== '', `compose.text.${key} が無い`);
+	}
+	assert.ok(text.tooManyImages.includes(String(compose.maxImages)), '上限の枚数と文言が食い違う');
+});
+
 test('ライトボックスのパネルは既定で有効', () => {
 	const panel = EXT_CONFIG.lightboxPanel;
 	assert.equal(typeof panel, 'object');
@@ -214,4 +235,27 @@ test('操作ボタンの色は content.css に種別ぶん書いてある', () =
 	for (const kind of colored) {
 		assert.ok(lightBlock.includes(`--ext-lb-${kind}:`), `ライトに --ext-lb-${kind} が無い`);
 	}
+});
+
+test('compose の上限は橋渡しの値と一致する', () => {
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	const rules = BRIDGE_PROTOCOL.postRecord;
+	assert.strictEqual(compose.maxAltGraphemes, rules.maxAltGraphemes);
+	assert.strictEqual(compose.maxImages, rules.maxGalleryItems);
+	assert.strictEqual(compose.legacyImagesMax, rules.maxImages);
+	assert.strictEqual(compose.maxLanguages, rules.maxLangs);
+	assert.deepStrictEqual(compose.labels.adult, rules.adultLabels);
+	assert.ok(rules.otherLabels.includes(compose.labels.graphic));
+});
+
+test('languageCodes は 2 文字の小文字で重複しない', () => {
+	const codes = EXT_CONFIG.lightboxReplies.compose.languageCodes;
+	assert.ok(codes.length > 0);
+	assert.ok(codes.every((code) => /^[a-z]{2}$/.test(code)));
+	assert.strictEqual(new Set(codes).size, codes.length);
+});
+
+test('返信に添付できる画像の形式は本体と同じ 6 つ', () => {
+	assert.deepStrictEqual(EXT_CONFIG.lightboxReplies.compose.acceptImageTypes,
+		['image/gif', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif']);
 });

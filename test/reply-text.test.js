@@ -144,6 +144,24 @@ test('parseThreadReplies: 1 段目の返信を整形し、見つからない・�
 	assert.deepStrictEqual(parseThreadReplies({thread: {$type: 'app.bsky.feed.defs#notFoundPost'}}), []);
 });
 
+test('parseThreadReplies: record.langs を文字列だけ残して持ち、無ければ null', () => {
+	const reply = (rkey, langs) => ({
+		$type: 'app.bsky.feed.defs#threadViewPost',
+		post: {
+			uri: `at://did:plc:a/app.bsky.feed.post/${rkey}`,
+			cid: `cid-${rkey}`,
+			author: {did: 'did:plc:a', handle: 'a.example.com'},
+			record: {text: 'x', createdAt: '2026-10-01T00:00:00.000Z', ...(langs === undefined ? {} : {langs})}
+		}
+	});
+	const items = parseThreadReplies({thread: {
+		$type: 'app.bsky.feed.defs#threadViewPost',
+		post: {uri: 'at://did:plc:op/app.bsky.feed.post/root', cid: 'c'},
+		replies: [reply('l1', ['en-US', 3, 'fr']), reply('l2', undefined), reply('l3', 'en')]
+	}});
+	assert.deepStrictEqual(items.map((item) => item.langs), [['en-US', 'fr'], null, null]);
+});
+
 test('flattenThreadBranch: 起点を除く部分木を古い順に平らにし、孫には親の handle を付ける', () => {
 	const items = flattenThreadBranch(
 		loadFixture('get-post-thread-branch.json'), 'at://did:plc:a/app.bsky.feed.post/A'
@@ -215,4 +233,17 @@ test('mediaAspectRatio: 画像の比を範囲に収め、寸法が読めなけ�
 	assert.strictEqual(mediaAspectRatio({width: 3000, height: 100}, range), 16 / 9);
 	assert.strictEqual(mediaAspectRatio(null, range), 1);
 	assert.strictEqual(mediaAspectRatio({width: 0, height: 100}, range), 1);
+});
+
+test('buildReplyRecord: embed と labels を渡すとキーが付き、null なら付かない', () => {
+	const base = {text: 'a', createdAt: '2026-10-18T00:00:00.000Z', reply: {root: {}, parent: {}}, langs: null, facets: []};
+	const embed = {$type: 'app.bsky.embed.images', images: []};
+	const labels = {$type: 'com.atproto.label.defs#selfLabels', values: [{val: 'porn'}]};
+	const withBoth = buildReplyRecord(Object.assign({}, base, {embed, labels}));
+	assert.deepStrictEqual(withBoth.embed, embed);
+	assert.deepStrictEqual(withBoth.labels, labels);
+	const without = buildReplyRecord(Object.assign({}, base, {embed: null, labels: null}));
+	assert.ok(!('embed' in without));
+	assert.ok(!('labels' in without));
+	assert.ok(!('embed' in buildReplyRecord(base)));
 });

@@ -35,6 +35,8 @@ export function staticFilesFor(outDir) {
 		['src/content/content.css', `${outDir}/content.css`],
 		['src/popup/popup.html', `${outDir}/popup/popup.html`],
 		['src/popup/popup.css', `${outDir}/popup/popup.css`],
+		['src/emoji/emoji.html', `${outDir}/emoji/emoji.html`],
+		['src/emoji/emoji.css', `${outDir}/emoji/emoji.css`],
 		// 配色トークン。popup.html が ../common/tokens.css で読むので、src と同じ相対配置で置く
 		['src/common/tokens.css', `${outDir}/common/tokens.css`],
 		...ICON_SIZES.map((size) => [

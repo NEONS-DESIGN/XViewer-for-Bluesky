@@ -184,6 +184,11 @@
 	/* リンク色。ダークテーマの実測値。ライト / ディムは未実測のため共通で使う */
 	--ext-lb-accent: #4291ff;
 	/*
+	 * 塗りつぶしのボタン (重ねる画面の「完了」・選んでいる比) の地色。白い文字との比が
+	 * 4.66:1 になる Bluesky 本体のアクセント色。地色に依らないため両テーマで共通
+	 */
+	--ext-lb-primary: #006aff;
+	/*
 	 * 操作ボタンの種別ごとの色 (2.8.0、返信は 2.8.1)。利用者の指定で
 	 * 返信 = 水色・リポスト = 緑・いいね = マゼンタ・ブックマーク = 黄。
 	 * 暗い地色 (ダーク / ディム) に載る前提の明るい側の値で、
@@ -196,6 +201,9 @@
 	--ext-lb-bookmark: #ffd400;
 	/* 返信欄の削除の聞き返し (2026-10-18 追加)。ライトは下で暗い側へ差し替える */
 	--ext-lb-danger: #e5737a;
+
+	/* チェックボックス・ラジオ・検索欄・スクロールバーなどの標準部品の配色。ライトは下で差し替える */
+	color-scheme: dark;
 
 	position: fixed;
 	top: 0;
@@ -213,6 +221,7 @@
 }
 
 :root.theme--light #ext-lightbox-panel {
+	color-scheme: light;
 	--ext-lb-bg: var(--background, #ffffff);
 	--ext-lb-text: var(--text, #000000);
 	--ext-lb-border: var(--backgroundLight, #dce2ea);
@@ -228,6 +237,7 @@
 }
 
 :root.theme--dim #ext-lightbox-panel {
+	color-scheme: dark;
 	--ext-lb-bg: var(--background, #151d28);
 	--ext-lb-text: var(--text, #ffffff);
 	--ext-lb-border: var(--backgroundLight, #2c3a4e);
@@ -901,6 +911,286 @@
 	cursor: progress;
 }
 
+/*
+ * 返信の入力欄の部品 (添付のプレビュー・ラベル・言語の提案・ツールバー)。
+ * 本文の欄の左にアバター (32px + 隙間 8px) があるため、下に積む部品はその分だけ字下げする
+ */
+.ext-lb-composer {
+	--ext-lb-composer-indent: 40px;
+	--ext-lb-composer-overlay: color-mix(in srgb, #000000 65%, transparent);
+}
+
+/* display を持つ部品が hidden を上書きしないよう、入力欄の中ではまとめて隠す */
+.ext-lb-composer [hidden] {
+	display: none !important;
+}
+
+/* 置換要素は固有サイズを持たない。土台の大きさを詳細度 0 で当て、個別の規則で上書きする */
+:where(.ext-lb-composer) svg {
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	fill: currentColor;
+}
+
+.ext-lb-composer button:focus-visible {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: 2px;
+}
+
+.ext-lb-composer.is-dragover .ext-lb-reply-input-frame {
+	border-color: var(--ext-lb-accent);
+	border-style: dashed;
+}
+
+.ext-lb-composer-file {
+	display: none;
+}
+
+.ext-lb-composer-attachments {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 4px;
+	margin: 0 0 0 var(--ext-lb-composer-indent);
+	padding: 0;
+	list-style: none;
+}
+
+.ext-lb-composer-attachment {
+	position: relative;
+	aspect-ratio: 1;
+	overflow: hidden;
+	background: var(--ext-lb-border);
+	border-radius: 6px;
+}
+
+.ext-lb-composer-attachment-image {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.ext-lb-composer-attachment-tools {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: flex;
+	gap: 4px;
+}
+
+.ext-lb-composer-attachment-button,
+.ext-lb-composer-alt {
+	flex: 0 0 auto;
+	cursor: pointer;
+	color: #ffffff;
+	background: var(--ext-lb-composer-overlay);
+	border: none;
+	font: inherit;
+}
+
+.ext-lb-composer-attachment-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border-radius: 50%;
+}
+
+.ext-lb-composer-attachment-button svg {
+	width: 18px;
+	height: 18px;
+}
+
+.ext-lb-composer-alt {
+	position: absolute;
+	left: 4px;
+	bottom: 4px;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	height: 24px;
+	padding: 0 8px;
+	border-radius: 4px;
+	font-size: 12px;
+	font-weight: 700;
+}
+
+.ext-lb-composer-alt.is-done svg {
+	width: 14px;
+	height: 14px;
+}
+
+.ext-lb-composer-attachment-button:disabled,
+.ext-lb-composer-alt:disabled {
+	cursor: default;
+	opacity: 0.6;
+}
+
+.ext-lb-composer-labels {
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: calc(100% - var(--ext-lb-composer-indent));
+	height: 28px;
+	margin-left: var(--ext-lb-composer-indent);
+	padding: 0 10px;
+	cursor: pointer;
+	color: var(--ext-lb-muted);
+	background: transparent;
+	border: 1px solid var(--ext-lb-border);
+	border-radius: 999px;
+	font: inherit;
+	font-size: 12px;
+}
+
+.ext-lb-composer-labels span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ext-lb-composer-labels svg {
+	width: 16px;
+	height: 16px;
+}
+
+.ext-lb-composer-labels.is-active {
+	color: var(--ext-lb-text);
+	border-color: var(--ext-lb-accent);
+}
+
+.ext-lb-composer-suggest {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin-left: var(--ext-lb-composer-indent);
+	padding: 4px 4px 4px 8px;
+	border: 1px solid var(--ext-lb-border);
+	border-radius: 6px;
+	font-size: 12px;
+}
+
+.ext-lb-composer-suggest-text {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.ext-lb-composer-suggest-accept {
+	flex: 0 0 auto;
+	height: 28px;
+	padding: 0 12px;
+	cursor: pointer;
+	color: #ffffff;
+	background: var(--ext-lb-primary);
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 700;
+}
+
+.ext-lb-composer-suggest-dismiss {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	cursor: pointer;
+	color: var(--ext-lb-muted);
+	background: transparent;
+	border: none;
+	border-radius: 50%;
+}
+
+.ext-lb-composer-suggest-dismiss svg {
+	width: 16px;
+	height: 16px;
+}
+
+.ext-lb-reply-form-foot.ext-lb-composer-toolbar {
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	gap: 4px;
+	padding-left: calc(var(--ext-lb-composer-indent) - 6px);
+}
+
+.ext-lb-composer-toolbar .ext-lb-reply-remaining,
+.ext-lb-composer-toolbar .ext-lb-reply-submit {
+	flex: 0 0 auto;
+}
+
+.ext-lb-composer-toolbar .ext-lb-reply-remaining {
+	margin: 0 8px;
+}
+
+.ext-lb-composer-tool {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	cursor: pointer;
+	color: var(--ext-lb-accent);
+	background: transparent;
+	border: none;
+	border-radius: 50%;
+}
+
+.ext-lb-composer-tool:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--ext-lb-accent) 14%, transparent);
+}
+
+.ext-lb-composer-tool:disabled,
+.ext-lb-composer-lang:disabled,
+.ext-lb-composer-labels:disabled {
+	cursor: default;
+	color: var(--ext-lb-muted);
+}
+
+.ext-lb-composer-lang {
+	flex: 0 1 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	max-width: 120px;
+	height: 32px;
+	margin-left: auto;
+	padding: 0 6px;
+	cursor: pointer;
+	color: var(--ext-lb-muted);
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	font: inherit;
+	font-size: 12px;
+}
+
+.ext-lb-composer-lang:hover:not(:disabled) {
+	color: var(--ext-lb-text);
+}
+
+.ext-lb-composer-lang svg {
+	width: 16px;
+	height: 16px;
+}
+
+.ext-lb-composer-lang-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .ext-lb-replies-more {
 	width: 100%;
 	height: 30px;
@@ -1011,4 +1301,408 @@
  */
 [role="dialog"][aria-modal="true"]:has([data-testid="composePostView"]) {
 	z-index: 20 !important;
+}
+
+/*
+ * パネルに重ねる画面 (reply-sheets.js / crop-sheet.js)。識別子は config.js の
+ * EXT_CONFIG.lightboxReplies.compose.classes と対応する。
+ *
+ * パネルは overflow-y: auto で送られるため、absolute で重ねると送った分だけ画面が
+ * 上へずれて見えなくなる。fixed でパネルと同じ場所に置き、幅は width: inherit で
+ * パネルのインラインの幅をそのまま受ける。開いているあいだはパネル自体を送らない
+ */
+#ext-lightbox-panel.ext-lb-sheet-open {
+	overflow: hidden;
+}
+
+#ext-lightbox-panel.ext-lb-collapsed .ext-lb-sheet {
+	display: none;
+}
+
+.ext-lb-sheet {
+	position: fixed;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	/* 返信欄の貼り付く見出し (z-index: 1) より上に出す */
+	z-index: 2;
+	box-sizing: border-box;
+	width: inherit;
+	display: flex;
+	flex-direction: column;
+	color: var(--ext-lb-text);
+	background: var(--ext-lb-bg);
+	border-left: 1px solid var(--ext-lb-border);
+}
+
+/* display: flex などを持つ部品が hidden を上書きしないよう、画面の中ではまとめて隠す */
+.ext-lb-sheet [hidden] {
+	display: none !important;
+}
+
+.ext-lb-sheet :focus-visible {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: 2px;
+}
+
+/* Tab の順で画面の両端に置く番兵。フォーカスを受けるとすぐ反対の端へ回すため、見た目を持たない */
+.ext-lb-sheet-sentinel {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.ext-lb-sheet-header {
+	flex: 0 0 auto;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--ext-lb-border);
+}
+
+.ext-lb-sheet-title {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 700;
+	line-height: 1.4;
+}
+
+.ext-lb-sheet-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 12px 16px;
+}
+
+.ext-lb-sheet.is-wide .ext-lb-sheet-body {
+	padding-right: 0;
+	padding-left: 0;
+}
+
+.ext-lb-sheet-foot {
+	flex: 0 0 auto;
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 12px 16px;
+	border-top: 1px solid var(--ext-lb-border);
+}
+
+.ext-lb-sheet-button,
+.ext-lb-crop-aspect {
+	flex: 0 0 auto;
+	min-width: 32px;
+	height: 32px;
+	padding: 0 16px;
+	cursor: pointer;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.ext-lb-sheet-button:hover:not(:disabled),
+.ext-lb-crop-aspect:hover {
+	background: color-mix(in srgb, var(--ext-lb-text) 14%, transparent);
+}
+
+.ext-lb-sheet-button.is-primary,
+.ext-lb-crop-aspect[aria-pressed="true"] {
+	color: #ffffff;
+	background: var(--ext-lb-primary);
+}
+
+.ext-lb-sheet-button.is-primary:hover:not(:disabled),
+.ext-lb-crop-aspect[aria-pressed="true"]:hover {
+	background: color-mix(in srgb, var(--ext-lb-primary) 85%, #000000);
+}
+
+.ext-lb-sheet-button:disabled {
+	cursor: default;
+	color: var(--ext-lb-muted);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+}
+
+.ext-lb-sheet-note {
+	margin: 0;
+	color: var(--ext-lb-muted);
+	font-size: 13px;
+	line-height: 1.5;
+}
+
+.ext-lb-sheet-error {
+	margin: 0;
+	color: var(--ext-lb-danger);
+	font-size: 13px;
+}
+
+/* ALT テキスト */
+.ext-lb-sheet-alt-preview {
+	display: block;
+	max-width: 100%;
+	max-height: 200px;
+	margin: 0 auto;
+	object-fit: contain;
+	border-radius: 8px;
+}
+
+.ext-lb-sheet-alt-frame {
+	display: flex;
+	padding: 6px 8px;
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: 1px solid transparent;
+	border-radius: 4px;
+}
+
+.ext-lb-sheet-alt-frame:focus-within {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: 2px;
+}
+
+.ext-lb-sheet-alt-input {
+	flex: 1 1 auto;
+	box-sizing: border-box;
+	min-width: 0;
+	min-height: 120px;
+	margin: 0;
+	padding: 0;
+	resize: vertical;
+	color: var(--ext-lb-text);
+	background: transparent;
+	border: none;
+	font: inherit;
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+/*
+ * フォーカスの輪は枠 (alt-frame) に出す。欄そのものの輪は透明にして重ねて描かない
+ * (透明の輪は Windows の強制配色では見える色に置き換わるため、輪が消えることはない)
+ */
+.ext-lb-sheet .ext-lb-sheet-alt-input:focus-visible {
+	outline: 2px solid transparent;
+}
+
+.ext-lb-sheet-alt-remaining {
+	margin: 0;
+	text-align: right;
+	color: var(--ext-lb-muted);
+	font-size: 12px;
+}
+
+.ext-lb-sheet-alt-remaining.is-warn {
+	color: var(--ext-lb-danger);
+}
+
+/* 選択肢の行 (ラベル・言語) */
+.ext-lb-label-group {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: none;
+}
+
+.ext-lb-label-group-title {
+	margin-bottom: 4px;
+	padding: 0;
+	font-size: 13px;
+	font-weight: 700;
+}
+
+.ext-lb-sheet-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 32px;
+	padding: 2px 8px;
+	cursor: pointer;
+	border-radius: 6px;
+	font-size: 13px;
+	line-height: 1.4;
+}
+
+.ext-lb-sheet-option:hover {
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+}
+
+.ext-lb-sheet-option input {
+	flex: 0 0 auto;
+	width: 18px;
+	height: 18px;
+	margin: 0;
+	accent-color: var(--ext-lb-primary);
+}
+
+.ext-lb-sheet-option:has(input:disabled) {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.ext-lb-sheet-option:has(input:disabled):hover {
+	background: transparent;
+}
+
+/* 言語 */
+.ext-lb-lang-search {
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	height: 32px;
+	padding: 0 8px;
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	border: 1px solid transparent;
+	border-radius: 4px;
+	font: inherit;
+	font-size: 13px;
+}
+
+.ext-lb-lang-search:focus {
+	border-color: var(--ext-lb-accent);
+}
+
+.ext-lb-lang-count {
+	margin: 0;
+	color: var(--ext-lb-muted);
+	font-size: 12px;
+}
+
+.ext-lb-lang-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+/* 切り抜き */
+.ext-lb-crop-aspects {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.ext-lb-crop-aspect {
+	padding: 0 12px;
+	border-radius: 6px;
+}
+
+/* つまみが本文の端で切れないよう、画像の周りに余白を取る */
+.ext-lb-crop-stage {
+	display: flex;
+	justify-content: center;
+	padding: 16px;
+	background: color-mix(in srgb, var(--ext-lb-text) 4%, transparent);
+	border-radius: 8px;
+}
+
+.ext-lb-crop-frame {
+	position: relative;
+	max-width: 100%;
+	line-height: 0;
+}
+
+.ext-lb-crop-image {
+	display: block;
+	width: auto;
+	height: auto;
+	max-width: 100%;
+	max-height: 50vh;
+	user-select: none;
+	-webkit-user-drag: none;
+}
+
+/* 枠の外を暗くする影。画像からはみ出した分は切る */
+.ext-lb-crop-shade-clip {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.ext-lb-crop-shade {
+	position: absolute;
+	box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+}
+
+.ext-lb-crop-box {
+	position: absolute;
+	box-sizing: border-box;
+	cursor: move;
+	touch-action: none;
+	border: 2px solid #ffffff;
+	box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+
+/* つまみは押せる範囲を 32px 取り、見た目の四角は内側に小さく描く */
+.ext-lb-crop-handle {
+	position: absolute;
+	width: 32px;
+	height: 32px;
+	margin: -16px;
+	touch-action: none;
+}
+
+.ext-lb-crop-handle::after {
+	content: '';
+	position: absolute;
+	inset: 10px;
+	background: #ffffff;
+	border: 1px solid rgba(0, 0, 0, 0.6);
+	border-radius: 2px;
+}
+
+.ext-lb-crop-handle[data-corner="nw"] {
+	top: 0;
+	left: 0;
+	cursor: nwse-resize;
+}
+
+.ext-lb-crop-handle[data-corner="ne"] {
+	top: 0;
+	right: 0;
+	cursor: nesw-resize;
+}
+
+.ext-lb-crop-handle[data-corner="sw"] {
+	bottom: 0;
+	left: 0;
+	cursor: nesw-resize;
+}
+
+.ext-lb-crop-handle[data-corner="se"] {
+	right: 0;
+	bottom: 0;
+	cursor: nwse-resize;
+}
+
+.ext-lb-crop-tools {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.ext-lb-crop-size {
+	color: var(--ext-lb-muted);
+	font-size: 12px;
+}
+
+/* 絵文字。ピッカーのページは 100vh で描くため、iframe に高さを与える */
+.ext-lb-emoji-frame {
+	display: block;
+	flex: 0 0 auto;
+	width: 100%;
+	height: 435px;
+	border: none;
+	border-radius: 8px;
 }

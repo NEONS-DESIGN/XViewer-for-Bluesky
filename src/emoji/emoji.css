@@ -1,0 +1,14 @@
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background: transparent;
+	overflow: hidden;
+}
+
+/* ピッカーの幅は iframe いっぱい (パネルの内幅) に合わせる */
+em-emoji-picker {
+	width: 100%;
+	max-width: 100%;
+	height: 100vh;
+}

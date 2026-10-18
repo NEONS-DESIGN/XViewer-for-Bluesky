@@ -1,0 +1,223 @@
+/**
+ * 返信欄の添付 (画像) まわりの純関数。
+ * 投稿の embed と自己ラベルの組み立て・添付の受け入れ・送信の可否・言語の扱い・
+ * 投稿直後の自分の返信を描くための embed view を持つ。**DOM も通信も config も知らない。**
+ * 値 (上限など) は引数で受け取る。
+ */
+import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
+import {countGraphemes, primaryLanguage} from './reply-text.js';
+
+/**
+ * アップロード済みの画像 1 枚。
+ * @typedef {Object} UploadedImage
+ * @property {Object} blob uploadBlob が返した BlobRef
+ * @property {string} alt 代替テキスト
+ * @property {number} width 縮小後の幅 (px)
+ * @property {number} height 縮小後の高さ (px)
+ */
+
+/** 橋渡しと共有する record の規則 */
+const RECORD_RULES = BRIDGE_PROTOCOL.postRecord;
+
+/** 投稿の本文の上限のうちバイトの数え方に使う変換器 */
+const utf8Encoder = new TextEncoder();
+
+/** embed view の $type は record 側の $type に #view を足した形 */
+const VIEW_SUFFIX = '#view';
+
+/**
+ * 幅・高さが正のときだけ aspectRatio にする。
+ * @param {UploadedImage} image
+ * @returns {{width: number, height: number}|null}
+ */
+function toAspectRatio(image) {
+	return image.width > 0 && image.height > 0
+		? {width: image.width, height: image.height}
+		: null;
+}
+
+/**
+ * 添付画像から投稿の embed を作る。legacyMax 枚までは images、超えたら gallery。
+ * gallery の aspectRatio は必須なので、寸法が読めない画像を渡さないのは呼び出し側の責任
+ * (ここでは幅・高さをそのまま入れる)。
+ * @param {UploadedImage[]} images
+ * @param {number} legacyMax images に収める枚数の上限
+ * @returns {Object|null} 0 枚は null
+ */
+export function buildMediaEmbed(images, legacyMax) {
+	if (!Array.isArray(images) || images.length === 0) {
+		return null;
+	}
+	if (images.length <= legacyMax) {
+		return {
+			$type: RECORD_RULES.embedTypes.images,
+			images: images.map((image) => {
+				const item = {image: image.blob, alt: image.alt};
+				const aspectRatio = toAspectRatio(image);
+				if (aspectRatio) {
+					item.aspectRatio = aspectRatio;
+				}
+				return item;
+			})
+		};
+	}
+	return {
+		$type: RECORD_RULES.embedTypes.gallery,
+		items: images.map((image) => ({
+			$type: RECORD_RULES.galleryImageType,
+			image: image.blob,
+			alt: image.alt,
+			aspectRatio: {width: image.width, height: image.height}
+		}))
+	};
+}
+
+/**
+ * 選択から自己ラベルを作る。何も選ばれていなければ null (橋渡しは空の values を拒む)。
+ * @param {{adult: string|null, graphic: boolean}} selection
+ * @returns {Object|null}
+ */
+export function buildSelfLabels(selection) {
+	const values = [];
+	if (selection && typeof selection.adult === 'string' && selection.adult) {
+		values.push({val: selection.adult});
+	}
+	if (selection && selection.graphic) {
+		values.push({val: RECORD_RULES.otherLabels[0]});
+	}
+	return values.length > 0
+		? {$type: RECORD_RULES.selfLabelsType, values}
+		: null;
+}
+
+/**
+ * 選ばれたファイルのうち、受け取れるものの添字を入ってきた順に返す。
+ * @param {number} currentCount いま添付済みの枚数
+ * @param {Array<{type: string}>|ArrayLike<{type: string}>} files 配列か FileList
+ * @param {string[]} accept 受け付ける MIME タイプ
+ * @param {number} max 添付の上限
+ * @returns {{accepted: number[], tooMany: number, unsupported: number}}
+ */
+export function acceptImages(currentCount, files, accept, max) {
+	const accepted = [];
+	let tooMany = 0;
+	let unsupported = 0;
+	// FileList のような配列もどきは読み、それ以外 (null や文字列) は空として扱う
+	const list = Array.isArray(files)
+		? files
+		: (files && typeof files === 'object' && typeof files.length === 'number' ? Array.from(files) : []);
+	list.forEach((file, index) => {
+		if (!file || !accept.includes(file.type)) {
+			unsupported += 1;
+		} else if (currentCount + accepted.length >= max) {
+			tooMany += 1;
+		} else {
+			accepted.push(index);
+		}
+	});
+	return {accepted, tooMany, unsupported};
+}
+
+/**
+ * 送信できるかと、残りの文字数 (書記素) を返す。
+ * 本文 (trim 後) か添付が 1 つ以上あり、本文が上限内であること。
+ * @param {string} text
+ * @param {number} attachmentCount
+ * @param {{maxGraphemes: number, maxBytes: number}} limits
+ * @returns {{ok: boolean, remaining: number}}
+ */
+export function canSubmitComposer(text, attachmentCount, limits) {
+	const value = typeof text === 'string' ? text : '';
+	const remaining = limits.maxGraphemes - countGraphemes(value);
+	const hasContent = value.trim() !== '' || attachmentCount > 0;
+	const ok = hasContent && remaining >= 0
+		&& utf8Encoder.encode(value).length <= limits.maxBytes;
+	return {ok, remaining};
+}
+
+/**
+ * 保存された言語の配列から、重複・未知のコード・上限超えを落とす。
+ * @param {*} codes 保存値 (配列でなければ空扱い)
+ * @param {number} max
+ * @param {string[]} known 選べるコード
+ * @returns {string[]}
+ */
+export function normalizeLanguages(codes, max, known) {
+	if (!Array.isArray(codes)) {
+		return [];
+	}
+	const result = [];
+	for (const code of codes) {
+		if (typeof code === 'string' && known.includes(code) && !result.includes(code)) {
+			result.push(code);
+		}
+		if (result.length >= max) {
+			break;
+		}
+	}
+	return result;
+}
+
+/**
+ * 返信先の言語が選択に無いとき、足す候補を返す。
+ * @param {*} parentLangs 返信先の record.langs
+ * @param {string[]} selected 選択中の言語
+ * @param {string[]} known 選べるコード (一覧に無い言語は提案しない)
+ * @returns {string|null} 返信先の先頭の主タグ。無い・選択済み・一覧に無いなら null
+ */
+export function suggestReplyLanguage(parentLangs, selected, known) {
+	if (!Array.isArray(parentLangs) || parentLangs.length === 0 || !Array.isArray(known)) {
+		return null;
+	}
+	const primary = primaryLanguage(parentLangs[0]);
+	const chosen = Array.isArray(selected) ? selected : [];
+	return primary && known.includes(primary) && !chosen.includes(primary) ? primary : null;
+}
+
+/**
+ * 投稿した自分の返信を一覧に入れるための embed view を作る (取り直さずに描くため)。
+ * @param {UploadedImage[]} images
+ * @param {string} did 自分の DID
+ * @param {{thumb: string, fullsize: string}} cdn CDN の接頭辞
+ * @param {number} legacyMax images#view に収める枚数の上限
+ * @returns {Object|null} 0 枚 (CID の読める画像が無い) は null
+ */
+export function buildOwnEmbedView(images, did, cdn, legacyMax) {
+	if (!Array.isArray(images)) {
+		return null;
+	}
+	const cidOf = (image) => {
+		const cid = image && image.blob && image.blob.ref && image.blob.ref.$link;
+		return typeof cid === 'string' && cid !== '' ? cid : null;
+	};
+	// CID が読めない画像は URL を作れないため描かない
+	const usable = images.filter((image) => cidOf(image) !== null);
+	if (usable.length === 0) {
+		return null;
+	}
+	const urls = (image) => {
+		const cid = cidOf(image);
+		return {thumb: `${cdn.thumb}/${did}/${cid}`, fullsize: `${cdn.fullsize}/${did}/${cid}`};
+	};
+	if (usable.length <= legacyMax) {
+		return {
+			$type: RECORD_RULES.embedTypes.images + VIEW_SUFFIX,
+			images: usable.map((image) => {
+				const {thumb, fullsize} = urls(image);
+				const item = {thumb, fullsize, alt: image.alt};
+				const aspectRatio = toAspectRatio(image);
+				if (aspectRatio) {
+					item.aspectRatio = aspectRatio;
+				}
+				return item;
+			})
+		};
+	}
+	return {
+		$type: RECORD_RULES.embedTypes.gallery + VIEW_SUFFIX,
+		items: usable.map((image) => {
+			const {thumb, fullsize} = urls(image);
+			return {thumbnail: thumb, fullsize, alt: image.alt, aspectRatio: toAspectRatio(image)};
+		})
+	};
+}

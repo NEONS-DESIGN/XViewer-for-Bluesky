@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFile } from 'node:fs/promises';
-import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS, outputNamesOf } from '../../scripts/entry-points.mjs';
+import { CONTENT_ENTRY_POINTS, INJECT_ENTRY_POINTS, POPUP_ENTRY_POINTS, EMOJI_ENTRY_POINTS, outputNamesOf } from '../../scripts/entry-points.mjs';
 import { staticFilesFor } from '../../scripts/static-files.mjs';
 
 /** 出力先。置き場所の違いは相対パスの突き合わせに影響しないので適当な名前でよい。 */
@@ -31,6 +31,7 @@ test('manifest が参照するファイルはすべてビルドが出力する',
 		...outputNamesOf(CONTENT_ENTRY_POINTS),
 		...outputNamesOf(INJECT_ENTRY_POINTS),
 		...outputNamesOf(POPUP_ENTRY_POINTS),
+		...outputNamesOf(EMOJI_ENTRY_POINTS),
 		...staticFilesFor(OUT_DIR).map(([, to]) => to.slice(OUT_DIR.length + 1)),
 	]);
 	const referenced = referencedPaths(manifest);
@@ -38,4 +39,15 @@ test('manifest が参照するファイルはすべてビルドが出力する',
 	for (const path of referenced) {
 		assert.ok(produced.has(path), `${path} をビルドは出力しない`);
 	}
+});
+
+test('絵文字ピッカーの出力名が emoji/emoji.js である', () => {
+	assert.deepStrictEqual(outputNamesOf(EMOJI_ENTRY_POINTS), ['emoji/emoji.js']);
+});
+
+test('web_accessible_resources が emoji の出力を bsky.app にだけ公開する', async () => {
+	const manifest = JSON.parse(await readFile('src/manifest.json', 'utf8'));
+	assert.deepStrictEqual(manifest.web_accessible_resources, [
+		{ resources: ['emoji/*'], matches: ['*://bsky.app/*'] },
+	]);
 });

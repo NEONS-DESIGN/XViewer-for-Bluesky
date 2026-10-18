@@ -23,6 +23,7 @@ import {callBridge} from './bridge-client.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
 import {installPanelFocusGuard} from './panel-focus-guard.js';
 import {LightboxReplies} from './lightbox-replies.js';
+import {SheetHost} from './reply-sheets.js';
 import {
 	PostActions, readViewerState, toggleActionState, mergeActionKind, isActionApplied
 } from './post-actions.js';
@@ -508,8 +509,15 @@ export class LightboxPanel {
 			leaveTo: (target) => this.leaveTo(target),
 			adjustReplyCount: (delta) => this.adjustReplyCount(delta),
 			openMedia: (request) => this.openReplyMedia(request),
-			actions: this.actions
+			actions: this.actions,
+			getSheets: () => this.sheetHost
 		});
+		/**
+		 * パネルに重ねる画面 (返信の入力欄の ALT・切り抜き・ラベル・言語・絵文字) の持ち主。
+		 * パネルの要素ごとに 1 つ作り、パネルを外すときに後始末する
+		 * @type {SheetHost|null}
+		 */
+		this.sheetHost = null;
 		/**
 		 * ライトボックスが閉じたと伝わるのを待っている関数。
 		 * 開閉の通知が「閉じた」を伝えたときにまとめて呼ぶ
@@ -852,6 +860,12 @@ export class LightboxPanel {
 		this.toggleEl = toggle;
 		this.bodyEl = body;
 		try {
+			this.sheetHost = new SheetHost(panel, EXT_CONFIG.lightboxReplies.compose);
+		} catch (error) {
+			this.sheetHost = null;
+			console.error('[XViewer] パネルに重ねる画面を用意できませんでした', error);
+		}
+		try {
 			this.releaseFocusGuard = installPanelFocusGuard(panel, () => (this.replies
 				? this.replies.readKeyState()
 				: {hasDraft: false, confirming: false}));
@@ -872,6 +886,14 @@ export class LightboxPanel {
 		} catch (error) {
 			console.error('[XViewer] パネルの撤去に失敗しました', error);
 		} finally {
+			if (this.sheetHost) {
+				try {
+					this.sheetHost.destroy();
+				} catch (error) {
+					console.error('[XViewer] パネルに重ねる画面の後始末に失敗しました', error);
+				}
+				this.sheetHost = null;
+			}
 			if (this.releaseFocusGuard) {
 				try {
 					this.releaseFocusGuard();
@@ -900,6 +922,10 @@ export class LightboxPanel {
 				);
 			}
 			this.updateToggle();
+			if (this.collapsed && this.sheetHost && this.sheetHost.isOpen()) {
+				// 畳んだパネルでは重ねる画面が見えないまま開いた扱いになるため、取り消して閉じる
+				this.sheetHost.cancel(false);
+			}
 			if (this.collapsed) {
 				this.releaseShrink();
 			} else {

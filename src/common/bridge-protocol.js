@@ -49,7 +49,31 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		 * ログイン状態と自分の DID を読む (post-actions.js)。
 		 * **トークンは返さない**
 		 */
-		getSession: 'get-session'
+		getSession: 'get-session',
+		/**
+		 * 預けた Blob を本体の認証済み fetchHandler でアップロードする。
+		 * Blob 本体は postMessage (blobMessageType) で先に預け、payload は blobId だけ
+		 */
+		uploadBlob: 'upload-blob'
+	},
+	/** 分離ワールドから MAIN ワールドへ Blob を預ける postMessage の type */
+	blobMessageType: 'ext:bridge-blob',
+	/**
+	 * upload-blob が受け付ける Blob の条件と、預かり箱の寸法。
+	 * 検査は受け手の page-bridge.js が持つ。maxBytes は MIME ごとの上限で、
+	 * default は載っていない MIME の上限
+	 */
+	upload: {
+		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'text/vtt'],
+		maxBytes: {'text/vtt': 100000, default: 2000000},
+		/** 預けた Blob を取りに来なかったときに捨てるまでの時間 */
+		inboxTtlMs: 30000,
+		/** 預かり箱の件数の上限。超えたら古いものから捨てる */
+		inboxMaxEntries: 12,
+		/** upload-blob の要求が、預けた Blob の到着を待つ上限 */
+		arriveTimeoutMs: 5000,
+		/** Blob を預けるときの id の形 (正規表現の文字列) */
+		blobIdPattern: '^[a-z0-9-]{8,64}$'
 	},
 	/** タブ要素の data-testid の接頭辞 */
 	tabTestIdPrefix: 'profilePager-selector-',
@@ -71,6 +95,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		getPosts: 'app.bsky.feed.getPosts',
 		/** パネルの返信の一覧を読む (読み取りのみ) */
 		getPostThread: 'app.bsky.feed.getPostThread',
+		/** 画像・字幕の Blob を PDS へ置く (upload-blob 専用。call-xrpc には通さない) */
+		uploadBlob: 'com.atproto.repo.uploadBlob',
 		createRecord: 'com.atproto.repo.createRecord',
 		deleteRecord: 'com.atproto.repo.deleteRecord',
 		createBookmark: 'app.bsky.bookmark.createBookmark',
@@ -89,15 +115,35 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	},
 	/**
 	 * 返信として作れる投稿の record の形。
-	 * embed (画像・引用・リンクカード) は通さない。maxTextBytes は
+	 * embed は画像 (images / gallery) だけ、labels は自己ラベルだけを通す。maxTextBytes は
 	 * app.bsky.feed.post の lexicon の text の maxLength (3000 バイト)
 	 */
 	postRecord: {
-		allowedKeys: ['$type', 'text', 'createdAt', 'reply', 'langs', 'facets'],
+		allowedKeys: ['$type', 'text', 'createdAt', 'reply', 'langs', 'facets', 'embed', 'labels'],
 		maxTextBytes: 3000,
 		maxLangs: 3,
 		/** facets の件数の上限 (大量のメンションで通知を撒かせない) */
-		maxFacets: 50
+		maxFacets: 50,
+		/** 返信に付けてよい embed の種類 */
+		embedTypes: {images: 'app.bsky.embed.images', gallery: 'app.bsky.embed.gallery'},
+		/** gallery の item の $type */
+		galleryImageType: 'app.bsky.embed.gallery#image',
+		/** images の枚数の上限 */
+		maxImages: 4,
+		/** gallery の件数の上限 */
+		maxGalleryItems: 10,
+		/** ALT 文の書記素数の上限 */
+		maxAltGraphemes: 2000,
+		/** 画像として通す MIME */
+		imageMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+		/** 自己ラベルの $type */
+		selfLabelsType: 'com.atproto.label.defs#selfLabels',
+		/** 成人向けの自己ラベル (同時には 1 つまで) */
+		adultLabels: ['sexual', 'nudity', 'porn'],
+		/** 成人向け以外に付けてよい自己ラベル */
+		otherLabels: ['graphic-media'],
+		/** 自己ラベルの個数の上限 */
+		maxLabels: 2
 	},
 	/** open-composer が受け付けるモード */
 	composerModes: {reply: 'reply', quote: 'quote'},
@@ -108,6 +154,12 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** 返信でない投稿を作ろうとした / 返信でない投稿を消そうとした */
 		postNotReply: 'post-not-reply',
 		/** 返信の record に許していないキー・形が含まれていた */
-		postRecordNotAllowed: 'post-record-not-allowed'
+		postRecordNotAllowed: 'post-record-not-allowed',
+		/** 預けたはずの Blob が箱に無い (期限切れ・取り違え) */
+		blobNotFound: 'blob-not-found',
+		/** MIME・サイズが許した範囲に無い Blob */
+		blobNotAllowed: 'blob-not-allowed',
+		/** アップロードが成功しなかった (どの段階でも呼び出し側は同じ扱い) */
+		uploadFailed: 'upload-failed'
 	}
 });
