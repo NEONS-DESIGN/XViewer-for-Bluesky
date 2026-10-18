@@ -35,6 +35,9 @@ import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
 /** GIF の検索の応答で中身を使ってよい HTTP の状態 */
 const GIF_OK_STATUS = 200;
 
+/** 送る本文の末尾の空白 */
+const TRAILING_SPACE = /\s+$/u;
+
 /**
  * GIF の ALT 文の上限 (書記素)。description は接頭辞 + ALT 文で、橋渡しの external の説明の上限に収める
  */
@@ -115,6 +118,8 @@ export class ReplyComposer {
 		this.suggestDismissed = false;
 		/** @type {string|null} 出している言語の提案 */
 		this.suggestCode = null;
+		/** @type {boolean} 出ている 1 行が GIF と画像の排他の知らせか */
+		this.noticeIsGifExclusive = false;
 		/** @type {HTMLElement|null} 入力欄の末尾の 1 行 (失敗・受け取れなかった画像の知らせ) */
 		this.noticeEl = null;
 		/** この入力欄が送信中か */
@@ -248,7 +253,7 @@ export class ReplyComposer {
 		this.imageTool.addEventListener('click', () => {
 			if (this.busy) return;
 			if (this.extras.gif) {
-				this.showNotice([this.compose.text.gifExclusive]);
+				this.showNotice([this.compose.text.gifExclusive], true);
 				return;
 			}
 			this.fileInput.click();
@@ -342,6 +347,7 @@ export class ReplyComposer {
 	 */
 	onExtrasChange() {
 		if (this.destroyed) return;
+		if (this.extras.gif === null) this.clearGifNotice();
 		this.renderExtras();
 		this.renderLabels();
 		this.sync();
@@ -513,7 +519,7 @@ export class ReplyComposer {
 		if (this.destroyed || this.busy) return;
 		const t = this.compose.text;
 		if (this.extras.gif) {
-			this.showNotice([t.gifExclusive]);
+			this.showNotice([t.gifExclusive], true);
 			return;
 		}
 		const list = Array.from(files || []);
@@ -711,7 +717,7 @@ export class ReplyComposer {
 			if (this.destroyed) return;
 			// 画面を開いているあいだに画像が落とされていたら付けない
 			if (this.imageCount() > 0) {
-				this.showNotice([this.compose.text.gifExclusive]);
+				this.showNotice([this.compose.text.gifExclusive], true);
 				return;
 			}
 			this.showNotice([]);
@@ -867,9 +873,11 @@ export class ReplyComposer {
 					// GIF・カードのサムネイルを送るあいだも送信ボタンに進み具合 (1/1) を出す
 					resolved = await this.extras.resolveForSubmit(
 						(done, total) => this.showProgress(done, total), attachments.length);
-					const detected = detectRichText(value);
+					// 本体と同じく、送る本文の末尾の空白は除く (リンクカードの提案は後ろの空白で始まる)
+					const sendValue = value.replace(TRAILING_SPACE, '');
+					const detected = detectRichText(sendValue);
 					const didByHandle = await this.resolveMentions(detected.mentions);
-					const shortened = shortenLinks(value, buildFacets(detected, didByHandle), this.compose.links);
+					const shortened = shortenLinks(sendValue, buildFacets(detected, didByHandle), this.compose.links);
 					return buildReplyRecord({
 						text: shortened.text,
 						reply: resolveReplyRef(this.target),
@@ -920,6 +928,7 @@ export class ReplyComposer {
 		for (const attachment of this.attachments) this.revoke(attachment.prepared);
 		this.attachments = [];
 		this.extras.reset();
+		this.clearGifNotice();
 		this.labels = {adult: null, graphic: false};
 		this.languagesTouched = false;
 		this.renderAttachments();
@@ -980,21 +989,32 @@ export class ReplyComposer {
 	/**
 	 * 入力欄の末尾の 1 行を出す (前のものは消す)。空なら消すだけ。
 	 * @param {string[]} messages 知らせる文
+	 * @param {boolean} [gifExclusive] GIF と画像の排他の知らせか (GIF を外したときに消すため覚える)
 	 * @returns {void}
 	 */
-	showNotice(messages) {
+	showNotice(messages, gifExclusive = false) {
 		try {
 			if (this.noticeEl) this.noticeEl.remove();
 			this.noticeEl = null;
+			this.noticeIsGifExclusive = false;
 			if (!Array.isArray(messages) || messages.length === 0 || this.destroyed) return;
 			const notice = createElement(this.el.ownerDocument, 'p', this.config.classes.error,
 				messages.join(this.compose.text.noticeSeparator));
 			notice.setAttribute('role', 'alert');
 			this.el.append(notice);
 			this.noticeEl = notice;
+			this.noticeIsGifExclusive = gifExclusive;
 		} catch (error) {
 			console.error('[XViewer] 入力欄の知らせを出せませんでした', error);
 		}
+	}
+
+	/**
+	 * 出ている 1 行が GIF と画像の排他の知らせなら消す。他の知らせは残す。
+	 * @returns {void}
+	 */
+	clearGifNotice() {
+		if (this.noticeEl && this.noticeIsGifExclusive) this.showNotice([]);
 	}
 
 	/**

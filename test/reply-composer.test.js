@@ -688,6 +688,48 @@ test('ReplyComposer: 長いリンクは短い形で送り、facet の uri は元
 	}
 });
 
+test('ReplyComposer: GIF と画像の排他の 1 行は GIF を外すと消え、送信失敗の 1 行は残る', async () => {
+	const {composer, restore} = makeComposer({});
+	const text = EXT_CONFIG.lightboxReplies.compose.text;
+	try {
+		composer.extras.setGif(gifItem());
+		click(composer.imageTool);
+		assert.strictEqual(composer.noticeEl.textContent, text.gifExclusive);
+		composer.extras.removeGif();
+		assert.strictEqual(composer.noticeEl, null);
+		// 別の知らせは GIF を外しても消さない
+		composer.extras.setGif(gifItem());
+		composer.showNotice([text.imageLoadFailed]);
+		composer.extras.removeGif();
+		assert.strictEqual(composer.noticeEl.textContent, text.imageLoadFailed);
+		// 送った後の初期化でも排他の 1 行は残らない
+		composer.extras.setGif(gifItem());
+		click(composer.imageTool);
+		composer.resetAfterPost();
+		assert.strictEqual(composer.noticeEl, null);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 本文の末尾の空白は送らず、link facet は正しい範囲を指す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		composer.textarea.value = 'テスト https://example.com ';
+		composer.textarea.dispatchEvent(new FakeEvent('input'));
+		await composer.submit();
+		assert.strictEqual(calls.created.length, 1);
+		const record = calls.created[0];
+		assert.strictEqual(record.text, record.text.trimEnd());
+		const facet = record.facets.find((f) => f.features[0].$type === 'app.bsky.richtext.facet#link');
+		const bytes = new TextEncoder().encode(record.text);
+		assert.strictEqual(new TextDecoder().decode(bytes.slice(facet.index.byteStart, facet.index.byteEnd)), 'example.com');
+		assert.strictEqual(facet.index.byteEnd, bytes.length);
+	} finally {
+		restore();
+	}
+});
+
 test('ReplyComposer: GIF を付けると画像ボタンが止まり、送ると external (hh・ww 付き) と ALT: <title>', async () => {
 	const seen = [];
 	let made = null;
