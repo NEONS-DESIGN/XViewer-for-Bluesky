@@ -672,8 +672,9 @@
 	--ext-lb-reply-media-columns: 3;
 }
 
+/* 4 枚を横 1 列にすると 1 枚が 65px ほどになり見分けられないため、2x2 にする (2026-10-18 実測) */
 .ext-lb-reply-media[data-count="4"] {
-	--ext-lb-reply-media-columns: 4;
+	--ext-lb-reply-media-columns: 2;
 }
 
 .ext-lb-reply-media-item {
