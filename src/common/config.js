@@ -694,14 +694,14 @@ export const EXT_CONFIG = {
 				/** ピッカーを差し込む要素の id */
 				rootId: 'picker',
 				/** 本体がライトテーマのとき html に付けるクラス (ディムとダークは暗い配色のピッカーにする) */
-				lightThemeClass: 'theme--light',
-				/**
-				 * 絵文字ボタンに付ける吹き出しの寸法 (px)。ボタンの下に出し、下に収まらなければ縮める。
-				 * minHeight を切るときはパネルを送って場所を空け、それでも足りなければ広いほう (上) に出す。
-				 * minHeight はピッカーの最小の高さ (230px) を下回らない値にする
-				 */
-				popover: {preferredHeight: 360, minHeight: 240, gap: 8, margin: 16, arrowInset: 20}
+				lightThemeClass: 'theme--light'
 			},
+			/**
+			 * 絵文字・GIF のボタンに付ける吹き出しの寸法 (px)。ボタンの下に出し、下に収まらなければ縮める。
+			 * minHeight を切るときはパネルを送って場所を空け、それでも足りなければ広いほう (上) に出す。
+			 * minHeight は絵文字のピッカーの最小の高さ (230px) を下回らない値にする
+			 */
+			popover: {preferredHeight: 360, minHeight: 240, gap: 8, margin: 16, arrowInset: 20},
 			/**
 			 * パネルに重ねる画面 (ALT テキスト・切り抜き・ラベル・言語・絵文字) の要素の目印。
 			 * data-role の値で、配線とテストはクラス名ではなくこれを見る
@@ -769,6 +769,8 @@ export const EXT_CONFIG = {
 				gifItem: 'ext-lb-gif-item',
 				gifStatus: 'ext-lb-gif-status',
 				gifSentinel: 'ext-lb-gif-sentinel',
+				/** GIF の吹き出しで、検索欄の下の送られる部分 (格子・状態・番兵を入れる) */
+				gifScroll: 'ext-lb-gif-scroll',
 				/** 字幕と ALT の画面の字幕の行 */
 				captionRow: 'ext-lb-caption-row',
 				captionName: 'ext-lb-caption-name',

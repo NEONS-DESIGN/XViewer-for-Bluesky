@@ -1,7 +1,7 @@
 /**
  * ライトボックスのパネルに重ねる小さな画面 (ALT テキスト・切り抜き・ラベル・言語・絵文字)。
  *
- * 画面はパネルの要素の中に 1 枚だけ置き、パネル全体を覆う (絵文字だけは開いたボタンに付く吹き出しにし、
+ * 画面はパネルの要素の中に 1 枚だけ置き、パネル全体を覆う (絵文字と GIF は開いたボタンに付く吹き出しにし、
  * 入力欄を隠さない)。パネルの中なので、
  * フォーカスとキーの扱い (panel-focus-guard.js) がそのまま効き、入力欄に文字が入る。
  * 画面の keydown はすべて画面で止める。Escape はこの画面だけを閉じ、
@@ -34,12 +34,12 @@ export {
  *   無いか、呼んでもパネルの中へ移らなければ、パネルの最初の操作要素へ移す
  * @property {boolean} [wide] 本文の左右の余白を無くす (画面の幅いっぱいに見せたい中身のとき)
  * @property {boolean} [closeOnly] 「キャンセル」「完了」の代わりに「閉じる」だけを出す
- * @property {PopoverSize} [popover] パネルを覆わず、開いたボタンに付く吹き出しにする。
+ * @property {PopoverSize} [popover] パネルを覆わず、開いたボタンに付く吹き出しにする (絵文字・GIF)。
  *   見出しとボタンの行を持たず、外を押す・外へフォーカスが移る・同じボタンをもう一度押すと閉じる
  */
 
 /**
- * 吹き出しの寸法 (px)。EXT_CONFIG.lightboxReplies.compose.emoji.popover の形。
+ * 吹き出しの寸法 (px)。EXT_CONFIG.lightboxReplies.compose.popover の形。
  * @typedef {Object} PopoverSize
  * @property {number} preferredHeight 収まるときの高さ
  * @property {number} minHeight これを切るときはパネルを送って場所を空け、なお足りなければ広いほうへ出す
@@ -763,7 +763,7 @@ export function openEmojiSheet(host, opener, onPick, options) {
 	const {classes, text, emoji} = host.config;
 	host.open({
 		title: text.emojiTitle,
-		popover: emoji.popover,
+		popover: host.config.popover,
 		build: (body) => {
 			const doc = body.ownerDocument;
 			const win = doc.defaultView;

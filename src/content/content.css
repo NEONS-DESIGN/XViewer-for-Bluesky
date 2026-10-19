@@ -184,7 +184,8 @@
 	/* リンク色。ダークテーマの実測値。ライト / ディムは未実測のため共通で使う */
 	--ext-lb-accent: #4291ff;
 	/*
-	 * 塗りつぶしのボタン (重ねる画面の「完了」・選んでいる比) の地色。白い文字との比が
+	 * ボタンの色。塗りつぶしのボタン (送信・重ねる画面の「完了」・選んでいる比) の地色と、
+	 * 入力欄のツールのボタン (画像・GIF・絵文字・＋) の図形の色に使う。白い文字との比が
 	 * 4.66:1 になる Bluesky 本体のアクセント色。地色に依らないため両テーマで共通
 	 */
 	--ext-lb-primary: #006aff;
@@ -919,14 +920,18 @@
  * 欄に余白を持たせると、10 行を超えてスクロールしたときに余白まで文字が送られ、
  * 文字が枠に接して見える (2026-10-18 利用者の指摘)。欄は余白なしでこの内側に置く
  */
+/*
+ * ダークテーマで地に溶け込まないよう、枠線を文字色の混色で常に見せ、余白を広めに取る
+ * (2026-10-19 利用者の指摘)
+ */
 .ext-lb-reply-input-frame {
 	flex: 1 1 auto;
 	display: flex;
 	min-width: 0;
-	padding: 6px 8px;
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
-	border: 1px solid transparent;
-	border-radius: 4px;
+	padding: 10px 12px;
+	background: color-mix(in srgb, var(--ext-lb-text) 6%, transparent);
+	border: 1px solid color-mix(in srgb, var(--ext-lb-text) 28%, transparent);
+	border-radius: 8px;
 }
 
 .ext-lb-reply-input-frame:focus-within {
@@ -983,12 +988,16 @@
 	padding: 0 16px;
 	cursor: pointer;
 	color: #ffffff;
-	background: var(--ext-lb-accent);
+	background: var(--ext-lb-primary);
 	border: none;
 	border-radius: 999px;
 	font: inherit;
 	font-size: 13px;
 	font-weight: 700;
+}
+
+.ext-lb-reply-submit:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--ext-lb-primary) 85%, #000000);
 }
 
 .ext-lb-reply-submit:disabled {
@@ -1152,7 +1161,7 @@
 
 .ext-lb-composer-labels.is-active {
 	color: var(--ext-lb-text);
-	border-color: var(--ext-lb-accent);
+	border-color: var(--ext-lb-primary);
 }
 
 .ext-lb-composer-suggest {
@@ -1231,14 +1240,14 @@
 	height: 32px;
 	padding: 0;
 	cursor: pointer;
-	color: var(--ext-lb-accent);
+	color: var(--ext-lb-primary);
 	background: transparent;
 	border: none;
 	border-radius: 50%;
 }
 
 .ext-lb-composer-tool:hover:not(:disabled) {
-	background: color-mix(in srgb, var(--ext-lb-accent) 14%, transparent);
+	background: color-mix(in srgb, var(--ext-lb-primary) 14%, transparent);
 }
 
 .ext-lb-composer-tool:disabled,
@@ -1297,7 +1306,7 @@
 
 /*
  * 投稿を消す「×」。本文の枠の右上に置く。押せる大きさ (30px) を保ったまま 1 行の枠の高さを変えないよう、
- * 枠の余白 (上下 6px・右 8px) に食い込ませる。聞き返しのあいだは「本当に削除？」の文字を赤で出す
+ * 枠の余白 (上下 10px・右 12px) に食い込ませる。聞き返しのあいだは「本当に削除？」の文字を赤で出す
  */
 .ext-lb-composer-remove-post {
 	flex: 0 0 auto;
@@ -1639,7 +1648,7 @@
 }
 
 .ext-lb-gif-alt.is-done {
-	background: var(--ext-lb-accent);
+	background: var(--ext-lb-primary);
 }
 
 .ext-lb-video {
@@ -2214,8 +2223,11 @@
 	background: transparent;
 }
 
-/* 言語 */
+/*
+ * 言語。画面の本文は縦の flex で、一覧が長いと検索欄の高さまで縮められて潰れるため、縮ませない
+ */
 .ext-lb-lang-search {
+	flex: 0 0 auto;
 	box-sizing: border-box;
 	width: 100%;
 	min-width: 0;
@@ -2245,13 +2257,17 @@
 	gap: 2px;
 }
 
-/* GIF の検索 */
+/*
+ * GIF の吹き出し。検索欄を上に固定し、その下の格子だけを送る。
+ * 検索欄は縦の flex の中で縮められて潰れないよう、大きさを固定する
+ */
 .ext-lb-gif-search {
+	flex: 0 0 auto;
 	box-sizing: border-box;
 	width: calc(100% - 24px);
 	min-width: 0;
 	height: 32px;
-	margin: 0 12px 8px;
+	margin: 12px 12px 8px;
 	padding: 0 8px;
 	color: var(--ext-lb-text);
 	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
@@ -2263,6 +2279,14 @@
 
 .ext-lb-gif-search:focus {
 	border-color: var(--ext-lb-accent);
+}
+
+.ext-lb-gif-scroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding-bottom: 12px;
 }
 
 .ext-lb-gif-grid {
@@ -2429,9 +2453,10 @@
 }
 
 /*
- * 開いたボタンに付く吹き出し (絵文字)。位置・幅・高さは reply-sheets.js がインラインで当てる
+ * 開いたボタンに付く吹き出し (絵文字・GIF)。位置・幅・高さは reply-sheets.js がインラインで当てる
  * (top / left / width / height と、矢印の横位置の --ext-lb-popover-arrow-x)。
- * 地の色はピッカー (emoji-mart) の既定の地の色に合わせ、矢印と中身の境目を見せない。
+ * 地の色は絵文字のピッカー (emoji-mart) の既定の地の色に合わせ、矢印と中身の境目を見せない。
+ * GIF も同じ地にして 2 つの吹き出しの見た目を揃える。
  * ディムの本体でもピッカーは暗い配色で出すため、ライトだけを白にする
  */
 .ext-lb-sheet.is-popover {

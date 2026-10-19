@@ -413,7 +413,7 @@ test('SheetHost: options の restoreFocus は spec の restoreFocus より優先
 	assert.strictEqual(doc.activeElement, fromOptions);
 });
 
-const POPOVER = COMPOSE.emoji.popover;
+const POPOVER = COMPOSE.popover;
 /** 幅 360px・高さ 900px のパネル (画面の右端) */
 const PANEL_BOX = {top: 0, bottom: 900, left: 1560, right: 1920};
 

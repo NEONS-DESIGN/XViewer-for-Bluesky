@@ -154,7 +154,8 @@ export class GifSearch {
 }
 
 /**
- * GIF の画面を開く。選ぶと onPick へ GIF を渡して閉じる。
+ * GIF の画面を開く。開いたボタンに付く吹き出しで、検索欄を上に固定し、その下の格子だけを送る。
+ * 選ぶと onPick へ GIF を渡して閉じる。
  * @param {import('./reply-sheets.js').SheetHost} host 重ねる画面の持ち主
  * @param {{fetchJson: (url: string) => Promise<any|null>, locale: string|null, rule: Object}} deps 通信と規則
  * @param {HTMLElement} opener 開いたボタン
@@ -166,8 +167,7 @@ export function openGifSheet(host, deps, opener, onPick, options) {
 	const {classes, text} = host.config;
 	host.open({
 		title: text.gifTitle,
-		closeOnly: true,
-		wide: true,
+		popover: host.config.popover,
 		build: (body) => {
 			const doc = body.ownerDocument;
 			const win = doc.defaultView;
@@ -180,7 +180,9 @@ export function openGifSheet(host, deps, opener, onPick, options) {
 			status.setAttribute('role', 'status');
 			status.hidden = true;
 			const sentinel = createElement(doc, 'div', classes.gifSentinel);
-			body.append(input, grid, status, sentinel);
+			const scroll = createElement(doc, 'div', classes.gifScroll);
+			scroll.append(grid, status, sentinel);
+			body.append(input, scroll);
 
 			let rendered = 0;
 			let observer = null;

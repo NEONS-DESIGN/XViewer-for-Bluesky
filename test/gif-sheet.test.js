@@ -5,7 +5,10 @@
 import test from 'node:test';
 import assert from 'node:assert';
 
-import {GifSearch} from '../src/content/gif-sheet.js';
+import {GifSearch, openGifSheet} from '../src/content/gif-sheet.js';
+import {SheetHost} from '../src/content/reply-sheets.js';
+import {EXT_CONFIG} from '../src/common/config.js';
+import {FakeDocument} from './helpers/fake-dom.js';
 
 const RULE = {
 	origin: 'https://api.example.test',
@@ -187,4 +190,24 @@ test('GifSearch: loadMore が失敗した後、failed のままでは loadMore �
 	calls[2].resolve(response(['2'], null));
 	await flush();
 	assert.deepStrictEqual(search.state.items.map((item) => item.id), ['1', '2']);
+});
+
+test('openGifSheet: 開いたボタンに付く吹き出しで開き、検索欄を送られる部分の外 (上) に置く', () => {
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	const doc = new FakeDocument();
+	const panel = doc.createElement('aside');
+	const opener = doc.createElement('button');
+	panel.append(opener);
+	doc.body.append(panel);
+	const host = new SheetHost(panel, compose);
+	openGifSheet(host, {fetchJson: () => new Promise(() => {}), locale: null, rule: RULE}, opener, () => {});
+	const layer = panel.querySelector(`[data-role="${compose.sheetRoles.layer}"]`);
+	assert.ok(layer.classList.contains(compose.classes.popover));
+	const body = layer.querySelector(`.${compose.classes.body}`);
+	const [input, scroll] = body.children;
+	assert.ok(input.classList.contains(compose.classes.gifSearch));
+	assert.ok(scroll.classList.contains(compose.classes.gifScroll));
+	assert.ok(scroll.querySelector(`.${compose.classes.gifGrid}`));
+	assert.strictEqual(doc.activeElement, input);
+	host.close(false);
 });
