@@ -1,7 +1,8 @@
 /**
  * ライトボックスのパネルに重ねる小さな画面 (ALT テキスト・切り抜き・ラベル・言語・絵文字)。
  *
- * 画面はパネルの要素の中に 1 枚だけ置き、パネル全体を覆う。パネルの中なので、
+ * 画面はパネルの要素の中に 1 枚だけ置き、パネル全体を覆う (絵文字だけは開いたボタンに付く吹き出しにし、
+ * 入力欄を隠さない)。パネルの中なので、
  * フォーカスとキーの扱い (panel-focus-guard.js) がそのまま効き、入力欄に文字が入る。
  * 画面の keydown はすべて画面で止める。Escape はこの画面だけを閉じ、
  * ライトボックス (本体) には届かせない。そのためフォーカスは画面の外へ出さない
@@ -33,7 +34,77 @@ export {
  *   無いか、呼んでもパネルの中へ移らなければ、パネルの最初の操作要素へ移す
  * @property {boolean} [wide] 本文の左右の余白を無くす (画面の幅いっぱいに見せたい中身のとき)
  * @property {boolean} [closeOnly] 「キャンセル」「完了」の代わりに「閉じる」だけを出す
+ * @property {PopoverSize} [popover] パネルを覆わず、開いたボタンに付く吹き出しにする。
+ *   見出しとボタンの行を持たず、外を押す・外へフォーカスが移る・同じボタンをもう一度押すと閉じる
  */
+
+/**
+ * 吹き出しの寸法 (px)。EXT_CONFIG.lightboxReplies.compose.emoji.popover の形。
+ * @typedef {Object} PopoverSize
+ * @property {number} preferredHeight 収まるときの高さ
+ * @property {number} minHeight これを切るときはパネルを送って場所を空け、なお足りなければ広いほうへ出す
+ * @property {number} gap ボタンとの隙間
+ * @property {number} margin パネルの端との隙間
+ * @property {number} arrowInset 矢印を吹き出しの左右の端からこれ以上離す
+ */
+
+/**
+ * 矩形 (getBoundingClientRect の値のうち使うものだけ)。
+ * @typedef {{top: number, bottom: number, left: number, right: number}} Box
+ */
+
+/**
+ * 吹き出しの置き場所。top / left は画面 (viewport) の座標。
+ * @typedef {Object} PopoverPlacement
+ * @property {number} top
+ * @property {number} left
+ * @property {number} width
+ * @property {number} height
+ * @property {boolean} above ボタンの上に出すか
+ * @property {number} arrowX 矢印の横位置 (吹き出しの左端から)
+ */
+
+/**
+ * 吹き出しの置き場所を決める。幅は置き場の幅から両端の隙間を引いたもの。
+ * ボタンの下に minHeight 以上あるか、上より下が広ければ下、そうでなければ上に出し、
+ * 高さはその側の空きと preferredHeight の小さいほう。矢印はボタンの中央を指す。
+ * @param {Box} anchor 開いたボタン
+ * @param {Box} bounds 置き場 (パネルと画面の重なり)
+ * @param {PopoverSize} size 寸法
+ * @returns {PopoverPlacement}
+ */
+export function placePopover(anchor, bounds, size) {
+	const width = Math.max(0, bounds.right - bounds.left - size.margin * 2);
+	const below = bounds.bottom - size.margin - (anchor.bottom + size.gap);
+	const aboveSpace = anchor.top - size.gap - (bounds.top + size.margin);
+	const above = below < size.minHeight && aboveSpace > below;
+	const height = Math.max(0, Math.min(size.preferredHeight, above ? aboveSpace : below));
+	const top = above ? anchor.top - size.gap - height : anchor.bottom + size.gap;
+	const center = (anchor.left + anchor.right) / 2;
+	const minLeft = bounds.left + size.margin;
+	const left = Math.max(minLeft, Math.min(center - width / 2, bounds.right - size.margin - width));
+	const arrowX = Math.max(size.arrowInset, Math.min(center - left, width - size.arrowInset));
+	return {top, left, width, height, above, arrowX};
+}
+
+/**
+ * ボタンの下の空きが minHeight を切るとき、吹き出しを preferredHeight で出すためにパネルを下へ送る量。
+ * 空きが minHeight 以上なら送らない (開くたびにパネルが動かないように)。
+ * 送れる残り (room) と、持ち主 (入力欄) の上端がパネルの上の隙間に届くまで (keep) を超えない。
+ * @param {Box} anchor 開いたボタン
+ * @param {Box} bounds 置き場
+ * @param {PopoverSize} size 寸法
+ * @param {number} room パネルを下へ送れる残り
+ * @param {number} keep 持ち主を隠さずに送れる量 (持ち主が無ければ Infinity)
+ * @returns {number} 0 以上
+ */
+export function popoverScrollDelta(anchor, bounds, size, room, keep) {
+	const below = bounds.bottom - size.margin - (anchor.bottom + size.gap);
+	if (!(below < size.minHeight)) return 0;
+	const need = size.preferredHeight - below;
+	const delta = Math.max(0, Math.min(need, room, keep));
+	return Number.isFinite(delta) ? delta : 0;
+}
 
 /**
  * 画面を開く側が添える情報。
@@ -62,18 +133,25 @@ export class SheetHost {
 		this.current = null;
 		this.onKeyDown = this.onKeyDown.bind(this);
 		this.onPanelFocusIn = this.onPanelFocusIn.bind(this);
+		this.onOutsidePointerDown = this.onOutsidePointerDown.bind(this);
+		this.reposition = this.reposition.bind(this);
 		this.panelEl.addEventListener('focusin', this.onPanelFocusIn, true);
 	}
 
 	/**
 	 * 画面を開く。開いている画面があれば、その onCancel を呼んで閉じてから開く。
 	 * 開いたら画面の最初の操作要素へフォーカスを移す。
+	 * 吹き出しを開いたボタンでもう一度開こうとしたときは、閉じるだけにする (押すたびに開閉する)。
 	 * @param {SheetSpec} spec 画面の定義
 	 * @param {HTMLElement|null} opener 開いたボタン (閉じたらここへフォーカスを返す)
 	 * @param {SheetOptions} [options] 持ち主とフォーカスの戻し先
 	 * @returns {void}
 	 */
 	open(spec, opener, options) {
+		if (spec.popover && opener && this.current?.spec.popover && this.current.opener === opener) {
+			this.cancel(true);
+			return;
+		}
 		if (this.current) this.cancel(false);
 		try {
 			const {layer, body, doneButton, cancelButton} = this.buildLayer(spec);
@@ -88,12 +166,13 @@ export class SheetHost {
 			doneButton?.addEventListener('click', () => {
 				if (this.current === entry && !doneButton.disabled) this.finish();
 			});
-			cancelButton.addEventListener('click', () => {
+			cancelButton?.addEventListener('click', () => {
 				if (this.current === entry) this.cancel(true);
 			});
 			layer.addEventListener('keydown', this.onKeyDown);
 			this.panelEl.append(layer);
-			this.panelEl.classList.add(this.config.classes.panelOpen);
+			if (spec.popover) this.startPopover();
+			else this.panelEl.classList.add(this.config.classes.panelOpen);
 			const cleanup = spec.build(body, () => {
 				if (this.current === entry) this.finish();
 			});
@@ -108,8 +187,9 @@ export class SheetHost {
 	/**
 	 * 画面の外枠・見出し・本文・ボタンと、両端の番兵を組む。
 	 * 外枠は tabindex="-1" で、余白を押してもフォーカスが外枠に残る (body へ落ちない)。
+	 * 吹き出しは見出しとボタンの行を持たず、題は aria-label で読ませる。
 	 * @param {SheetSpec} spec 画面の定義
-	 * @returns {{layer: HTMLElement, body: HTMLElement, doneButton: HTMLButtonElement|null, cancelButton: HTMLButtonElement}}
+	 * @returns {{layer: HTMLElement, body: HTMLElement, doneButton: HTMLButtonElement|null, cancelButton: HTMLButtonElement|null}}
 	 */
 	buildLayer(spec) {
 		const {classes, text, sheetRoles} = this.config;
@@ -119,6 +199,13 @@ export class SheetHost {
 		layer.dataset.role = sheetRoles.layer;
 		layer.setAttribute('role', 'dialog');
 		layer.setAttribute('tabindex', '-1');
+		if (spec.popover) {
+			layer.classList.add(classes.popover);
+			layer.setAttribute('aria-label', spec.title);
+			const popoverBody = createElement(doc, 'div', classes.body);
+			layer.append(this.buildSentinel(false), popoverBody, this.buildSentinel(true));
+			return {layer, body: popoverBody, doneButton: null, cancelButton: null};
+		}
 		sheetSerial += 1;
 		const titleId = `${classes.title}-${sheetSerial}`;
 		layer.setAttribute('aria-labelledby', titleId);
@@ -191,10 +278,125 @@ export class SheetHost {
 		const entry = this.current;
 		if (!entry) return;
 		try {
-			if (!entry.layer.contains(event.target)) this.focusFirst();
+			if (entry.layer.contains(event.target)) return;
+			if (entry.spec.popover) {
+				// 吹き出しは入力欄を隠さないので、外へ移ったフォーカスは引き戻さずに閉じる。
+				// 開いたボタンへ移ったときは、続く click で開閉させる
+				if (!(entry.opener && entry.opener.contains(event.target))) this.cancel(false);
+				return;
+			}
+			this.focusFirst();
 		} catch (error) {
 			console.error('[XViewer] フォーカスを重ねる画面へ戻せませんでした', error);
 		}
+	}
+
+	/**
+	 * 吹き出しが開いているあいだに外 (吹き出しと開いたボタンの外) を押したら閉じる。
+	 * 押した先がフォーカスを受けない所でも body へ落ちないよう、開いたボタンへ一度フォーカスを返す
+	 * (押した先が入力欄なら、続く既定の動作でそちらへ移る)。iframe の中の押下はここへ届かない。
+	 * @param {PointerEvent} event
+	 * @returns {void}
+	 */
+	onOutsidePointerDown(event) {
+		const entry = this.current;
+		if (!entry || !entry.spec.popover) return;
+		try {
+			const target = event.target;
+			if (entry.layer.contains(target)) return;
+			if (entry.opener && entry.opener.contains(target)) return;
+			this.cancel(true);
+		} catch (error) {
+			console.error('[XViewer] 吹き出しを閉じられませんでした', error);
+		}
+	}
+
+	/**
+	 * 吹き出しを置き、開いているあいだの監視 (外の押下・パネルや入力欄の送り・窓の大きさ) を始める。
+	 * 外の押下は本体のどこでも拾えるよう html 要素の capture で、送りの scroll は泡立たないため
+	 * パネルの capture で受ける。
+	 * @returns {void}
+	 */
+	startPopover() {
+		this.placeCurrentPopover(true);
+		this.doc.documentElement.addEventListener('pointerdown', this.onOutsidePointerDown, true);
+		this.panelEl.addEventListener('scroll', this.reposition, true);
+		const win = this.doc.defaultView;
+		if (win && typeof win.addEventListener === 'function') win.addEventListener('resize', this.reposition);
+	}
+
+	/**
+	 * 吹き出しの監視をやめる。
+	 * @returns {void}
+	 */
+	stopPopover() {
+		this.doc.documentElement.removeEventListener('pointerdown', this.onOutsidePointerDown, true);
+		this.panelEl.removeEventListener('scroll', this.reposition, true);
+		const win = this.doc.defaultView;
+		if (win && typeof win.removeEventListener === 'function') win.removeEventListener('resize', this.reposition);
+	}
+
+	/**
+	 * 開いている吹き出しを、開いたボタンの今の位置に合わせて置き直す
+	 * (入力欄が伸びた・パネルが送られた・窓の大きさが変わったとき)。吹き出しでなければ何もしない。
+	 * @returns {void}
+	 */
+	reposition() {
+		try {
+			this.placeCurrentPopover(false);
+		} catch (error) {
+			console.error('[XViewer] 吹き出しを置き直せませんでした', error);
+		}
+	}
+
+	/**
+	 * 吹き出しを開いたボタンの下 (入らなければ上) に置く。
+	 * allowScroll のときは、下の空きが足りなければ先にパネルを送って場所を空ける (入力欄は隠さない)。
+	 * 開いたボタンが描き直しで外れた・寸法を測れないときは前の位置のままにする。
+	 * @param {boolean} allowScroll パネルを送ってよいか (開いたときだけ)
+	 * @returns {void}
+	 */
+	placeCurrentPopover(allowScroll) {
+		const entry = this.current;
+		if (!entry || !entry.spec.popover) return;
+		const opener = entry.opener;
+		if (!opener || !opener.isConnected || typeof opener.getBoundingClientRect !== 'function') return;
+		const size = entry.spec.popover;
+		const measure = () => {
+			const panelRect = this.panelEl.getBoundingClientRect();
+			const viewHeight = this.doc.defaultView?.innerHeight || panelRect.bottom;
+			return {
+				anchor: opener.getBoundingClientRect(),
+				bounds: {
+					top: Math.max(panelRect.top, 0),
+					bottom: Math.min(panelRect.bottom, viewHeight),
+					left: panelRect.left,
+					right: panelRect.right
+				}
+			};
+		};
+		let {anchor, bounds} = measure();
+		if (!anchor.width && !anchor.height) return;
+		if (allowScroll) {
+			const panel = this.panelEl;
+			const room = panel.scrollHeight - panel.clientHeight - panel.scrollTop;
+			const owner = entry.owner && typeof entry.owner.getBoundingClientRect === 'function' ? entry.owner : null;
+			const keep = owner ? owner.getBoundingClientRect().top - (bounds.top + size.margin) : Infinity;
+			const delta = popoverScrollDelta(anchor, bounds, size, room, keep);
+			if (delta > 0) {
+				panel.scrollTop += delta;
+				({anchor, bounds} = measure());
+			}
+		}
+		const place = placePopover(anchor, bounds, size);
+		const {classes} = this.config;
+		const style = entry.layer.style;
+		style.top = `${place.top}px`;
+		style.left = `${place.left}px`;
+		style.width = `${place.width}px`;
+		style.height = `${place.height}px`;
+		style.setProperty(classes.popoverArrowVar, `${place.arrowX}px`);
+		entry.layer.classList.toggle(classes.popoverAbove, place.above);
 	}
 
 	/**
@@ -298,6 +500,7 @@ export class SheetHost {
 		}
 		if (entry.cleanup) safeCall(entry.cleanup);
 		try {
+			if (entry.spec.popover) this.stopPopover();
 			entry.layer.removeEventListener('keydown', this.onKeyDown);
 			entry.layer.remove();
 			this.panelEl.classList.remove(this.config.classes.panelOpen);
@@ -531,6 +734,8 @@ function createEmojiListener(host, frame, error, origin, onPick) {
 			const data = event.data;
 			if (data.type === emoji.selectType && typeof data.native === 'string' && data.native) {
 				safeCall(onPick, data.native);
+				// 絵文字が入って入力欄が伸びると開いたボタンが下がるため、吹き出しを付け直す
+				host.reposition();
 			} else if (data.type === emoji.closeType) {
 				if (data.error) {
 					frame.hidden = true;
@@ -546,8 +751,8 @@ function createEmojiListener(host, frame, error, origin, onPick) {
 }
 
 /**
- * 絵文字の画面を開く。拡張機能のページを iframe で出し、選んだ絵文字を onPick へ渡す
- * (画面は開いたままにする)。ページが閉じる通知を出したら閉じ、失敗を知らせたら 1 行出す。
+ * 絵文字の画面を開く。開いたボタンに付く吹き出しに拡張機能のページを iframe で出し、選んだ絵文字を
+ * onPick へ渡す (吹き出しは開いたままにする)。ページが閉じる通知を出したら閉じ、失敗を知らせたら 1 行出す。
  * @param {SheetHost} host 重ねる画面の持ち主
  * @param {HTMLElement} opener 開いたボタン
  * @param {(native: string) => void} onPick 選んだ絵文字 (文字そのもの)
@@ -558,7 +763,7 @@ export function openEmojiSheet(host, opener, onPick, options) {
 	const {classes, text, emoji} = host.config;
 	host.open({
 		title: text.emojiTitle,
-		closeOnly: true,
+		popover: emoji.popover,
 		build: (body) => {
 			const doc = body.ownerDocument;
 			const win = doc.defaultView;

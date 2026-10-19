@@ -6,7 +6,7 @@ body {
 	overflow: hidden;
 }
 
-/* ピッカーの幅は iframe いっぱい (パネルの内幅) に合わせる */
+/* ピッカーの幅は iframe いっぱい (吹き出しの幅) に合わせる */
 em-emoji-picker {
 	width: 100%;
 	max-width: 100%;

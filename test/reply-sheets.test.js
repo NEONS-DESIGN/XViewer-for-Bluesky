@@ -5,7 +5,8 @@ import {EXT_CONFIG} from '../src/common/config.js';
 import {
 	SheetHost, formatText, altState, languageName, orderLanguages, filterLanguages,
 	openAltSheet, openLabelSheet, openLanguageSheet,
-	isLanguageLocked, isEmojiMessage, buildEmojiUrl, pickEmojiTheme, extensionOrigin
+	isLanguageLocked, isEmojiMessage, buildEmojiUrl, pickEmojiTheme, extensionOrigin,
+	placePopover, popoverScrollDelta
 } from '../src/content/reply-sheets.js';
 import {toSourceDelta, sourceStep, cropKeyAction} from '../src/content/crop-sheet.js';
 
@@ -410,4 +411,161 @@ test('SheetHost: options の restoreFocus は spec の restoreFocus より優先
 		restoreFocus: () => fromSpec.focus()}, opener, {restoreFocus: () => fromOptions.focus()});
 	click(panel.querySelector(`[data-role="${ROLES.done}"]`));
 	assert.strictEqual(doc.activeElement, fromOptions);
+});
+
+const POPOVER = COMPOSE.emoji.popover;
+/** 幅 360px・高さ 900px のパネル (画面の右端) */
+const PANEL_BOX = {top: 0, bottom: 900, left: 1560, right: 1920};
+
+/**
+ * 横 32px・縦 32px のボタンの矩形。
+ * @param {number} top 上端
+ * @param {number} left 左端
+ * @returns {{top: number, bottom: number, left: number, right: number}}
+ */
+function buttonBox(top, left) {
+	return {top, bottom: top + 32, left, right: left + 32};
+}
+
+test('placePopover: 下に十分な空きがあれば、ボタンの下にパネルの内幅で preferredHeight の高さで出す', () => {
+	const place = placePopover(buttonBox(300, 1640), PANEL_BOX, POPOVER);
+	assert.strictEqual(place.above, false);
+	assert.strictEqual(place.top, 332 + POPOVER.gap);
+	assert.strictEqual(place.left, PANEL_BOX.left + POPOVER.margin);
+	assert.strictEqual(place.width, 360 - POPOVER.margin * 2);
+	assert.strictEqual(place.height, POPOVER.preferredHeight);
+	// 矢印はボタンの中央 (1656) を指す
+	assert.strictEqual(place.arrowX, 1656 - place.left);
+});
+
+test('placePopover: 下の空きが minHeight 以上 preferredHeight 未満なら、下に縮めて出す', () => {
+	const place = placePopover(buttonBox(560, 1640), PANEL_BOX, POPOVER);
+	const below = 900 - POPOVER.margin - (592 + POPOVER.gap);
+	assert.ok(below >= POPOVER.minHeight && below < POPOVER.preferredHeight);
+	assert.strictEqual(place.above, false);
+	assert.strictEqual(place.height, below);
+});
+
+test('placePopover: 下の空きが minHeight を切り、上のほうが広ければボタンの上に出す', () => {
+	const place = placePopover(buttonBox(800, 1640), PANEL_BOX, POPOVER);
+	assert.strictEqual(place.above, true);
+	assert.strictEqual(place.height, POPOVER.preferredHeight);
+	assert.strictEqual(place.top + place.height, 800 - POPOVER.gap);
+});
+
+test('placePopover: 上下どちらも狭ければ広いほうに、その空きの高さで出す。負の高さにしない', () => {
+	const small = {top: 0, bottom: 200, left: 1560, right: 1920};
+	const place = placePopover(buttonBox(20, 1640), small, POPOVER);
+	assert.strictEqual(place.above, false);
+	assert.strictEqual(place.height, 200 - POPOVER.margin - (52 + POPOVER.gap));
+	const tiny = placePopover(buttonBox(0, 1640), {top: 0, bottom: 30, left: 1560, right: 1920}, POPOVER);
+	assert.strictEqual(tiny.height, 0);
+});
+
+test('placePopover: 矢印は吹き出しの端から arrowInset より内側に収める', () => {
+	const left = placePopover(buttonBox(300, 1560), PANEL_BOX, POPOVER);
+	assert.strictEqual(left.arrowX, POPOVER.arrowInset);
+	const right = placePopover(buttonBox(300, 1900), PANEL_BOX, POPOVER);
+	assert.strictEqual(right.arrowX, right.width - POPOVER.arrowInset);
+});
+
+test('popoverScrollDelta: 下の空きが minHeight 以上なら送らない', () => {
+	assert.strictEqual(popoverScrollDelta(buttonBox(560, 1640), PANEL_BOX, POPOVER, 1000, 1000), 0);
+});
+
+test('popoverScrollDelta: 下の空きが minHeight を切れば preferredHeight の分まで送る。送れる残りと持ち主の上端を超えない', () => {
+	const anchor = buttonBox(800, 1640);
+	const below = 900 - POPOVER.margin - (832 + POPOVER.gap);
+	const need = POPOVER.preferredHeight - below;
+	assert.strictEqual(popoverScrollDelta(anchor, PANEL_BOX, POPOVER, 1000, Infinity), need);
+	assert.strictEqual(popoverScrollDelta(anchor, PANEL_BOX, POPOVER, 50, Infinity), 50);
+	assert.strictEqual(popoverScrollDelta(anchor, PANEL_BOX, POPOVER, 1000, 120), 120);
+	assert.strictEqual(popoverScrollDelta(anchor, PANEL_BOX, POPOVER, 0, Infinity), 0);
+	assert.strictEqual(popoverScrollDelta(anchor, PANEL_BOX, POPOVER, 1000, -10), 0);
+});
+
+/**
+ * 吹き出しの画面の定義を作る。中身はボタン 1 つ。
+ * @param {object} doc 偽の文書
+ * @param {object} calls 呼ばれた回数を数える先
+ * @returns {object} SheetSpec
+ */
+function popoverSpec(doc, calls) {
+	return {
+		title: '絵文字',
+		popover: POPOVER,
+		build: (body) => {
+			const item = doc.createElement('button');
+			item.dataset.role = 'test-item';
+			body.append(item);
+		},
+		onCancel: () => { calls.cancel += 1; }
+	};
+}
+
+test('SheetHost: 吹き出しは見出しとボタンの行を持たず、題を aria-label で読ませ、パネルの送りを止めない', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	const layer = panel.querySelector(`[data-role="${ROLES.layer}"]`);
+	assert.ok(layer.classList.contains(COMPOSE.classes.popover));
+	assert.strictEqual(layer.getAttribute('aria-label'), '絵文字');
+	assert.strictEqual(panel.querySelector(`[data-role="${ROLES.title}"]`), null);
+	assert.strictEqual(panel.querySelector(`[data-role="${ROLES.cancel}"]`), null);
+	assert.strictEqual(panel.classList.contains(COMPOSE.classes.panelOpen), false);
+	assert.strictEqual(doc.activeElement, panel.querySelector('[data-role="test-item"]'));
+	pressKey(layer, 'Escape');
+	assert.strictEqual(host.isOpen(), false);
+	assert.strictEqual(doc.activeElement, opener);
+});
+
+test('SheetHost: 吹き出しの外へフォーカスが移ったら引き戻さずに閉じる。開いたボタンへ移ったときは閉じない', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	const field = doc.createElement('textarea');
+	panel.append(field);
+	const calls = {cancel: 0};
+	host.open(popoverSpec(doc, calls), opener);
+	opener.dispatchEvent(new FakeEvent('focusin'));
+	assert.strictEqual(host.isOpen(), true);
+	field.focus();
+	field.dispatchEvent(new FakeEvent('focusin'));
+	assert.strictEqual(host.isOpen(), false);
+	assert.strictEqual(calls.cancel, 1);
+	assert.strictEqual(doc.activeElement, field);
+	assert.strictEqual(panel.querySelector(`[data-role="${ROLES.layer}"]`), null);
+});
+
+test('SheetHost: 吹き出しの外を押すと閉じ、開いたボタンへフォーカスを返す。中と開いたボタンの押下では閉じない', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	const outside = doc.createElement('div');
+	doc.body.append(outside);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	panel.querySelector('[data-role="test-item"]').dispatchEvent(new FakeEvent('pointerdown'));
+	opener.dispatchEvent(new FakeEvent('pointerdown'));
+	assert.strictEqual(host.isOpen(), true);
+	outside.dispatchEvent(new FakeEvent('pointerdown'));
+	assert.strictEqual(host.isOpen(), false);
+	assert.strictEqual(doc.activeElement, opener);
+	// 閉じた後は外の押下を拾わない (監視を外した)
+	host.open(inputSpec(doc, {done: 0, cancel: 0}), opener);
+	outside.dispatchEvent(new FakeEvent('pointerdown'));
+	assert.strictEqual(host.isOpen(), true);
+});
+
+test('SheetHost: 吹き出しを開いたボタンで開き直すと閉じるだけにする。別のボタンなら開き直す', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	const other = doc.createElement('button');
+	panel.append(other);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	assert.strictEqual(host.isOpen(), false);
+	assert.strictEqual(doc.activeElement, opener);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	host.open(popoverSpec(doc, {cancel: 0}), other);
+	assert.strictEqual(host.isOpen(), true);
+	assert.strictEqual(host.isOpenedFrom(other), true);
+	assert.strictEqual(panel.querySelectorAll(`[data-role="${ROLES.layer}"]`).length, 1);
 });

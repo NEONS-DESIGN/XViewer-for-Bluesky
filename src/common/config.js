@@ -694,7 +694,13 @@ export const EXT_CONFIG = {
 				/** ピッカーを差し込む要素の id */
 				rootId: 'picker',
 				/** 本体がライトテーマのとき html に付けるクラス (ディムとダークは暗い配色のピッカーにする) */
-				lightThemeClass: 'theme--light'
+				lightThemeClass: 'theme--light',
+				/**
+				 * 絵文字ボタンに付ける吹き出しの寸法 (px)。ボタンの下に出し、下に収まらなければ縮める。
+				 * minHeight を切るときはパネルを送って場所を空け、それでも足りなければ広いほう (上) に出す。
+				 * minHeight はピッカーの最小の高さ (230px) を下回らない値にする
+				 */
+				popover: {preferredHeight: 360, minHeight: 240, gap: 8, margin: 16, arrowInset: 20}
 			},
 			/**
 			 * パネルに重ねる画面 (ALT テキスト・切り抜き・ラベル・言語・絵文字) の要素の目印。
@@ -722,6 +728,11 @@ export const EXT_CONFIG = {
 				sheet: 'ext-lb-sheet',
 				sentinel: 'ext-lb-sheet-sentinel',
 				wide: 'is-wide',
+				/** 開いたボタンに付ける吹き出し (絵文字) と、ボタンの上に出したときの印 */
+				popover: 'is-popover',
+				popoverAbove: 'is-above',
+				/** 吹き出しの矢印の横位置 (吹き出しの左端からの px) を渡す CSS カスタムプロパティ */
+				popoverArrowVar: '--ext-lb-popover-arrow-x',
 				header: 'ext-lb-sheet-header',
 				title: 'ext-lb-sheet-title',
 				body: 'ext-lb-sheet-body',
