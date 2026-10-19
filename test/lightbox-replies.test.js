@@ -399,6 +399,94 @@ test('insertOwnReply: 連なりを送った順に入れると、1 件目は 1 �
 });
 
 /**
+ * 1 段目の返信 1 件と、その「返信」から開いた返信への返信の入力欄 (偽物) を持つ返信欄を作る。
+ * @returns {Object}
+ */
+function setupRowForm() {
+	const previous = globalThis.document;
+	const doc = new FakeDocument();
+	globalThis.document = doc;
+	const replies = new LightboxReplies(EXT_CONFIG.lightboxReplies, {
+		actions: {},
+		adjustReplyCount: () => {},
+		toSegments: (text) => [text],
+		buildSegment: (segment) => doc.createTextNode(segment),
+		leaveTo: () => {},
+		safeHref: () => null,
+		formatDate: (iso) => iso
+	});
+	replies.requestedCanWrite = true;
+	replies.sessionDid = 'did:plc:me';
+	replies.selfProfile = {did: 'did:plc:me', handle: 'me.example.com', displayName: '自分', avatarUrl: null};
+	replies.items = [];
+	const list = doc.createElement('ul');
+	list.prepend = (node) => list.insertBefore(node, list.childNodes[0] ?? null);
+	replies.listEl = list;
+	doc.body.append(list);
+	const first = {uri: THREAD_POST.uri, cid: THREAD_POST.cid, replyRef: null, isPost: true, anchorUri: null, handle: 'op'};
+	const {results, values} = postedThread();
+	replies.insertOwnReply(first, replies.buildOwnItem(results[0], values[0], first, null), null);
+	const anchorUri = results[0].uri;
+	const row = replies.rows.get(anchorUri);
+	const toggle = row.body.querySelector(`.${EXT_CONFIG.lightboxReplies.classes.toggle}`);
+	toggle.isConnected = true;
+	const formEl = doc.createElement('div');
+	const input = doc.createElement('textarea');
+	input.isConnected = true;
+	formEl.append(input);
+	row.body.append(formEl);
+	// 偽の DOM は外した要素の isConnected を下ろさないため、外すときに自分で下ろす
+	const composer = {el: formEl, destroyed: false, destroy() {
+		this.destroyed = true;
+		this.el.remove();
+		input.isConnected = false;
+	}};
+	replies.composers.add(composer);
+	replies.rowForm = {composer, button: toggle};
+	const target = {uri: anchorUri, cid: results[0].cid, replyRef: null, isPost: false, anchorUri, handle: 'me.example.com'};
+	const child = {uri: 'at://did:plc:me/app.bsky.feed.post/c1', cid: 'cc1'};
+	const record = {$type: 'app.bsky.feed.post', text: '返信への返信', createdAt: '2026-10-19T00:00:01.000Z',
+		reply: {root: {uri: THREAD_POST.uri, cid: THREAD_POST.cid}, parent: {uri: anchorUri, cid: results[0].cid}}};
+	return {doc, replies, composer, input, toggle, insert: () => {
+		replies.insertOwnReply(target, replies.buildOwnItem(child, record, target, null), composer);
+	}, restore: () => {
+		globalThis.document = previous;
+	}};
+}
+
+test('insertOwnReply: 返信への返信の入力欄から送れたら、入力欄を閉じて押した「返信」ボタンへフォーカスを戻す', () => {
+	// 本文の欄から Ctrl+Enter で送った / 送信ボタンが送信中に止まってフォーカスが body へ落ちた
+	for (const focused of ['input', 'lost']) {
+		const {doc, replies, composer, input, toggle, insert, restore} = setupRowForm();
+		try {
+			if (focused === 'input') input.focus();
+			else doc.activeElement = doc.body;
+			insert();
+			assert.strictEqual(composer.destroyed, true, focused);
+			assert.strictEqual(replies.rowForm, null, focused);
+			assert.strictEqual(doc.activeElement, toggle, focused);
+		} finally {
+			restore();
+		}
+	}
+});
+
+test('insertOwnReply: 送信中に利用者がフォーカスを入力欄の外へ移していたら、送れた後も動かさない', () => {
+	const {doc, replies, composer, insert, restore} = setupRowForm();
+	try {
+		const elsewhere = doc.createElement('button');
+		doc.body.append(elsewhere);
+		elsewhere.focus();
+		insert();
+		assert.strictEqual(composer.destroyed, true);
+		assert.strictEqual(replies.rowForm, null);
+		assert.strictEqual(doc.activeElement, elsewhere);
+	} finally {
+		restore();
+	}
+});
+
+/**
  * 一覧の取り直し (reloadList) を試す返信欄を作る。待ち時間は config の写しで短くする
  * (待つ時間は呼んだときに this.config から読むため、写しを渡せば本物のタイマーのまま短くできる)。
  * @param {{delayMs: number, thread: Object|null}} options 待ち時間と、fetchThread が返すスレッド

@@ -92,6 +92,21 @@ function waitMs(ms) {
  */
 
 /**
+ * フォーカスが行き場を失っている (body か無いか、外された要素の上) か、el の中にあるか。
+ * el が null なら失っているかだけを見る。
+ * @param {HTMLElement|null} el
+ * @returns {boolean}
+ */
+export function isFocusInOrLost(el) {
+	try {
+		const active = document.activeElement;
+		return !active || active === document.body || active.isConnected === false || (!!el && el.contains(active));
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
  * URL を 1 回引き、応答を read で読む。timeoutMs で打ち切る (本文の読み込みも含む)。
  * 通信・読み込みの失敗と打ち切りはすべて null。
  * @template T
@@ -924,8 +939,16 @@ export class LightboxReplies {
 			}
 			return;
 		}
+		// 入力欄を閉じる・中の行を描き直すとフォーカスが body へ落ちるため、描き直した後に戻す先の返信
+		let focusUri = null;
 		if (!composer || (this.rowForm && this.rowForm.composer === composer)) {
+			if (this.rowForm && isFocusInOrLost(this.rowForm.composer.el)) {
+				focusUri = target.uri;
+			}
 			this.closeRowForm(false);
+		}
+		if (focusUri === null) {
+			focusUri = this.focusedBranchRowUri(target.anchorUri);
 		}
 		const anchorRow = this.rows.get(target.anchorUri);
 		if (target.uri === target.anchorUri && anchorRow) {
@@ -937,11 +960,58 @@ export class LightboxReplies {
 			branch.items = inserted.items;
 			branch.shown = inserted.shown;
 			this.renderBranch(target.anchorUri);
+		} else {
+			// 開いていなければ、投稿した 1 件だけを持って開く (取り直すと反映が間に合わないことがある)
+			this.branches.set(target.anchorUri, {open: true, items: [item], shown: 1});
+			this.renderBranch(target.anchorUri);
+		}
+		this.focusRowToggle(focusUri, target.anchorUri);
+	}
+
+	/**
+	 * フォーカスが開いた返信の中の行にあれば、その行の返信の URI を返す (描き直すと行ごと作り直されるため)。
+	 * @param {string} anchorUri 1 段目の返信の URI
+	 * @returns {string|null}
+	 */
+	focusedBranchRowUri(anchorUri) {
+		const anchorRow = this.rows.get(anchorUri);
+		let active = null;
+		try {
+			active = document.activeElement;
+		} catch (error) {
+			active = null;
+		}
+		if (!active || !anchorRow || !anchorRow.area || !anchorRow.area.contains(active)) {
+			return null;
+		}
+		for (const [uri, row] of this.rows) {
+			if (row.depth === 1 && row.anchorUri === anchorUri && row.li.contains(active)) {
+				return uri;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * 返信の行の「返信」ボタンへフォーカスを移す。行が無ければ 1 段目の返信の「返信」ボタンへ。
+	 * フォーカスがほかの場所にあれば (送信中に利用者が移した) 動かさない。
+	 * @param {string|null} uri フォーカスを戻す返信
+	 * @param {string} anchorUri 1 段目の返信の URI
+	 * @returns {void}
+	 */
+	focusRowToggle(uri, anchorUri) {
+		if (!uri || !isFocusInOrLost(null)) {
 			return;
 		}
-		// 開いていなければ、投稿した 1 件だけを持って開く (取り直すと反映が間に合わないことがある)
-		this.branches.set(target.anchorUri, {open: true, items: [item], shown: 1});
-		this.renderBranch(target.anchorUri);
+		const selector = `.${this.config.classes.toggle}`;
+		for (const key of [uri, anchorUri]) {
+			const row = this.rows.get(key);
+			const button = row && row.body ? row.body.querySelector(selector) : null;
+			if (button && button.isConnected) {
+				button.focus({preventScroll: true});
+				return;
+			}
+		}
 	}
 
 	/**
