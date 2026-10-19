@@ -11,7 +11,9 @@ import {
 	parsePostUrl,
 	isCardableUrl,
 	pickSuggestion,
-	pruneDismissed,
+	suppressUrl,
+	suppressedUrls,
+	pruneSuppressed,
 	parseCardResponse,
 } from '../src/content/reply-links.js';
 import {detectRichText, buildFacets} from '../src/content/reply-text.js';
@@ -157,9 +159,25 @@ test('pickSuggestion: 貼り付けなら即、打鍵なら前回もあって直�
 	assert.deepStrictEqual(pick({links: [post], previousLinks: [post], text: post + ' '}), {card: null, quote: post});
 });
 
-test('pruneDismissed: 本文から消えた URL だけを外す', () => {
-	assert.deepStrictEqual(pruneDismissed(['https://a.com', 'https://b.com'], ['https://b.com']), ['https://b.com']);
-	assert.deepStrictEqual(pruneDismissed([], ['https://b.com']), []);
+test('suppressUrl / suppressedUrls: 理由ごとに提案しない URL を引き、× の理由はカードにも引用にも効く', () => {
+	const suppressed = new Map();
+	suppressUrl(suppressed, 'https://a.com', 'failedCard');
+	suppressUrl(suppressed, 'https://b.com', 'dismissed');
+	suppressUrl(suppressed, 'https://c.com', 'failedQuote');
+	suppressUrl(suppressed, 'https://a.com', 'failedQuote');
+	assert.deepStrictEqual(suppressedUrls(suppressed, ['dismissed', 'failedCard']), ['https://a.com', 'https://b.com']);
+	assert.deepStrictEqual(suppressedUrls(suppressed, ['dismissed', 'failedQuote']), ['https://a.com', 'https://b.com', 'https://c.com']);
+	assert.deepStrictEqual(suppressedUrls(new Map(), ['dismissed']), []);
+});
+
+test('pruneSuppressed: 本文から消えた URL だけを忘れる', () => {
+	const suppressed = new Map();
+	suppressUrl(suppressed, 'https://a.com', 'dismissed');
+	suppressUrl(suppressed, 'https://b.com', 'failedCard');
+	pruneSuppressed(suppressed, ['https://b.com']);
+	assert.deepStrictEqual(Array.from(suppressed.keys()), ['https://b.com']);
+	pruneSuppressed(suppressed, []);
+	assert.strictEqual(suppressed.size, 0);
 });
 
 test('pickSuggestion: 空の link は提案にならず、固まらない', () => {

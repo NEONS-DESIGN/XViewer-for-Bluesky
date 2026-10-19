@@ -9,7 +9,7 @@ import assert from 'node:assert';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {FakeDocument, FakeEvent, click} from './helpers/fake-dom.js';
 import {SheetHost} from '../src/content/reply-sheets.js';
-import {ComposerVideo, readVideoMeta, readCaptionFile} from '../src/content/reply-video.js';
+import {ComposerVideo, readVideoMeta, readCaptionFile, isVisibleProgressChange} from '../src/content/reply-video.js';
 import {openVideoSheet} from '../src/content/video-sheet.js';
 
 const CONFIG = EXT_CONFIG.lightboxReplies;
@@ -45,7 +45,7 @@ function stubUrls(t) {
 
 /**
  * 呼ばれ方を記録する偽の deps を作る。
- * @param {*} meta readMeta が返すもの
+ * @param {*} meta readVideoMeta が返すもの
  * @returns {{deps: Object, uploads: Array<{id: string, blob: *, onProgress: Function, resolve: Function}>, calls: {cancels: string[], changes: number}}}
  */
 function makeDeps(meta = GOOD_META) {
@@ -62,7 +62,7 @@ function makeDeps(meta = GOOD_META) {
 			return {id, done};
 		},
 		cancelVideoUpload: (id) => calls.cancels.push(id),
-		readMeta: async () => meta,
+		readVideoMeta: async () => meta,
 		onChange: () => {
 			calls.changes += 1;
 		}
@@ -87,7 +87,7 @@ function flush() {
 test('setFile: 読める動画は upload に進み、進み具合で状態の 1 行が変わり、完了で ready になる', async (t) => {
 	stubUrls(t);
 	const {deps, uploads, calls} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const file = videoFile();
 	const result = await video.setFile(file);
 	assert.deepStrictEqual(result, {ok: true});
@@ -129,7 +129,7 @@ test('setFile: 大きすぎる・長すぎる・読めない動画は取り込�
 	];
 	for (const one of cases) {
 		const {deps, uploads} = makeDeps(one.meta);
-		const video = new ComposerVideo(CONFIG, deps);
+		const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 		const result = await video.setFile(one.file);
 		assert.deepStrictEqual(result, {ok: false, notice: one.notice});
 		assert.strictEqual(uploads.length, 0);
@@ -143,7 +143,7 @@ test('setFile: 大きすぎる・長すぎる・読めない動画は取り込�
 test('setFile: 2 本目は tooManyVideos', async (t) => {
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile());
 	const second = await video.setFile(videoFile({name: 'second.mp4'}));
 	assert.deepStrictEqual(second, {ok: false, notice: TEXT.tooManyVideos});
@@ -154,7 +154,7 @@ test('setFile: 2 本目は tooManyVideos', async (t) => {
 test('失敗すると error と文言を持ち、retry で同じファイルを送り直す', async (t) => {
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const file = videoFile();
 	await video.setFile(file);
 	uploads[0].resolve({ok: false, blob: null, reason: 'upload-forbidden', message: 'Confirm your email address to upload videos'});
@@ -177,7 +177,7 @@ test('失敗すると error と文言を持ち、retry で同じファイルを�
 test('remove: 走っているアップロードを取り消し、URL を破棄する', async (t) => {
 	const urls = stubUrls(t);
 	const {deps, calls} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile());
 	const url = video.state.url;
 	const before = calls.changes;
@@ -191,7 +191,7 @@ test('remove: 走っているアップロードを取り消し、URL を破棄�
 test('古い uploadId の結果を捨てる', async (t) => {
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile({name: 'first.mp4'}));
 	video.remove();
 	await video.setFile(videoFile({name: 'second.mp4'}));
@@ -218,7 +218,7 @@ test('古い uploadId の結果を捨てる', async (t) => {
 test('destroy: 処理中なら取り消し、後から届いた結果で例外を出さず onChange も呼ばない', async (t) => {
 	stubUrls(t);
 	const {deps, uploads, calls} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile());
 	uploads[0].onProgress({phase: 'processing', progress: 0.4});
 	video.destroy();
@@ -239,10 +239,10 @@ test('destroy: 寸法を読んでいる途中でも、読み終えた後に何�
 	stubUrls(t);
 	const {deps, uploads, calls} = makeDeps();
 	let release = null;
-	deps.readMeta = () => new Promise((resolve) => {
+	deps.readVideoMeta = () => new Promise((resolve) => {
 		release = resolve;
 	});
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const pending = video.setFile(videoFile());
 	assert.strictEqual(video.state.phase, 'reading');
 	assert.ok(video.isPending());
@@ -259,7 +259,7 @@ test('destroy: 寸法を読んでいる途中でも、読み終えた後に何�
 test('reset: 取り消しを送らない', async (t) => {
 	const urls = stubUrls(t);
 	const {deps, uploads, calls} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile());
 	uploads[0].resolve({ok: true, blob: {ref: {$link: 'sent'}}, reason: null, message: null});
 	await flush();
@@ -274,7 +274,7 @@ test('reset: 取り消しを送らない', async (t) => {
 test('toUploaded: ALT・縦横比・字幕の BlobRef を UploadedVideo にする', async (t) => {
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	await video.setFile(videoFile());
 	const blob = {ref: {$link: 'bafy-video'}};
 	uploads[0].resolve({ok: true, blob, reason: null, message: null});
@@ -338,7 +338,7 @@ test('readVideoMeta: loadedmetadata で寸法と長さを返し、URL を破棄�
 test('render: 状態の 1 行を書き換え、進み具合では動画を作り直さず、失敗で再試行を出す', async (t) => {
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	doc.body.append(container);
@@ -384,10 +384,10 @@ test('render: 読み取りから失敗まで、状態の 1 行の要素は同じ
 	stubUrls(t);
 	const {deps, uploads} = makeDeps();
 	let release = null;
-	deps.readMeta = () => new Promise((resolve) => {
+	deps.readVideoMeta = () => new Promise((resolve) => {
 		release = resolve;
 	});
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	doc.body.append(container);
@@ -418,10 +418,10 @@ test('render: 寸法を読んでいる間は「動画を読み込み中…」と
 	stubUrls(t);
 	const {deps, uploads, calls} = makeDeps();
 	let release = null;
-	deps.readMeta = () => new Promise((resolve) => {
+	deps.readVideoMeta = () => new Promise((resolve) => {
 		release = resolve;
 	});
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	doc.body.append(container);
@@ -450,10 +450,10 @@ test('render: 読み終えて送り始めたら × の枠は消え、プレビ�
 	stubUrls(t);
 	const {deps} = makeDeps();
 	let release = null;
-	deps.readMeta = () => new Promise((resolve) => {
+	deps.readVideoMeta = () => new Promise((resolve) => {
 		release = resolve;
 	});
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	doc.body.append(container);
@@ -478,7 +478,7 @@ test('render: 再試行の後は ALT のボタン (無ければ状態の 1 行) 
 		let video = null;
 		// 入力欄と同じく、状態が変わるたびにその場で描き直す
 		deps.onChange = () => video.render(container, handlers, false);
-		video = new ComposerVideo(CONFIG, deps);
+		video = new ComposerVideo(CONFIG, deps, deps.onChange);
 		await video.setFile(videoFile());
 		uploads[0].resolve({ok: false, blob: null, reason: 'upload-failed', message: null});
 		await flush();
@@ -502,7 +502,7 @@ test('render: 再試行の後は ALT のボタン (無ければ状態の 1 行) 
 test('render: 手元の動画の source に type を書かない (.mov を飛ばさせない)', async (t) => {
 	stubUrls(t);
 	const {deps} = makeDeps();
-	const video = new ComposerVideo(CONFIG, deps);
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	await video.setFile(videoFile({name: 'clip.mov', type: 'video/quicktime'}));
@@ -670,4 +670,78 @@ test('openVideoSheet: 字幕の読み取りが重なったら最後に選んだ�
 	assert.ok(panel.querySelector(`.${COMPOSE.classes.captionRow}`).hidden);
 	click(panel.querySelector('[data-role="sheet-done"]'));
 	assert.deepStrictEqual(saved, [{alt: '', caption: null}]);
+});
+
+test('readVideoMeta: 読み終えたら src を外し、load() で読み込みを止める', async (t) => {
+	stubUrls(t);
+	const doc = new FakeDocument();
+	const created = [];
+	const original = doc.createElement.bind(doc);
+	doc.createElement = (tag) => {
+		const element = original(tag);
+		if (tag === 'video') {
+			element.loads = 0;
+			element.load = () => {
+				element.loads += 1;
+			};
+			created.push(element);
+		}
+		return element;
+	};
+	const reading = readVideoMeta(videoFile(), doc, 1000);
+	const element = created[0];
+	element.videoWidth = 10;
+	element.videoHeight = 10;
+	element.duration = 1;
+	element.dispatchEvent(new FakeEvent('loadedmetadata'));
+	await reading;
+	assert.strictEqual(element.hasAttribute('src'), false);
+	assert.strictEqual(element.loads, 1);
+});
+
+test('isVisibleProgressChange: 段階か、状態の 1 行に出す百分率が変わったときだけ真', () => {
+	assert.strictEqual(isVisibleProgressChange({phase: 'upload', progress: 0.421}, {phase: 'upload', progress: 0.428}), false);
+	assert.strictEqual(isVisibleProgressChange({phase: 'upload', progress: 0.42}, {phase: 'upload', progress: 0.43}), true);
+	assert.strictEqual(isVisibleProgressChange({phase: 'upload', progress: 1}, {phase: 'processing', progress: 0}), true);
+	assert.strictEqual(isVisibleProgressChange({phase: 'processing', progress: null}, {phase: 'processing', progress: null}), false);
+	assert.strictEqual(isVisibleProgressChange({phase: 'processing', progress: null}, {phase: 'processing', progress: 0}), true);
+});
+
+test('applyProgress: 百分率の整数が変わらない進み具合では onChange を呼ばない', async (t) => {
+	stubUrls(t);
+	const {deps, uploads, calls} = makeDeps();
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
+	await video.setFile(videoFile());
+	const before = calls.changes;
+	uploads[0].onProgress({phase: 'upload', progress: 0.101});
+	assert.strictEqual(calls.changes, before + 1);
+	uploads[0].onProgress({phase: 'upload', progress: 0.105});
+	assert.strictEqual(calls.changes, before + 1, '同じ 10% で知らせた');
+	assert.strictEqual(video.state.progress, 0.105, '値そのものは更新する');
+	uploads[0].onProgress({phase: 'processing', progress: 0.105});
+	assert.strictEqual(calls.changes, before + 2, '段階の変化を知らせない');
+});
+
+test('render: 送信の始まりと終わりで動画を作り直さず、ボタンの押せる / 押せないだけを変える', async (t) => {
+	stubUrls(t);
+	const {deps, uploads} = makeDeps();
+	const video = new ComposerVideo(CONFIG, deps, deps.onChange);
+	const doc = new FakeDocument();
+	const container = doc.createElement('div');
+	doc.body.append(container);
+	await video.setFile(videoFile());
+	uploads[0].resolve({ok: true, blob: {$type: 'blob', ref: {$link: 'bafy'}}, reason: null, message: null});
+	await flush();
+	const handlers = {onAlt: () => {}, onRemoved: () => {}};
+	video.render(container, handlers, false);
+	const player = container.querySelector('video');
+	const toolButtons = () => container.querySelector(`.${CONFIG.cards.classes.gifTools}`).querySelectorAll('button');
+	assert.ok(toolButtons().length > 0);
+	assert.ok(toolButtons().every((button) => button.disabled === false));
+	video.render(container, handlers, true);
+	assert.strictEqual(container.querySelector('video'), player, '送信の始まりで動画を作り直した');
+	assert.ok(toolButtons().every((button) => button.disabled === true));
+	video.render(container, handlers, false);
+	assert.strictEqual(container.querySelector('video'), player, '送信の終わりで動画を作り直した');
+	assert.ok(toolButtons().every((button) => button.disabled === false));
 });

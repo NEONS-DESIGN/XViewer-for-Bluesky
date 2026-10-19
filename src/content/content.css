@@ -80,11 +80,20 @@
 	background-color: rgba(128, 128, 128, 0.15);
 }
 
-.ext-media-tile img {
+/*
+ * 画像を枠いっぱいに切り抜いて敷く (グリッドのタイル・返信の画像・添付・リンクカード・引用)。
+ * 枠の大きさと角丸は、それぞれの入れ物の規則が持つ
+ */
+.ext-media-tile img,
+.ext-lb-reply-media-item img,
+.ext-lb-composer-attachment-image,
+.ext-lb-card-thumb img,
+.ext-lb-quote-image img,
+.ext-lb-quote-avatar img {
+	display: block;
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
-	display: block;
 }
 
 .ext-media-tile.ext-media-blur img {
@@ -146,7 +155,40 @@
 	opacity: 0.7;
 }
 
-/* Bluesky 本来のフィードを隠す。display: none で本体は暴走しない (設計文書 2.3) */
+/*
+ * 「さらに読み込む」(状態の 1 行の下に中央寄せで出す)。グリッドはパネルの外にあるため、
+ * 色は本体の配色の変数 (--text) から作る。形はパネルの「もっと見る」と同じ
+ */
+.ext-media-load-more {
+	display: block;
+	height: 30px;
+	margin: 0 auto 12px;
+	padding: 0 16px;
+	cursor: pointer;
+	color: var(--text, #ffffff);
+	background: color-mix(in srgb, var(--text, #ffffff) 8%, transparent);
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.ext-media-load-more:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--text, #ffffff) 14%, transparent);
+}
+
+.ext-media-load-more:disabled {
+	cursor: default;
+	opacity: 0.5;
+}
+
+.ext-media-load-more:focus-visible {
+	outline: 2px solid rgb(16, 131, 254);
+	outline-offset: 2px;
+}
+
+/* Bluesky 本来のフィードを隠す。display: none で本体は暴走しない (2026-08-16 実測) */
 .ext-feed-hidden {
 	display: none !important;
 }
@@ -202,6 +244,18 @@
 	--ext-lb-bookmark: #ffd400;
 	/* 返信欄の削除の聞き返し (2026-10-18 追加)。ライトは下で暗い側へ差し替える */
 	--ext-lb-danger: #e5737a;
+	/*
+	 * 画像・動画の上に重ねるボタンや印の地 (外す・ALT・再生・字幕の印)。画像の色に依らず読めるよう、
+	 * テーマに関係なく黒の半透明にする
+	 */
+	--ext-lb-overlay: color-mix(in srgb, #000000 65%, transparent);
+	/*
+	 * 文字色をうすく混ぜた面 (地の上の控えめなボタン・入力欄・読み込み中の受け皿)。
+	 * --ext-lb-text から作るため、テーマを差し替えると一緒に変わる
+	 */
+	--ext-lb-fill: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	/* フォーカスの輪。outline-offset は部品ごとに決める */
+	--ext-lb-focus-ring: 2px solid var(--ext-lb-accent);
 
 	/* チェックボックス・ラジオ・検索欄・スクロールバーなどの標準部品の配色。ライトは下で差し替える */
 	color-scheme: dark;
@@ -301,6 +355,11 @@
 	flex-direction: column;
 	gap: 12px;
 	padding: 0 16px 16px;
+}
+
+/* 本文の中で投稿の部分と返信欄の置き場を包む入れ物。箱を作らず、.ext-lb-body の gap を子へそのまま効かせる */
+.ext-lb-part {
+	display: contents;
 }
 
 .ext-lb-author {
@@ -707,15 +766,11 @@
 }
 
 .ext-lb-reply-media-item:focus-visible {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: -2px;
 }
 
 .ext-lb-reply-media-item img {
-	display: block;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
 	transition: opacity 0.15s ease;
 }
 
@@ -897,7 +952,7 @@
 }
 
 .ext-lb-composer-skip-empty button:focus-visible {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -1003,7 +1058,7 @@
 .ext-lb-reply-submit:disabled {
 	cursor: default;
 	color: var(--ext-lb-muted);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 }
 
 .ext-lb-reply-submit[aria-busy="true"] {
@@ -1018,7 +1073,6 @@
 .ext-lb-composer-thread,
 .ext-lb-composer {
 	--ext-lb-composer-indent: 40px;
-	--ext-lb-composer-overlay: color-mix(in srgb, #000000 65%, transparent);
 }
 
 /* display を持つ部品が hidden を上書きしないよう、入力欄の中ではまとめて隠す */
@@ -1035,7 +1089,7 @@
 }
 
 .ext-lb-composer button:focus-visible {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -1065,13 +1119,6 @@
 	border-radius: 6px;
 }
 
-.ext-lb-composer-attachment-image {
-	display: block;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-}
-
 .ext-lb-composer-attachment-tools {
 	position: absolute;
 	top: 4px;
@@ -1085,7 +1132,7 @@
 	flex: 0 0 auto;
 	cursor: pointer;
 	color: #ffffff;
-	background: var(--ext-lb-composer-overlay);
+	background: var(--ext-lb-overlay);
 	border: none;
 	font: inherit;
 }
@@ -1400,21 +1447,13 @@
 
 .ext-lb-card-thumb {
 	aspect-ratio: 1.91 / 1;
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 }
 
 .ext-lb-quote-image {
 	max-height: 160px;
 	margin: 0 10px 10px;
 	border-radius: 6px;
-}
-
-.ext-lb-card-thumb img,
-.ext-lb-quote-image img {
-	display: block;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
 }
 
 .ext-lb-card-thumb.is-blurred img,
@@ -1504,13 +1543,6 @@
 	background: color-mix(in srgb, var(--ext-lb-text) 12%, transparent);
 }
 
-.ext-lb-quote-avatar img {
-	display: block;
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-}
-
 .ext-lb-quote-name {
 	min-width: 0;
 	overflow: hidden;
@@ -1557,7 +1589,7 @@
 	padding: 0;
 	cursor: pointer;
 	color: #ffffff;
-	background: color-mix(in srgb, #000000 65%, transparent);
+	background: var(--ext-lb-overlay);
 	border: none;
 	border-radius: 50%;
 }
@@ -1568,16 +1600,26 @@
 	fill: currentColor;
 }
 
-.ext-lb-gif {
+/* GIF と動画の入れ物。高さの上限と地の色だけが違う */
+.ext-lb-gif,
+.ext-lb-video {
 	position: relative;
 	box-sizing: border-box;
 	max-width: 100%;
-	max-height: 320px;
 	margin-top: 6px;
 	overflow: hidden;
 	border: 1px solid var(--ext-lb-border);
 	border-radius: 8px;
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+}
+
+.ext-lb-gif {
+	max-height: 320px;
+	background: var(--ext-lb-fill);
+}
+
+.ext-lb-video {
+	max-height: 360px;
+	background: #000000;
 }
 
 .ext-lb-gif-video,
@@ -1588,7 +1630,14 @@
 	object-fit: contain;
 }
 
-.ext-lb-gif-play {
+/*
+ * 再生ボタン。GIF (と gif の動画の切り替え) と動画のカードで、真ん中の丸の大きさだけが違う。
+ * 大きさは --ext-lb-play-size / --ext-lb-play-pad で渡す
+ */
+.ext-lb-gif-play,
+.ext-lb-video-play {
+	--ext-lb-play-size: 44px;
+	--ext-lb-play-pad: 8px;
 	position: absolute;
 	inset: 0;
 	display: flex;
@@ -1601,13 +1650,19 @@
 	border: none;
 }
 
-.ext-lb-gif-play svg {
-	width: 44px;
-	height: 44px;
-	padding: 8px;
+.ext-lb-video-play {
+	--ext-lb-play-size: 52px;
+	--ext-lb-play-pad: 10px;
+}
+
+.ext-lb-gif-play svg,
+.ext-lb-video-play svg {
+	width: var(--ext-lb-play-size);
+	height: var(--ext-lb-play-size);
+	padding: var(--ext-lb-play-pad);
 	box-sizing: border-box;
 	fill: currentColor;
-	background: color-mix(in srgb, #000000 65%, transparent);
+	background: var(--ext-lb-overlay);
 	border-radius: 50%;
 }
 
@@ -1639,7 +1694,7 @@
 	padding: 2px 8px;
 	cursor: pointer;
 	color: #ffffff;
-	background: color-mix(in srgb, #000000 65%, transparent);
+	background: var(--ext-lb-overlay);
 	border: none;
 	border-radius: 10px;
 	font: inherit;
@@ -1649,18 +1704,6 @@
 
 .ext-lb-gif-alt.is-done {
 	background: var(--ext-lb-primary);
-}
-
-.ext-lb-video {
-	position: relative;
-	box-sizing: border-box;
-	max-width: 100%;
-	max-height: 360px;
-	margin-top: 6px;
-	overflow: hidden;
-	border: 1px solid var(--ext-lb-border);
-	border-radius: 8px;
-	background: #000000;
 }
 
 .ext-lb-video-thumb {
@@ -1685,29 +1728,6 @@
 .ext-lb-replies-unblur .ext-lb-video.is-blurred .ext-lb-video-thumb img,
 .ext-lb-replies-unblur .ext-lb-video.is-blurred .ext-lb-video-player {
 	filter: none;
-}
-
-.ext-lb-video-play {
-	position: absolute;
-	inset: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 0;
-	cursor: pointer;
-	color: #ffffff;
-	background: transparent;
-	border: none;
-}
-
-.ext-lb-video-play svg {
-	width: 52px;
-	height: 52px;
-	padding: 10px;
-	box-sizing: border-box;
-	fill: currentColor;
-	background: color-mix(in srgb, #000000 65%, transparent);
-	border-radius: 50%;
 }
 
 .ext-lb-video-fallback {
@@ -1752,7 +1772,7 @@
 	padding: 0 12px;
 	cursor: pointer;
 	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: none;
 	border-radius: 999px;
 	font: inherit;
@@ -1779,7 +1799,7 @@
 	padding: 0;
 	cursor: pointer;
 	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: none;
 	border-radius: 50%;
 }
@@ -1806,7 +1826,7 @@
 	margin-left: 4px;
 	padding: 2px 8px;
 	color: #ffffff;
-	background: color-mix(in srgb, #000000 65%, transparent);
+	background: var(--ext-lb-overlay);
 	border-radius: 10px;
 	font-size: 11px;
 	font-weight: 700;
@@ -1825,7 +1845,7 @@
 	margin-top: 8px;
 	cursor: pointer;
 	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: none;
 	border-radius: 6px;
 	font: inherit;
@@ -1842,7 +1862,7 @@
 .ext-lb-replies-retry:focus-visible,
 .ext-lb-reply-submit:focus-visible,
 .ext-lb-replies-more:focus-visible {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -1866,6 +1886,10 @@
 	 * .r-1loqt21 は詳細度 (0,1,0) で、この属性セレクタと同点になる
 	 */
 	cursor: default !important;
+	/* 閉じるボタンと画像オプションを並べ替える下の規則が使う、本体と同じ余白・ボタンの大きさ (実測 44x44)・間隔 */
+	--ext-lb-chrome-offset: 20px;
+	--ext-lb-chrome-size: 44px;
+	--ext-lb-chrome-gap: 8px;
 }
 
 /*
@@ -1895,12 +1919,6 @@
  * **本体のクラス名・ロケール依存の aria-label には依存しない。**
  * 本体 DOM には触らず、目印を外せば元の位置に戻る
  */
-[data-bsky-ext-lightbox] {
-	/* 本体と同じ余白・ボタンの大きさ (実測 44x44)・ボタン同士の間隔 */
-	--ext-lb-chrome-offset: 20px;
-	--ext-lb-chrome-size: 44px;
-	--ext-lb-chrome-gap: 8px;
-}
 
 /* 閉じるボタン: 後ろにボタン 1 個だけの div が無いもの */
 [data-bsky-ext-lightbox] > [role="dialog"] > div > div:has(> button:only-child):not(:has(~ div > button:only-child)) {
@@ -1980,7 +1998,7 @@
 }
 
 .ext-lb-sheet :focus-visible {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -2018,11 +2036,6 @@
 	padding: 12px 16px;
 }
 
-.ext-lb-sheet.is-wide .ext-lb-sheet-body {
-	padding-right: 0;
-	padding-left: 0;
-}
-
 .ext-lb-sheet-foot {
 	flex: 0 0 auto;
 	display: flex;
@@ -2040,7 +2053,7 @@
 	padding: 0 16px;
 	cursor: pointer;
 	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: none;
 	border-radius: 999px;
 	font: inherit;
@@ -2067,7 +2080,7 @@
 .ext-lb-sheet-button:disabled {
 	cursor: default;
 	color: var(--ext-lb-muted);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 }
 
 .ext-lb-sheet-note {
@@ -2083,7 +2096,6 @@
 	font-size: 13px;
 }
 
-/* ALT テキスト */
 /* 字幕と ALT の画面の字幕の行 */
 .ext-lb-caption-row {
 	display: flex;
@@ -2102,17 +2114,43 @@
 	white-space: nowrap;
 }
 
-.ext-lb-caption-row select {
-	flex: 1 1 auto;
+/*
+ * 重ねる画面の 1 行の入力部品 (字幕の言語の選択・言語の検索欄・GIF の検索欄) に共通の形。
+ * 幅・縮み方・枠線・余白はそれぞれの規則で決める
+ */
+.ext-lb-caption-row select,
+.ext-lb-lang-search,
+.ext-lb-gif-search {
 	min-width: 0;
 	height: 32px;
 	padding: 0 8px;
 	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
-	border: 1px solid var(--ext-lb-border);
+	background: var(--ext-lb-fill);
 	border-radius: 4px;
 	font: inherit;
 	font-size: 13px;
+}
+
+.ext-lb-lang-search,
+.ext-lb-gif-search {
+	box-sizing: border-box;
+	border: 1px solid transparent;
+}
+
+.ext-lb-lang-search:focus,
+.ext-lb-gif-search:focus {
+	border-color: var(--ext-lb-accent);
+}
+
+.ext-lb-caption-row select {
+	flex: 1 1 auto;
+	border: 1px solid var(--ext-lb-border);
+}
+
+/* 開いた選択肢の一覧は OS 側の配色で描かれるため、地と文字の色を明示する (ダークで白地に白文字にしない) */
+.ext-lb-caption-row select option {
+	color: var(--ext-lb-text);
+	background: var(--ext-lb-bg);
 }
 
 .ext-lb-sheet-alt-preview {
@@ -2127,13 +2165,13 @@
 .ext-lb-sheet-alt-frame {
 	display: flex;
 	padding: 6px 8px;
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: 1px solid transparent;
 	border-radius: 4px;
 }
 
 .ext-lb-sheet-alt-frame:focus-within {
-	outline: 2px solid var(--ext-lb-accent);
+	outline: var(--ext-lb-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -2203,7 +2241,7 @@
 }
 
 .ext-lb-sheet-option:hover {
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 }
 
 .ext-lb-sheet-option input {
@@ -2228,21 +2266,7 @@
  */
 .ext-lb-lang-search {
 	flex: 0 0 auto;
-	box-sizing: border-box;
 	width: 100%;
-	min-width: 0;
-	height: 32px;
-	padding: 0 8px;
-	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
-	border: 1px solid transparent;
-	border-radius: 4px;
-	font: inherit;
-	font-size: 13px;
-}
-
-.ext-lb-lang-search:focus {
-	border-color: var(--ext-lb-accent);
 }
 
 .ext-lb-lang-count {
@@ -2263,22 +2287,8 @@
  */
 .ext-lb-gif-search {
 	flex: 0 0 auto;
-	box-sizing: border-box;
 	width: calc(100% - 24px);
-	min-width: 0;
-	height: 32px;
 	margin: 12px 12px 8px;
-	padding: 0 8px;
-	color: var(--ext-lb-text);
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
-	border: 1px solid transparent;
-	border-radius: 4px;
-	font: inherit;
-	font-size: 13px;
-}
-
-.ext-lb-gif-search:focus {
-	border-color: var(--ext-lb-accent);
 }
 
 .ext-lb-gif-scroll {
@@ -2303,7 +2313,7 @@
 	margin: 0;
 	padding: 0;
 	overflow: hidden;
-	background: color-mix(in srgb, var(--ext-lb-text) 8%, transparent);
+	background: var(--ext-lb-fill);
 	border: none;
 	border-radius: 6px;
 	cursor: pointer;
@@ -2442,14 +2452,35 @@
 	font-size: 12px;
 }
 
-/* 絵文字。ピッカーのページは 100vh で描くため、iframe に高さを与える */
+/*
+ * 絵文字。iframe は吹き出しの高さいっぱいに広げる (ピッカーのページは 100vh で描く)。
+ * フォーカスの印はピッカーの検索欄が出すため、iframe 自体の輪は出さない
+ */
 .ext-lb-emoji-frame {
 	display: block;
-	flex: 0 0 auto;
+	flex: 1 1 auto;
 	width: 100%;
-	height: 435px;
+	height: auto;
+	min-height: 0;
 	border: none;
-	border-radius: 8px;
+	border-radius: 10px;
+}
+
+.ext-lb-sheet .ext-lb-emoji-frame:focus-visible {
+	outline: none;
+}
+
+/* ページが準備できたと知らせるまで iframe に重ねる 1 行。押下は下の iframe へ通す */
+.ext-lb-emoji-loading {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	margin: 0;
+	color: var(--ext-lb-muted);
+	font-size: 13px;
+	pointer-events: none;
 }
 
 /*
@@ -2512,16 +2543,4 @@
 
 .ext-lb-sheet.is-popover .ext-lb-sheet-error {
 	margin: 12px 16px;
-}
-
-/* 中身を吹き出しの高さいっぱいに広げる。フォーカスの印はピッカーの検索欄が出す */
-.ext-lb-sheet.is-popover .ext-lb-emoji-frame {
-	flex: 1 1 auto;
-	height: auto;
-	min-height: 0;
-	border-radius: 10px;
-}
-
-.ext-lb-sheet.is-popover .ext-lb-emoji-frame:focus-visible {
-	outline: none;
 }

@@ -1,15 +1,26 @@
 /**
  * 返信の入力欄の GIF・リンクカード・引用の状態。
- * 本文のリンクからカードと引用を提案して取得し (取得ごとに番号を振り、古い応答は捨てる)、
+ * 本文のリンクからカードと引用を提案して取得し (取得ごとに要求の枠で印を配り、古い応答は捨てて通信も止める)、
  * プレビューを描き、送信のときに external と引用する投稿 (uri と cid) を組み立てる。通信は依存として受け取る。
+ * リンクカードのサムネイルは、カードが取れた時点で 1 回だけ取得し、プレビューと送信の両方に使う。
+ *
+ * 依存: bridge-protocol.js / reply-links.js / klipy.js / reply-embed.js / embed-cards.js / sheet-dom.js /
+ *       motion.js / reply-text.js / object-url.js / request-slot.js / keyed-parts.js
  */
 
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
-import {pickSuggestion, pruneDismissed, parsePostUrl, parseCardResponse} from './reply-links.js';
+import {prefersReducedMotion} from '../common/motion.js';
+import {
+	pickSuggestion, parsePostUrl, parseCardResponse, suppressUrl, suppressedUrls, pruneSuppressed
+} from './reply-links.js';
 import {buildGifExternal, gifPlayerFromUri} from './klipy.js';
 import {toQuoteViewRecord} from './reply-embed.js';
-import {buildLinkCard, buildQuoteCard, buildGifPlayer, classifyEmbedView, prefersReducedMotion} from './embed-cards.js';
+import {buildLinkCard, buildQuoteCard, buildGifPlayer, classifyEmbedView} from './embed-cards.js';
 import {createElement} from './sheet-dom.js';
+import {utf8Length} from './reply-text.js';
+import {createObjectUrl, revokeObjectUrl} from './object-url.js';
+import {createRequestSlot} from './request-slot.js';
+import {syncKeyedParts} from './keyed-parts.js';
 
 /** 返信の record に付ける embed の $type と external の上限 */
 const RECORD_RULES = BRIDGE_PROTOCOL.postRecord;
@@ -20,8 +31,11 @@ const GIF_PREVIEW_MIME = 'video/webm';
 /** 投稿の AT URI の collection */
 const POST_COLLECTION = BRIDGE_PROTOCOL.collections.post;
 
-/** URL のバイト数を数える変換器 */
-const utf8Encoder = new TextEncoder();
+/** カードの提案を止める理由 (× で外した・取得できなかった) */
+const CARD_SUPPRESS = ['dismissed', 'failedCard'];
+
+/** 引用の提案を止める理由 (× で外した・付けられなかった) */
+const QUOTE_SUPPRESS = ['dismissed', 'failedQuote'];
 
 /**
  * @typedef {import('./klipy.js').GifItem} GifItem
@@ -34,10 +48,20 @@ const utf8Encoder = new TextEncoder();
  */
 
 /**
+ * リンクカードのサムネイル。カードが取れた時点で 1 回だけ取得する。
+ * @typedef {Object} CardThumb
+ * @property {'loading'|'ready'|'failed'} status
+ * @property {Blob|null} blob 取得できた画像 (送るときはこれを縮める)
+ * @property {string} url blob の object URL (プレビューに使う。作れなければ空)
+ * @property {Promise<Blob|null>} done 取得の終わり (取れなければ null)
+ */
+
+/**
  * @typedef {Object} CardState
  * @property {string} url 本文のリンクの URL
  * @property {'loading'|'ready'} status
  * @property {{title: string, description: string, imageUrl: string|null}|null} data 取得できたカードの中身
+ * @property {CardThumb|null} thumb サムネイル (画像の URL が無いカードは null)
  */
 
 /**
@@ -73,16 +97,16 @@ function withRemoved(remove, handlers) {
 }
 
 /**
+ * 入力欄の口 (ComposerDeps) のうち、GIF・カード・引用が使うもの。
  * @typedef {Object} ExtrasDeps
- * @property {(url: string, timeoutMs: number) => Promise<{status: number, json: any}|null>} fetchJson
- * @property {(url: string, timeoutMs: number) => Promise<Blob|null>} fetchBlob
+ * @property {(url: string, timeoutMs: number, signal?: AbortSignal) => Promise<{status: number, json: any}|null>} fetchJson
+ * @property {(url: string, timeoutMs: number, signal?: AbortSignal) => Promise<Blob|null>} fetchBlob
  * @property {(handle: string) => Promise<string|null>} resolveHandle ハンドルを DID に直す
  * @property {(uri: string) => Promise<Object|null>} fetchPost getPosts の応答 ({posts: PostView[]})
- * @property {(blob: Blob, crop: null, rules: Object) => Promise<{blob: Blob, previewUrl?: string|null}|null>} prepareImage
+ * @property {(blob: Blob, crop: null, rules: Object, options?: {preview?: boolean}) => Promise<{blob: Blob, previewUrl?: string|null}|null>} prepareImage
  * @property {(blob: Blob) => Promise<{ok: boolean, blob: Object|null, reason: string|null}>} uploadBlob
  * @property {(uri: string) => string|null} safeHref リンクにしてよい URL か
  * @property {(iso: string) => string} formatDate 引用元の日時の表示
- * @property {() => void} onChange 状態が変わったことを入力欄へ知らせる
  * @property {(labels: string[]) => string|null} [blurText] 引用元の画像をぼかす理由 (無ければぼかさない)
  */
 
@@ -99,36 +123,38 @@ function withRemoved(remove, handlers) {
 export class ComposerExtras {
 	/**
 	 * @param {Object} config EXT_CONFIG.lightboxReplies
-	 * @param {ExtrasDeps} deps
+	 * @param {ExtrasDeps} deps 口は呼ぶたびに引く (差し替えに追随する)
+	 * @param {() => void} [onChange] 状態が変わったことを入力欄へ知らせる
 	 */
-	constructor(config, deps) {
+	constructor(config, deps, onChange) {
 		this.config = config;
 		this.compose = config.compose;
 		this.cards = config.cards;
 		this.deps = deps;
+		this.onChange = typeof onChange === 'function' ? onChange : null;
 		/** @type {GifState|null} */
 		this.gif = null;
 		/** @type {CardState|null} */
 		this.card = null;
 		/** @type {QuoteState|null} */
 		this.quote = null;
-		/** × で外した URL (本文に残っているあいだ再提案しない) @type {string[]} */
-		this.dismissed = [];
+		/**
+		 * 提案しない URL とその理由 (本文に残っているあいだ再提案・取り直しをしない)
+		 * @type {Map<string, Set<import('./reply-links.js').SuppressKind>>}
+		 */
+		this.suppressed = new Map();
 		/** 1 行で出す知らせ @type {string|null} */
 		this.notice = null;
 		/** 知らせの元になった URL (本文から消えたら知らせも消す) @type {string|null} */
 		this.noticeUrl = null;
-		/** 取得に失敗したカードの URL (本文に残っているあいだ取り直さない) @type {string[]} */
-		this.failedCards = [];
-		/** 付けられなかった引用の URL (同じ) @type {string[]} */
-		this.failedQuotes = [];
 		/** 前回の本文の link の URL @type {string[]} */
 		this.previousLinks = [];
 		/** 今の本文の link の URL @type {string[]} */
 		this.links = [];
-		/** 取得の番号。取得を始める・外す・空に戻すたびに進め、届いた応答と照らす */
-		this.cardSeq = 0;
-		this.quoteSeq = 0;
+		/** カード (とそのサムネイル) の取得の枠。外す・取り直す・空に戻すと前の取得を止める */
+		this.cardSlot = createRequestSlot();
+		/** 引用の取得の枠 */
+		this.quoteSlot = createRequestSlot();
 		this.destroyed = false;
 	}
 
@@ -137,12 +163,23 @@ export class ComposerExtras {
 	 * @returns {void}
 	 */
 	notify() {
-		if (this.destroyed) return;
+		if (this.destroyed || !this.onChange) return;
 		try {
-			this.deps.onChange();
+			this.onChange();
 		} catch (error) {
 			console.error('[XViewer] 入力欄の添付の変化を知らせられませんでした', error);
 		}
+	}
+
+	/**
+	 * URL を × で外した・取得できなかったか。
+	 * @param {string} url
+	 * @param {import('./reply-links.js').SuppressKind} kind
+	 * @returns {boolean}
+	 */
+	isSuppressed(url, kind) {
+		const kinds = this.suppressed.get(url);
+		return Boolean(kinds && kinds.has(kind));
 	}
 
 	/**
@@ -158,17 +195,13 @@ export class ComposerExtras {
 			const current = Array.isArray(links) ? links.slice() : [];
 			let changed = false;
 			this.links = current;
-			this.dismissed = pruneDismissed(this.dismissed, current);
-			this.failedCards = pruneDismissed(this.failedCards, current);
-			this.failedQuotes = pruneDismissed(this.failedQuotes, current);
+			pruneSuppressed(this.suppressed, current);
 			if (this.card && !current.includes(this.card.url)) {
-				this.card = null;
-				this.cardSeq += 1;
+				this.dropCard();
 				changed = true;
 			}
 			if (this.quote && !current.includes(this.quote.url)) {
-				this.quote = null;
-				this.quoteSeq += 1;
+				this.dropQuote();
 				changed = true;
 			}
 			if (this.noticeUrl !== null && !current.includes(this.noticeUrl)) {
@@ -183,8 +216,8 @@ export class ComposerExtras {
 				hosts: this.compose.quote.hosts,
 				cardRule: {excludedHosts: this.compose.card.excludedHosts, imageExtensions: this.compose.card.imageExtensions}
 			};
-			const cardUrl = pickSuggestion({...base, dismissed: this.dismissed.concat(this.failedCards)}).card;
-			const quoteUrl = pickSuggestion({...base, dismissed: this.dismissed.concat(this.failedQuotes)}).quote;
+			const cardUrl = pickSuggestion({...base, dismissed: suppressedUrls(this.suppressed, CARD_SUPPRESS)}).card;
+			const quoteUrl = pickSuggestion({...base, dismissed: suppressedUrls(this.suppressed, QUOTE_SUPPRESS)}).quote;
 			this.previousLinks = current;
 			if (cardUrl && !this.card && this.fitsExternalUri(cardUrl)) {
 				this.startCard(cardUrl);
@@ -206,7 +239,7 @@ export class ComposerExtras {
 	 * @returns {boolean}
 	 */
 	fitsExternalUri(url) {
-		return utf8Encoder.encode(url).length <= RECORD_RULES.external.maxUriBytes;
+		return utf8Length(url) <= RECORD_RULES.external.maxUriBytes;
 	}
 
 	/**
@@ -219,32 +252,52 @@ export class ComposerExtras {
 	}
 
 	/**
-	 * 応答を反映してよいか。外された・取り直された・本文から消えた・撤去された後なら偽。
-	 * @param {'card'|'quote'} kind
-	 * @param {number} seq 取得を始めたときの番号
-	 * @param {string} url
-	 * @returns {boolean}
+	 * カードを外す (取得中ならそれも止め、サムネイルの URL を捨てる)。知らせはしない。
+	 * @returns {void}
 	 */
-	isCurrentFetch(kind, seq, url) {
-		if (this.destroyed || !this.links.includes(url)) return false;
-		const state = kind === 'card' ? this.card : this.quote;
-		const currentSeq = kind === 'card' ? this.cardSeq : this.quoteSeq;
-		return seq === currentSeq && state !== null && state.url === url && state.status === 'loading';
+	dropCard() {
+		const card = this.card;
+		this.card = null;
+		this.cardSlot.cancel();
+		if (card && card.thumb) revokeObjectUrl(card.thumb.url);
 	}
 
 	/**
-	 * リンクカードを取得する。失敗したらカードを付けない。
+	 * 引用を外す (取得中ならそれも止める)。知らせはしない。
+	 * @returns {void}
+	 */
+	dropQuote() {
+		this.quote = null;
+		this.quoteSlot.cancel();
+	}
+
+	/**
+	 * 応答を反映してよいか。外された・取り直された・本文から消えた・撤去された後なら偽。
+	 * @param {'card'|'quote'} kind
+	 * @param {import('./request-slot.js').RequestToken} token 取得を始めたときの印
+	 * @param {string} url
+	 * @returns {boolean}
+	 */
+	isCurrentFetch(kind, token, url) {
+		if (this.destroyed || !this.links.includes(url)) return false;
+		const state = kind === 'card' ? this.card : this.quote;
+		const slot = kind === 'card' ? this.cardSlot : this.quoteSlot;
+		return slot.isCurrent(token) && state !== null && state.url === url && state.status === 'loading';
+	}
+
+	/**
+	 * リンクカードを取得する。失敗したらカードを付けない。取れたらサムネイルの取得を始める。
 	 * @param {string} url
 	 * @returns {Promise<void>}
 	 */
 	async startCard(url) {
-		this.cardSeq += 1;
-		const seq = this.cardSeq;
-		this.card = {url, status: 'loading', data: null};
+		const token = this.cardSlot.begin();
+		this.card = {url, status: 'loading', data: null, thumb: null};
 		let data = null;
 		try {
 			const rule = this.compose.card;
-			const response = await this.deps.fetchJson(`${rule.extractUrl}?url=${encodeURIComponent(url)}`, rule.timeoutMs);
+			const response = await this.deps.fetchJson(`${rule.extractUrl}?url=${encodeURIComponent(url)}`,
+				rule.timeoutMs, token.signal || undefined);
 			data = response
 				? parseCardResponse(response.status, response.json, {
 					maxTitleGraphemes: RECORD_RULES.external.maxTitleGraphemes,
@@ -255,14 +308,49 @@ export class ComposerExtras {
 			console.error('[XViewer] リンクカードを取得できませんでした', error);
 			data = null;
 		}
-		if (!this.isCurrentFetch('card', seq, url)) return;
+		if (!this.isCurrentFetch('card', token, url)) return;
 		if (data) {
-			this.card = {url, status: 'ready', data};
+			const card = {url, status: 'ready', data, thumb: null};
+			this.card = card;
+			if (data.imageUrl) card.thumb = this.loadCardThumb(card, token);
 		} else {
 			this.card = null;
-			this.failedCards.push(url);
+			suppressUrl(this.suppressed, url, 'failedCard');
 		}
 		this.notify();
+	}
+
+	/**
+	 * カードのサムネイルを 1 回だけ取得する。取れたら object URL を作ってプレビューを描き直させる。
+	 * 取得中にカードが外された・取り直された・撤去されたら、届いた画像は使わない。
+	 * @param {CardState} card
+	 * @param {import('./request-slot.js').RequestToken} token カードの取得の印 (外すと通信も止まる)
+	 * @returns {CardThumb}
+	 */
+	loadCardThumb(card, token) {
+		/** @type {CardThumb} */
+		const thumb = {status: 'loading', blob: null, url: '', done: Promise.resolve(null)};
+		const isCurrent = () => !this.destroyed && this.card === card && this.cardSlot.isCurrent(token);
+		thumb.done = (async () => {
+			let blob = null;
+			try {
+				blob = await this.deps.fetchBlob(card.data.imageUrl, this.compose.card.timeoutMs, token.signal || undefined);
+			} catch (error) {
+				console.error('[XViewer] リンクカードのサムネイルを取得できませんでした', error);
+				blob = null;
+			}
+			if (!isCurrent()) return null;
+			if (!blob) {
+				thumb.status = 'failed';
+				return null;
+			}
+			thumb.blob = blob;
+			thumb.url = createObjectUrl(blob);
+			thumb.status = 'ready';
+			this.notify();
+			return blob;
+		})();
+		return thumb;
 	}
 
 	/**
@@ -271,8 +359,7 @@ export class ComposerExtras {
 	 * @returns {Promise<void>}
 	 */
 	async startQuote(url) {
-		this.quoteSeq += 1;
-		const seq = this.quoteSeq;
+		const token = this.quoteSlot.begin();
 		this.quote = {url, status: 'loading', post: null, ref: null};
 		if (this.noticeUrl !== null) this.clearNotice();
 		let post = null;
@@ -281,7 +368,7 @@ export class ComposerExtras {
 			const parsed = parsePostUrl(url, this.compose.quote.hosts);
 			if (parsed) {
 				const did = parsed.actor.startsWith('did:') ? parsed.actor : await this.deps.resolveHandle(parsed.actor);
-				if (!this.isCurrentFetch('quote', seq, url)) return;
+				if (!this.isCurrentFetch('quote', token, url)) return;
 				if (typeof did === 'string' && did !== '') {
 					const json = await this.deps.fetchPost(`at://${did}/${POST_COLLECTION}/${parsed.rkey}`);
 					const first = json && Array.isArray(json.posts) ? json.posts[0] : null;
@@ -296,12 +383,12 @@ export class ComposerExtras {
 			console.error('[XViewer] 引用する投稿を取得できませんでした', error);
 			post = null;
 		}
-		if (!this.isCurrentFetch('quote', seq, url)) return;
+		if (!this.isCurrentFetch('quote', token, url)) return;
 		if (post) {
 			this.quote = {url, status: 'ready', post, ref: {uri: post.uri, cid: post.cid}};
 		} else {
 			this.quote = null;
-			this.failedQuotes.push(url);
+			suppressUrl(this.suppressed, url, 'failedQuote');
 			this.notice = failure;
 			this.noticeUrl = url;
 		}
@@ -346,9 +433,8 @@ export class ComposerExtras {
 	 */
 	removeCard() {
 		if (!this.card) return;
-		if (!this.dismissed.includes(this.card.url)) this.dismissed.push(this.card.url);
-		this.card = null;
-		this.cardSeq += 1;
+		suppressUrl(this.suppressed, this.card.url, 'dismissed');
+		this.dropCard();
 		this.notify();
 	}
 
@@ -358,9 +444,8 @@ export class ComposerExtras {
 	 */
 	removeQuote() {
 		if (!this.quote) return;
-		if (!this.dismissed.includes(this.quote.url)) this.dismissed.push(this.quote.url);
-		this.quote = null;
-		this.quoteSeq += 1;
+		suppressUrl(this.suppressed, this.quote.url, 'dismissed');
+		this.dropQuote();
 		this.notify();
 	}
 
@@ -397,15 +482,8 @@ export class ComposerExtras {
 	}
 
 	/**
-	 * カードか引用を取得中か。送信は止めない (取得中のものは送らない)。
-	 * @returns {boolean}
-	 */
-	isLoading() {
-		return Boolean((this.card && this.card.status === 'loading') || (this.quote && this.quote.status === 'loading'));
-	}
-
-	/**
-	 * プレビューを描き直す。GIF・カード (メディアがあれば出さない)・引用カード・取得中や知らせの 1 行の順。
+	 * プレビューを今の状態に合わせる。GIF・カード (メディアがあれば出さない)・引用カード・取得中や知らせの 1 行の順。
+	 * 部品ごとに鍵を持ち、変わらない部品は作り直さない (打鍵のたびに GIF の再生が最初に戻らないため)。
 	 * 何も無ければ入れ物を隠す。
 	 * @param {HTMLElement} container 入れ物
 	 * @param {number} imageCount
@@ -417,50 +495,92 @@ export class ComposerExtras {
 			const doc = container.ownerDocument;
 			const parts = [];
 			const text = {...this.compose.text, ...this.cards.text};
-			if (this.gif) parts.push(this.buildGifPreview(doc, text, handlers));
+			if (this.gif) {
+				const {item, alt} = this.gif;
+				parts.push({
+					key: JSON.stringify(['gif', item.id, item.gifUrl, item.playerUrl, alt]),
+					build: () => this.buildGifPreview(doc, text, handlers)
+				});
+			}
 			const showCard = !this.hasMedia(imageCount);
-			if (showCard && this.card && this.card.status === 'ready' && this.card.data) {
-				const data = this.card.data;
-				const external = {uri: this.card.url, title: data.title, description: data.description};
-				if (data.imageUrl) external.thumb = data.imageUrl;
-				parts.push(buildLinkCard(doc, external, {
-					classes: this.cards.classes,
-					text,
-					safeHref: this.deps.safeHref,
-					blurText: null,
-					onRemove: withRemoved(() => this.removeCard(), handlers)
-				}));
+			const card = this.card;
+			if (showCard && card && card.status === 'ready' && card.data) {
+				const thumbUrl = card.thumb && card.thumb.status === 'ready' ? card.thumb.url : '';
+				parts.push({
+					key: JSON.stringify(['card', card.url, card.data.title, card.data.description, thumbUrl]),
+					build: () => this.buildCardPreview(doc, text, handlers, card, thumbUrl)
+				});
 			}
 			if (this.quote && this.quote.status === 'ready') {
 				const model = this.quoteModel();
 				if (model) {
-					parts.push(buildQuoteCard(doc, model, {
-						classes: this.cards.classes,
-						text,
-						blurText: this.quoteBlurText(model),
-						formatDate: this.deps.formatDate,
-						onRemove: withRemoved(() => this.removeQuote(), handlers)
-					}));
+					const blurText = this.quoteBlurText(model);
+					parts.push({
+						key: JSON.stringify(['quote', this.quote.ref.uri, this.quote.ref.cid, blurText]),
+						build: () => buildQuoteCard(doc, model, {
+							classes: this.cards.classes,
+							text,
+							blurText,
+							formatDate: this.deps.formatDate,
+							onRemove: withRemoved(() => this.removeQuote(), handlers)
+						})
+					});
 				}
 			}
-			const cardLoading = showCard && this.card && this.card.status === 'loading';
+			const cardLoading = showCard && card && card.status === 'loading';
 			const quoteLoading = this.quote && this.quote.status === 'loading';
 			if (cardLoading || quoteLoading) {
-				const status = createElement(doc, 'div', this.config.classes.status);
-				status.setAttribute('role', 'status');
-				status.append(createElement(doc, 'p', undefined, this.compose.text.cardLoading));
-				parts.push(status);
+				parts.push({key: 'status', build: () => this.buildLoadingLine(doc)});
 			}
 			if (this.notice) {
-				const notice = createElement(doc, 'p', this.config.classes.error, this.notice);
-				notice.setAttribute('role', 'alert');
-				parts.push(notice);
+				const message = this.notice;
+				parts.push({
+					key: JSON.stringify(['notice', message]),
+					build: () => {
+						const notice = createElement(doc, 'p', this.config.classes.error, message);
+						notice.setAttribute('role', 'alert');
+						return notice;
+					}
+				});
 			}
-			container.replaceChildren(...parts);
-			container.hidden = parts.length === 0;
+			const nodes = syncKeyedParts(container, parts);
+			container.hidden = nodes.length === 0;
 		} catch (error) {
 			console.error('[XViewer] 入力欄の添付のプレビューを描けませんでした', error);
 		}
+	}
+
+	/**
+	 * 取得中の 1 行を組む。
+	 * @param {Document} doc
+	 * @returns {HTMLElement}
+	 */
+	buildLoadingLine(doc) {
+		const status = createElement(doc, 'div', this.config.classes.status);
+		status.setAttribute('role', 'status');
+		status.append(createElement(doc, 'p', undefined, this.compose.text.cardLoading));
+		return status;
+	}
+
+	/**
+	 * リンクカードのプレビューを組む。サムネイルは取得できた画像の object URL で出す (取れるまでは画像無し)。
+	 * @param {Document} doc
+	 * @param {Object} text 文言 (compose.text と cards.text を合わせたもの)
+	 * @param {PreviewHandlers} handlers
+	 * @param {CardState} card
+	 * @param {string} thumbUrl サムネイルの object URL (無ければ空)
+	 * @returns {HTMLElement}
+	 */
+	buildCardPreview(doc, text, handlers, card, thumbUrl) {
+		const external = {uri: card.url, title: card.data.title, description: card.data.description};
+		if (thumbUrl) external.thumb = thumbUrl;
+		return buildLinkCard(doc, external, {
+			classes: this.cards.classes,
+			text,
+			safeHref: this.deps.safeHref,
+			blurText: null,
+			onRemove: withRemoved(() => this.removeCard(), handlers)
+		});
 	}
 
 	/**
@@ -541,6 +661,7 @@ export class ComposerExtras {
 	/**
 	 * 送信の直前に、GIF かカードの external と引用する投稿 (uri と cid) を組み立てる。サムネイルの取得・縮小・
 	 * アップロードのどこで失敗しても thumb 無しで作る。例外を投げない。
+	 * カードのサムネイルは取得済みの画像を縮めるだけで、取り直さない (取得中なら終わるのを待つ)。
 	 * @param {(done: number, total: number) => void} onProgress サムネイルの進み具合
 	 * @param {number} [imageCount] 画像の枚数。画像があるときはカードを付けない
 	 * @returns {Promise<SubmitExtras>}
@@ -556,13 +677,16 @@ export class ComposerExtras {
 				result.quoteView = toQuoteViewRecord(quote.post);
 			}
 			if (gif) {
-				const thumb = await this.uploadThumb(gif.item.previewUrl, this.compose.gif.timeoutMs, onProgress);
+				const previewUrl = gif.item.previewUrl;
+				const load = previewUrl ? () => this.deps.fetchBlob(previewUrl, this.compose.gif.timeoutMs) : null;
+				const thumb = await this.uploadThumb(load, onProgress);
 				result.external = buildGifExternal(gif.item, gif.alt, thumb, {
 					maxTitleGraphemes: RECORD_RULES.external.maxTitleGraphemes,
 					maxDescriptionGraphemes: RECORD_RULES.external.maxDescriptionGraphemes
 				});
 			} else if (card && card.data) {
-				const thumb = await this.uploadThumb(card.data.imageUrl, this.compose.card.timeoutMs, onProgress);
+				const cardThumb = card.thumb;
+				const thumb = await this.uploadThumb(cardThumb ? () => cardThumb.done : null, onProgress);
 				const external = {uri: card.url, title: card.data.title, description: card.data.description};
 				if (thumb) external.thumb = thumb;
 				result.external = {$type: RECORD_RULES.embedTypes.external, external};
@@ -574,14 +698,13 @@ export class ComposerExtras {
 	}
 
 	/**
-	 * サムネイルを取得・縮小してアップロードする。
-	 * @param {string|null} url
-	 * @param {number} timeoutMs
+	 * サムネイルの画像を縮小してアップロードする。プレビューの object URL は作らせない。
+	 * @param {(() => Promise<Blob|null>)|null} load 画像を得る (無ければサムネイル無し)
 	 * @param {(done: number, total: number) => void} onProgress
 	 * @returns {Promise<Object|null>} BlobRef。失敗は null
 	 */
-	async uploadThumb(url, timeoutMs, onProgress) {
-		if (!url) return null;
+	async uploadThumb(load, onProgress) {
+		if (typeof load !== 'function') return null;
 		const report = (done) => {
 			try {
 				if (typeof onProgress === 'function') onProgress(done, 1);
@@ -590,11 +713,12 @@ export class ComposerExtras {
 			}
 		};
 		report(0);
-		let prepared = null;
 		try {
-			const blob = await this.deps.fetchBlob(url, timeoutMs);
+			const blob = await load();
 			if (!blob) return null;
-			prepared = await this.deps.prepareImage(blob, null, this.compose.thumb);
+			const prepared = await this.deps.prepareImage(blob, null, this.compose.thumb, {preview: false});
+			// 作らない指定でも作られていたら捨てる
+			if (prepared) revokeObjectUrl(prepared.previewUrl);
 			if (!prepared || !prepared.blob) return null;
 			const uploaded = await this.deps.uploadBlob(prepared.blob);
 			return uploaded && uploaded.ok && uploaded.blob ? uploaded.blob : null;
@@ -603,32 +727,21 @@ export class ComposerExtras {
 			return null;
 		} finally {
 			report(1);
-			if (prepared && prepared.previewUrl) {
-				try {
-					URL.revokeObjectURL(prepared.previewUrl);
-				} catch (_e) {
-					// URL を破棄できない環境では何もしない
-				}
-			}
 		}
 	}
 
 	/**
-	 * 空に戻す (送信の後)。取得中の応答は以後捨てる。
+	 * 空に戻す (送信の後)。取得中の応答は以後捨て、通信も止める。
 	 * @returns {void}
 	 */
 	reset() {
 		this.gif = null;
-		this.card = null;
-		this.quote = null;
-		this.dismissed = [];
-		this.failedCards = [];
-		this.failedQuotes = [];
+		this.dropCard();
+		this.dropQuote();
+		this.suppressed.clear();
 		this.previousLinks = [];
 		this.links = [];
 		this.clearNotice();
-		this.cardSeq += 1;
-		this.quoteSeq += 1;
 	}
 
 	/**

@@ -16,6 +16,7 @@
  *
  * 依存:
  *   debug.js   (ExtDebug)
+ *   sync-settings.js (loadSyncSettings, watchSyncSettings)
  *   page.js    (subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog)
  *   設定 (EXT_CONFIG.lightboxGuard) は起動する側 (main.js) がコンストラクタに渡す
  *
@@ -24,7 +25,11 @@
  * 参照として保持し、撤去はその参照に対して行う (閉じた後はセレクタで引けない)。
  */
 import {ExtDebug} from '../common/debug.js';
+import {loadSyncSettings, watchSyncSettings} from '../common/sync-settings.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
+
+/** 設定の読み込みの失敗をログに出すときの名前 */
+const SETTINGS_LABEL = 'ライトボックスの操作性の調整';
 
 /**
  * @typedef {Object} ExtRect
@@ -157,26 +162,12 @@ export class LightboxGuard {
 	 */
 	async init() {
 		const config = this.config;
-		try {
-			const stored = await chrome.storage.sync.get([config.storageKey]);
-			// setEnabled() と同じく boolean に正規化する (壊れた保存値を真偽値のまま入れない)
-			const saved = stored[config.storageKey];
-			this.enabled = typeof saved === 'boolean' ? saved : config.defaultEnabled;
-		} catch (error) {
-			console.error('[XViewer] ライトボックス調整の設定の読み込みに失敗しました', error);
-		}
-		try {
-			chrome.storage.onChanged.addListener((changes, area) => {
-				if (area !== 'sync' || !changes[config.storageKey]) {
-					return;
-				}
-				this.setEnabled(
-					changes[config.storageKey].newValue ?? config.defaultEnabled
-				);
-			});
-		} catch (error) {
-			console.error('[XViewer] ライトボックス調整の設定の購読に失敗しました', error);
-		}
+		const defaults = {[config.storageKey]: config.defaultEnabled};
+		const values = await loadSyncSettings(defaults, SETTINGS_LABEL);
+		// setEnabled() と同じく boolean に正規化する (壊れた保存値を真偽値のまま入れない)
+		const saved = values[config.storageKey];
+		this.enabled = typeof saved === 'boolean' ? saved : config.defaultEnabled;
+		watchSyncSettings(defaults, (changed) => this.setEnabled(changed[config.storageKey]), SETTINGS_LABEL);
 		try {
 			subscribeLightboxVisibility((visible) => {
 				if (visible) {

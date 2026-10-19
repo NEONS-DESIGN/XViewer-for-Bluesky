@@ -2,11 +2,11 @@
  * 入力欄の動画の「字幕と ALT」の画面。ALT テキストと字幕 (.vtt) を 1 枚の画面で選ぶ。
  * 開き方・閉じ方・フォーカスの扱いは ALT テキストの画面と同じ (SheetHost に載せる)。
  *
- * 依存: reply-sheets.js (altState)・language-sheet.js (languageName)・sheet-dom.js
+ * 依存: reply-sheets.js (buildAltField / resolveMaxAlt)・language-sheet.js (languageName)・sheet-dom.js
  */
-import {altState} from './reply-sheets.js';
+import {buildAltField, resolveMaxAlt} from './reply-sheets.js';
 import {languageName} from './language-sheet.js';
-import {createElement, createButton, formatText, safeCall} from './sheet-dom.js';
+import {createElement, createButton, createAlert, safeCall} from './sheet-dom.js';
 
 /**
  * 画面で選ぶ字幕。
@@ -57,9 +57,7 @@ function captionLanguages(codes, current) {
 export function openVideoSheet(host, input, opener, onSave, options) {
 	const {classes, text} = host.config;
 	const captionRule = host.config.video.caption;
-	const maxAltGraphemes = Number.isInteger(input?.maxAltGraphemes) && input.maxAltGraphemes > 0
-		? input.maxAltGraphemes
-		: host.config.maxAltGraphemes;
+	const maxAltGraphemes = resolveMaxAlt(input?.maxAltGraphemes, host.config.maxAltGraphemes);
 	const original = input?.caption;
 	/** @type {SheetCaption|null} */
 	let caption = original && original.blob
@@ -85,26 +83,10 @@ export function openVideoSheet(host, input, opener, onSave, options) {
 				body.append(preview);
 			}
 
-			const frame = createElement(doc, 'div', classes.altFrame);
-			field = createElement(doc, 'textarea', classes.altInput);
-			field.setAttribute('aria-label', text.altLabel);
-			field.value = input?.alt || '';
-			frame.append(field);
-			const remaining = createElement(doc, 'p', classes.altRemaining);
-			remaining.setAttribute('aria-live', 'polite');
-			const sync = () => {
-				const state = altState(field.value, maxAltGraphemes);
-				remaining.textContent = formatText(text.altRemaining, {count: state.remaining});
-				remaining.classList.toggle(classes.warn, state.over);
-				host.setDoneDisabled(state.over);
-			};
-			field.addEventListener('input', sync);
-			field.addEventListener('keydown', (event) => {
-				if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
-					event.preventDefault();
-					if (!altState(field.value, maxAltGraphemes).over) done();
-				}
+			const alt = buildAltField(host, doc, {
+				value: input?.alt, max: maxAltGraphemes, placeholder: text.videoAltPlaceholder, done
 			});
+			field = alt.field;
 
 			const section = createElement(doc, 'div', classes.labelGroup);
 			section.append(createElement(doc, 'p', classes.labelGroupTitle, text.captionSection));
@@ -131,9 +113,7 @@ export function openVideoSheet(host, input, opener, onSave, options) {
 			});
 			const remove = createButton(doc, classes.button, text.captionRemove);
 			row.append(name, select, remove);
-			const error = createElement(doc, 'p', classes.error);
-			error.setAttribute('role', 'alert');
-			error.hidden = true;
+			const error = createAlert(doc, classes.error);
 
 			const showCaption = () => {
 				pick.hidden = !!caption;
@@ -196,8 +176,8 @@ export function openVideoSheet(host, input, opener, onSave, options) {
 			});
 
 			section.append(pick, fileInput, row, error);
-			body.append(frame, remaining, section);
-			sync();
+			body.append(alt.frame, alt.remaining, section);
+			alt.sync();
 			showCaption();
 			return () => {
 				closed = true;

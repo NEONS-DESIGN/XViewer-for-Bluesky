@@ -1,7 +1,10 @@
 /**
  * 返信に添える画像の縮小。選んだ画像を、Bluesky が受け付ける大きさの JPEG に直す。
  * fitDimensions / compressToLimit は純関数で、prepareImage だけが DOM (Image・canvas) に触れる。
+ *
+ * 依存: object-url.js
  */
+import {createObjectUrl, revokeObjectUrl} from './object-url.js';
 
 /**
  * 元画像の画素単位の切り抜き範囲。
@@ -18,8 +21,8 @@
  * @property {Blob} blob 縮小後の JPEG
  * @property {number} width 縮小後の幅 (1 以上の整数)
  * @property {number} height 縮小後の高さ (1 以上の整数)
- * @property {string} previewUrl blob の object URL。使い終わったら呼び出し側が revokeObjectURL する
- * @property {File} source 選ばれた元のファイル
+ * @property {string} previewUrl blob の object URL。使い終わったら呼び出し側が捨てる (作らなかったときは空文字)
+ * @property {File|Blob} source 選ばれた元のファイル
  * @property {CropRect|null} crop 切り抜き範囲。無ければ null
  * @property {{width: number, height: number}} natural 元の画像の大きさ (切り抜きの画面に渡す)
  */
@@ -128,59 +131,91 @@ export function resolveSourceRect(natural, crop) {
 }
 
 /**
- * ファイルを Image として読み込む。
+ * ファイルを Image として読み込む。読み込み用の object URL は読み終えたら捨てる。
  * @param {File} file
  * @returns {Promise<HTMLImageElement>}
  */
 async function decodeFile(file) {
-	const url = URL.createObjectURL(file);
+	const url = createObjectUrl(file);
+	if (!url) {
+		throw new Error('画像の URL を作れませんでした');
+	}
 	try {
 		const image = new Image();
 		image.src = url;
 		await image.decode();
 		return image;
 	} finally {
-		URL.revokeObjectURL(url);
+		revokeObjectUrl(url);
 	}
 }
 
 /**
- * 画像を JPEG の Blob にして canvas から取り出す encode を作る。
- * @param {HTMLImageElement} image
+ * canvas に描いて JPEG の Blob を取り出す encode を作る。
+ * canvas は 1 枚を使い回し、描くのは寸法が変わったときだけ (品質だけを変える間は toBlob だけを呼び直す)。
+ * @param {CanvasImageSource} image
  * @param {CropRect} source 描画する元画像の範囲
- * @returns {function(number, number, number): Promise<Blob|null>}
+ * @param {() => HTMLCanvasElement} createCanvas canvas を作る
+ * @returns {{encode: function(number, number, number): Promise<Blob|null>, release: () => void}}
+ *   release は canvas の画素を手放す (使い終わったら呼ぶ)
  */
-function makeCanvasEncode(image, source) {
-	return (width, height, quality) => new Promise((resolve) => {
-		const canvas = document.createElement('canvas');
+export function createCanvasEncoder(image, source, createCanvas) {
+	/** @type {HTMLCanvasElement|null} */
+	let canvas = null;
+	/** 描いてある寸法 (まだ描いていなければ null) */
+	let drawn = null;
+	const draw = (width, height) => {
+		if (!canvas) canvas = createCanvas();
+		if (drawn && drawn.width === width && drawn.height === height) return true;
 		canvas.width = width;
 		canvas.height = height;
 		const context = canvas.getContext('2d');
 		if (!context) {
-			resolve(null);
-			return;
+			drawn = null;
+			return false;
 		}
 		context.imageSmoothingEnabled = true;
 		context.imageSmoothingQuality = 'high';
 		context.fillStyle = BACKGROUND_COLOR;
 		context.fillRect(0, 0, width, height);
 		context.drawImage(image, source.x, source.y, source.width, source.height, 0, 0, width, height);
-		canvas.toBlob((blob) => {
+		drawn = {width, height};
+		return true;
+	};
+	return {
+		encode: (width, height, quality) => new Promise((resolve) => {
+			if (!draw(width, height)) {
+				resolve(null);
+				return;
+			}
+			canvas.toBlob((blob) => resolve(blob), OUTPUT_TYPE, quality);
+		}),
+		release: () => {
+			if (!canvas) return;
 			canvas.width = 0;
 			canvas.height = 0;
-			resolve(blob);
-		}, OUTPUT_TYPE, quality);
-	});
+			canvas = null;
+			drawn = null;
+		}
+	};
 }
 
 /**
+ * prepareImage の指定。
+ * @typedef {Object} PrepareOptions
+ * @property {boolean} [preview] false ならプレビューの object URL を作らない (送るだけのサムネイルなど)。既定は true
+ */
+
+/**
  * 選ばれた画像を、切り抜いたうえで上限に収まる JPEG にする。
- * @param {File} file
+ * @param {File|Blob} file
  * @param {CropRect|null} crop 切り抜き範囲。null なら全体
  * @param {Object} rules compressToLimit と同じ規則
- * @returns {Promise<PreparedImage|null>} 失敗は null
+ * @param {PrepareOptions} [options]
+ * @returns {Promise<PreparedImage|null>} 失敗は null。preview: false なら previewUrl は空文字
  */
-export async function prepareImage(file, crop, rules) {
+export async function prepareImage(file, crop, rules, options = {}) {
+	let encoder = null;
 	try {
 		const image = await decodeFile(file);
 		const natural = {
@@ -192,19 +227,17 @@ export async function prepareImage(file, crop, rules) {
 			console.error('[XViewer] 画像の大きさまたは切り抜き範囲が不正です', natural, crop);
 			return null;
 		}
-		const result = await compressToLimit(
-			makeCanvasEncode(image, source),
-			{ width: source.width, height: source.height },
-			rules
-		);
+		encoder = createCanvasEncoder(image, source, () => document.createElement('canvas'));
+		const result = await compressToLimit(encoder.encode, { width: source.width, height: source.height }, rules);
 		if (!result) {
 			return null;
 		}
+		const wantPreview = !(options && options.preview === false);
 		return {
 			blob: result.blob,
 			width: result.width,
 			height: result.height,
-			previewUrl: URL.createObjectURL(result.blob),
+			previewUrl: wantPreview ? createObjectUrl(result.blob) : '',
 			source: file,
 			crop: crop || null,
 			natural
@@ -212,5 +245,7 @@ export async function prepareImage(file, crop, rules) {
 	} catch (error) {
 		console.error('[XViewer] 画像の縮小に失敗しました', error);
 		return null;
+	} finally {
+		if (encoder) encoder.release();
 	}
 }

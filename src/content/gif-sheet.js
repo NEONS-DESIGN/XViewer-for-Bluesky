@@ -4,7 +4,7 @@
  */
 
 import {buildKlipyUrl, parseKlipyResponse} from './klipy.js';
-import {createElement, formatText, safeCall} from './sheet-dom.js';
+import {createElement, createButton, formatText, safeCall} from './sheet-dom.js';
 
 /**
  * @typedef {import('./klipy.js').GifItem} GifItem
@@ -21,11 +21,13 @@ import {createElement, formatText, safeCall} from './sheet-dom.js';
 
 /**
  * GIF の検索の状態を持つ。問い合わせは間引き、問い合わせを変えた後に届いた古い応答は捨てる。
+ * 新しい取得を始めたときと destroy で、飛行中の取得を AbortSignal で打ち切る。
  */
 export class GifSearch {
 	/**
 	 * @param {Object} options
-	 * @param {(url: string) => Promise<any|null>} options.fetchJson 解析済みの JSON を返す。失敗は null
+	 * @param {(url: string, signal?: AbortSignal) => Promise<any|null>} options.fetchJson 解析済みの JSON を返す。
+	 *   失敗・打ち切りは null。signal は差し替えや閉じたときに打ち切る合図
 	 * @param {Object} options.rule buildKlipyUrl と parseKlipyResponse の規則 (debounceMs を含む)
 	 * @param {string|null} options.locale 言語
 	 * @param {(fn: () => void, ms: number) => any} options.setTimer
@@ -43,6 +45,8 @@ export class GifSearch {
 		this.state = {items: [], next: null, loading: false, failed: false, query: ''};
 		this.timer = null;
 		this.serial = 0;
+		/** @type {AbortController|null} 飛行中の取得の打ち切り口 */
+		this.controller = null;
 		this.destroyed = false;
 	}
 
@@ -56,15 +60,19 @@ export class GifSearch {
 
 	/**
 	 * 問い合わせを変える。入力が続くあいだは待ち、止まって debounceMs 経ってから引く。
+	 * 前後の空白を除いた語が今の問い合わせと同じで、失敗もしていなければ引き直さない
+	 * (格子を空にして同じ一覧を取り直さない)。待っている別の語の取得は取り消す。
 	 * @param {string} query 検索語。空なら featured
 	 * @returns {void}
 	 */
 	setQuery(query) {
 		if (this.destroyed) return;
 		this.cancelTimer();
+		const next = String(query ?? '').trim();
+		if (next === this.state.query && !this.state.failed) return;
 		this.timer = this.setTimer(() => {
 			this.timer = null;
-			this.state.query = query;
+			this.state.query = next;
 			this.request(true);
 		}, this.rule.debounceMs);
 	}
@@ -95,6 +103,22 @@ export class GifSearch {
 		this.destroyed = true;
 		this.serial += 1;
 		this.cancelTimer();
+		this.abortPending();
+	}
+
+	/**
+	 * 飛行中の取得を打ち切る。
+	 * @returns {void}
+	 */
+	abortPending() {
+		const controller = this.controller;
+		this.controller = null;
+		if (!controller) return;
+		try {
+			controller.abort();
+		} catch (_e) {
+			// 打ち切れなくても、古い応答は serial で捨てる
+		}
 	}
 
 	/**
@@ -125,14 +149,18 @@ export class GifSearch {
 		state.failed = false;
 		this.emit();
 		const url = buildKlipyUrl(state.query ? 'search' : 'featured', {q: state.query, pos, locale: this.locale}, this.rule);
+		this.abortPending();
+		const controller = typeof AbortController === 'function' ? new AbortController() : null;
+		this.controller = controller;
 		let pending;
 		try {
-			pending = Promise.resolve(this.fetchJson(url));
+			pending = Promise.resolve(this.fetchJson(url, controller ? controller.signal : undefined));
 		} catch (_e) {
 			pending = Promise.resolve(null);
 		}
 		pending.catch(() => null).then((json) => {
 			if (this.destroyed || serial !== this.serial) return;
+			if (this.controller === controller) this.controller = null;
 			state.loading = false;
 			if (json === null || json === undefined) {
 				state.failed = true;
@@ -157,7 +185,7 @@ export class GifSearch {
  * GIF の画面を開く。開いたボタンに付く吹き出しで、検索欄を上に固定し、その下の格子だけを送る。
  * 選ぶと onPick へ GIF を渡して閉じる。
  * @param {import('./reply-sheets.js').SheetHost} host 重ねる画面の持ち主
- * @param {{fetchJson: (url: string) => Promise<any|null>, locale: string|null, rule: Object}} deps 通信と規則
+ * @param {{fetchJson: (url: string, signal?: AbortSignal) => Promise<any|null>, locale: string|null, rule: Object}} deps 通信と規則
  * @param {HTMLElement} opener 開いたボタン
  * @param {(gif: GifItem) => void} onPick 選んだ GIF
  * @param {import('./reply-sheets.js').SheetOptions} [options] 持ち主とフォーカスの戻し先
@@ -219,7 +247,12 @@ export function openGifSheet(host, deps, opener, onPick, options) {
 				}
 			}
 
-			input.addEventListener('input', () => search.setQuery(input.value.trim()));
+			// 変換中 (IME) の入力では問い合わせない。確定した時点で問い合わせる
+			input.addEventListener('input', (event) => {
+				if (event.isComposing) return;
+				search.setQuery(input.value);
+			});
+			input.addEventListener('compositionend', () => search.setQuery(input.value));
 			if (typeof win.IntersectionObserver === 'function') {
 				try {
 					observer = new win.IntersectionObserver((entries) => {
@@ -250,8 +283,7 @@ export function openGifSheet(host, deps, opener, onPick, options) {
  * @returns {HTMLButtonElement}
  */
 function createTile(doc, classes, text, item, pick) {
-	const button = createElement(doc, 'button', classes.gifItem);
-	button.type = 'button';
+	const button = createButton(doc, classes.gifItem);
 	button.setAttribute('aria-label', formatText(text.gifItem, {title: item.title}));
 	const image = createElement(doc, 'img');
 	image.setAttribute('src', item.tinyUrl);
@@ -267,7 +299,8 @@ function createTile(doc, classes, text, item, pick) {
 }
 
 /**
- * 状態の 1 行 (失敗と再試行・見つからなかった) を描く。何も言うことが無ければ隠す。
+ * 状態の 1 行 (最初の読み込み中・失敗と再試行・見つからなかった) を描く。何も言うことが無ければ隠す。
+ * 続きの読み込み中は格子が見えているので何も出さない。
  * @param {Document} doc 対象の文書
  * @param {HTMLElement} status 状態の要素
  * @param {GifSearchState} state 状態
@@ -279,13 +312,14 @@ function createTile(doc, classes, text, item, pick) {
 function renderStatus(doc, status, state, classes, text, retry) {
 	status.replaceChildren();
 	if (state.loading) {
-		status.hidden = true;
+		const first = state.items.length === 0;
+		if (first) status.append(createElement(doc, 'span', undefined, text.gifLoading));
+		status.hidden = !first;
 		return;
 	}
 	if (state.failed) {
 		status.append(createElement(doc, 'span', undefined, text.gifFailed));
-		const button = createElement(doc, 'button', classes.button, text.gifRetry);
-		button.type = 'button';
+		const button = createButton(doc, classes.button, text.gifRetry);
 		button.addEventListener('click', retry);
 		status.append(button);
 		status.hidden = false;

@@ -7,8 +7,12 @@ import {formatText} from './sheet-dom.js';
  * @property {string|null} [message] error のときに出す文言
  */
 
-/** 0〜1 の進み具合を 0〜100 の整数にする */
-function toPercent(progress) {
+/**
+ * 0〜1 の進み具合を 0〜100 の整数にする。読めない値は 0。
+ * @param {number|null} progress
+ * @returns {number}
+ */
+export function toPercent(progress) {
 	const value = Number(progress);
 	if (!Number.isFinite(value)) return 0;
 	return Math.min(100, Math.max(0, Math.floor(value * 100)));

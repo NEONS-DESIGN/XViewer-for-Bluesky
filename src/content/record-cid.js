@@ -5,9 +5,11 @@
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
 
 /** TID の文字表。並べ替えても時刻順になる。 */
-export const TID_ALPHABET = '234567abcdefghijklmnopqrstuvwxyz';
+const TID_ALPHABET = '234567abcdefghijklmnopqrstuvwxyz';
 
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+/** 小文字・パディング無しの base32 を表す multibase の接頭辞 */
+const MULTIBASE_BASE32 = 'b';
 const TID_LENGTH = 13;
 /** TID の形。橋渡しが rkey に課す形と同じものを使う */
 const TID_PATTERN = new RegExp(BRIDGE_PROTOCOL.thread.tidPattern);
@@ -157,7 +159,10 @@ function pushValue(value, chunks) {
 	if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
 		const keys = Object.keys(value);
 		if (keys.length === 1 && keys[0] === '$link' && typeof value.$link === 'string') {
-			const raw = base32Decode(value.$link.slice(1));
+			if (!value.$link.startsWith(MULTIBASE_BASE32)) {
+				throw new TypeError('base32 (b で始まる) でない CID は扱えない');
+			}
+			const raw = base32Decode(value.$link.slice(MULTIBASE_BASE32.length));
 			const bytes = new Uint8Array(raw.length + 1);
 			bytes.set(raw, 1);
 			chunks.push(head(MAJOR_TAG, CBOR_TAG_CID), head(MAJOR_BYTES, bytes.length), bytes);
@@ -194,7 +199,7 @@ export async function computeRecordCid(record) {
 	const cid = new Uint8Array(CID_PREFIX.length + digest.length);
 	cid.set(CID_PREFIX, 0);
 	cid.set(digest, CID_PREFIX.length);
-	return 'b' + base32Encode(cid);
+	return MULTIBASE_BASE32 + base32Encode(cid);
 }
 
 /**

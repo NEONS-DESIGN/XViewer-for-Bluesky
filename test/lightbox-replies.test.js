@@ -502,7 +502,9 @@ function setupReload({delayMs, thread}) {
 	const replies = new LightboxReplies(config, {
 		actions: {fetchThread: async (uri, depth) => {
 			fetched.push({uri, depth});
-			return thread;
+			return thread
+				? {ok: true, json: thread, reason: null, status: 200}
+				: {ok: false, json: null, reason: 'fetch-failed', status: null};
 		}},
 		adjustReplyCount: () => {},
 		toSegments: (text) => [text],

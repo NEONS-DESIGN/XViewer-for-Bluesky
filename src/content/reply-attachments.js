@@ -75,7 +75,34 @@ export function updateAttachmentCell(attachment, index, compose) {
 }
 
 /**
- * 添付のプレビューを描き直す。0 枚なら入れ物を隠す。
+ * マスを 1 つ作る。
+ * @param {Document} doc
+ * @param {Attachment} attachment
+ * @param {Object} compose EXT_CONFIG.lightboxReplies.compose
+ * @param {AttachmentHandlers} handlers
+ * @returns {AttachmentCell}
+ */
+function buildCell(doc, attachment, compose, handlers) {
+	const {classes, text} = compose;
+	const li = createElement(doc, 'li', classes.attachment);
+	const img = createElement(doc, 'img', classes.attachmentImage);
+	img.setAttribute('draggable', 'false');
+	const tools = createElement(doc, 'div', classes.attachmentTools);
+	const cropButton = createIconButton(doc, classes.attachmentButton, 'crop', text.crop);
+	const removeButton = createIconButton(doc, classes.attachmentButton, 'close', text.remove);
+	const altButton = createButton(doc, classes.altButton, '');
+	cropButton.addEventListener('click', () => handlers.onCrop(attachment, cropButton));
+	removeButton.addEventListener('click', () => handlers.onRemove(attachment));
+	altButton.addEventListener('click', () => handlers.onAlt(attachment, altButton));
+	tools.append(cropButton, removeButton);
+	li.append(img, tools, altButton);
+	return {li, img, altButton, cropButton, removeButton};
+}
+
+/**
+ * 添付のプレビューを今の並びに合わせる。0 枚なら入れ物を隠す。
+ * 描いてあるマスが並びの先頭とそのまま一致するあいだは作り直さず、足された分だけを末尾に足す
+ * (画像を 1 枚取り込むたびに全マスを作り直さないため)。外した・入れ替えたときはすべて作り直す。
  * @param {HTMLElement} container 入れ物 (ul)
  * @param {Attachment[]} attachments 添付
  * @param {Object} compose EXT_CONFIG.lightboxReplies.compose
@@ -84,27 +111,26 @@ export function updateAttachmentCell(attachment, index, compose) {
  * @returns {void}
  */
 export function renderAttachments(container, attachments, compose, handlers, disabled) {
-	const {classes, text} = compose;
 	const doc = container.ownerDocument;
-	container.textContent = '';
 	container.hidden = attachments.length === 0;
 	container.dataset.count = String(attachments.length);
+	const current = Array.from(container.children);
+	let kept = 0;
+	while (kept < current.length && kept < attachments.length
+		&& attachments[kept].cell && attachments[kept].cell.li === current[kept]) {
+		kept += 1;
+	}
+	if (kept < current.length) {
+		container.textContent = '';
+		kept = 0;
+	}
 	attachments.forEach((attachment, index) => {
-		const li = createElement(doc, 'li', classes.attachment);
-		const img = createElement(doc, 'img', classes.attachmentImage);
-		img.setAttribute('draggable', 'false');
-		const tools = createElement(doc, 'div', classes.attachmentTools);
-		const cropButton = createIconButton(doc, classes.attachmentButton, 'crop', text.crop);
-		const removeButton = createIconButton(doc, classes.attachmentButton, 'close', text.remove);
-		const altButton = createButton(doc, classes.altButton, '');
-		cropButton.addEventListener('click', () => handlers.onCrop(attachment, cropButton));
-		removeButton.addEventListener('click', () => handlers.onRemove(attachment));
-		altButton.addEventListener('click', () => handlers.onAlt(attachment, altButton));
-		for (const button of [cropButton, removeButton, altButton]) button.disabled = disabled;
-		tools.append(cropButton, removeButton);
-		li.append(img, tools, altButton);
-		container.append(li);
-		attachment.cell = {li, img, altButton, cropButton, removeButton};
-		updateAttachmentCell(attachment, index, compose);
+		if (index >= kept) {
+			attachment.cell = buildCell(doc, attachment, compose, handlers);
+			container.append(attachment.cell.li);
+			updateAttachmentCell(attachment, index, compose);
+		}
+		const cell = attachment.cell;
+		for (const button of [cell.cropButton, cell.removeButton, cell.altButton]) button.disabled = disabled;
 	});
 }

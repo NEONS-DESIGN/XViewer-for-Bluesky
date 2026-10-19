@@ -129,6 +129,26 @@ function makeDeps(overrides = {}) {
 }
 
 /**
+ * 偽の依存で ComposerExtras を作る (状態の変化は deps.onChange へ知らせる)。
+ * @param {Object} deps
+ * @returns {ComposerExtras}
+ */
+function newExtras(deps) {
+	return new ComposerExtras(CONFIG, deps, deps.onChange);
+}
+
+/**
+ * プレビューに「読み込み中」の 1 行が出るか。
+ * @param {ComposerExtras} extras
+ * @returns {boolean}
+ */
+function showsLoading(extras) {
+	const container = new FakeDocument().createElement('div');
+	extras.render(container, 0, {onGifAlt: () => {}});
+	return container.textContent.includes(COMPOSE.text.cardLoading);
+}
+
+/**
  * 打鍵で URL を打ち終える (URL だけ → URL の後ろに空白) 流れを再現する。
  * @param {ComposerExtras} extras
  * @param {string} url
@@ -141,7 +161,7 @@ function typeUrl(extras, url) {
 
 test('ComposerExtras: 打鍵で URL の後ろに空白が来たらカードを取得し、ready になる', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], false);
 	assert.strictEqual(calls.fetchJson.length, 0, 'URL を打っている途中では取得しない');
 	extras.onTextChange(`${CARD_URL} `, [CARD_URL], false);
@@ -149,12 +169,12 @@ test('ComposerExtras: 打鍵で URL の後ろに空白が来たらカードを�
 	assert.strictEqual(calls.fetchJson[0].url, `${COMPOSE.card.extractUrl}?url=${encodeURIComponent(CARD_URL)}`);
 	assert.strictEqual(calls.fetchJson[0].timeoutMs, COMPOSE.card.timeoutMs);
 	assert.strictEqual(extras.card.status, 'loading');
-	assert.strictEqual(extras.isLoading(), true);
+	assert.strictEqual(showsLoading(extras), true, '取得中の 1 行を出す');
 	await flush();
 	assert.strictEqual(extras.card.status, 'ready');
 	assert.strictEqual(extras.card.url, CARD_URL);
 	assert.deepStrictEqual(extras.card.data, {title: '題名', description: '説明', imageUrl: 'https://cardyb.bsky.app/v1/image?url=x'});
-	assert.strictEqual(extras.isLoading(), false);
+	assert.strictEqual(showsLoading(extras), false);
 	assert.ok(calls.onChange >= 2, '取得の開始と完了で知らせる');
 
 	// 同じ URL がまだ本文にあれば取り直さない
@@ -165,7 +185,7 @@ test('ComposerExtras: 打鍵で URL の後ろに空白が来たらカードを�
 
 test('ComposerExtras: 貼り付けた URL は空白を待たずに取得する', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	assert.strictEqual(calls.fetchJson.length, 1);
 	await flush();
@@ -175,7 +195,7 @@ test('ComposerExtras: 貼り付けた URL は空白を待たずに取得する',
 test('ComposerExtras: 取得中に本文から URL が消えたら、届いた応答を捨てる', async () => {
 	const pending = deferred();
 	const {deps} = makeDeps({fetchJson: () => pending.promise});
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	typeUrl(extras, CARD_URL);
 	assert.strictEqual(extras.card.status, 'loading');
 	extras.onTextChange('', [], false);
@@ -183,7 +203,7 @@ test('ComposerExtras: 取得中に本文から URL が消えたら、届いた�
 	pending.resolve({status: 200, json: {error: '', title: '遅れた題名', description: '', image: ''}});
 	await flush();
 	assert.strictEqual(extras.card, null);
-	assert.strictEqual(extras.isLoading(), false);
+	assert.strictEqual(showsLoading(extras), false);
 });
 
 test('ComposerExtras: 古い取得の応答は、同じ URL を取り直した後に届いても反映しない', async () => {
@@ -191,7 +211,7 @@ test('ComposerExtras: 古い取得の応答は、同じ URL を取り直した�
 	const second = deferred();
 	const queue = [first.promise, second.promise];
 	const {deps} = makeDeps({fetchJson: () => queue.shift()});
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	typeUrl(extras, CARD_URL);
 	extras.onTextChange('', [], false);
 	typeUrl(extras, CARD_URL);
@@ -205,26 +225,26 @@ test('ComposerExtras: 古い取得の応答は、同じ URL を取り直した�
 
 test('ComposerExtras: × で外した URL は本文に残っているあいだ再提案しない', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	await flush();
 	extras.removeCard();
 	assert.strictEqual(extras.card, null);
-	assert.deepStrictEqual(extras.dismissed, [CARD_URL]);
+	assert.strictEqual(extras.isSuppressed(CARD_URL, 'dismissed'), true);
 	extras.onTextChange(`${CARD_URL} `, [CARD_URL], false);
 	extras.onTextChange(`${CARD_URL}  `, [CARD_URL], true);
 	assert.strictEqual(calls.fetchJson.length, 1, '外した URL は貼り付け直しても取得しない');
 
 	// 本文から消えたら忘れ、もう一度貼れば提案する
 	extras.onTextChange('', [], false);
-	assert.deepStrictEqual(extras.dismissed, []);
+	assert.strictEqual(extras.isSuppressed(CARD_URL, 'dismissed'), false);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	assert.strictEqual(calls.fetchJson.length, 2);
 });
 
 test('ComposerExtras: 引用はハンドルを DID に直して fetchPost し、embeddingDisabled なら付けず quoteDisabled を出す', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	typeUrl(extras, POST_URL);
 	assert.strictEqual(calls.fetchJson.length, 0, 'bsky.app の投稿の URL はカードにしない');
 	assert.strictEqual(extras.quote.status, 'loading');
@@ -237,7 +257,7 @@ test('ComposerExtras: 引用はハンドルを DID に直して fetchPost し、
 
 	// DID の URL はそのまま使う
 	const direct = makeDeps();
-	const extrasDid = new ComposerExtras(CONFIG, direct.deps);
+	const extrasDid = new ComposerExtras(CONFIG, direct.deps, direct.deps.onChange);
 	const didUrl = `https://bsky.app/profile/${DID}/post/3kabc`;
 	extrasDid.onTextChange(didUrl, [didUrl], true);
 	await flush();
@@ -246,7 +266,7 @@ test('ComposerExtras: 引用はハンドルを DID に直して fetchPost し、
 
 	// 引用が許されていない投稿
 	const disabled = makeDeps({fetchPost: () => ({posts: [postView({viewer: {embeddingDisabled: true}})]})});
-	const extrasDisabled = new ComposerExtras(CONFIG, disabled.deps);
+	const extrasDisabled = new ComposerExtras(CONFIG, disabled.deps, disabled.deps.onChange);
 	extrasDisabled.onTextChange(POST_URL, [POST_URL], true);
 	await flush();
 	assert.strictEqual(extrasDisabled.quote, null);
@@ -261,14 +281,14 @@ test('ComposerExtras: 引用はハンドルを DID に直して fetchPost し、
 
 test('ComposerExtras: 0 件の引用は quoteNotFound、cardyb の失敗はカードを付けない', async () => {
 	const empty = makeDeps({fetchPost: () => ({posts: []})});
-	const extras = new ComposerExtras(CONFIG, empty.deps);
+	const extras = new ComposerExtras(CONFIG, empty.deps, empty.deps.onChange);
 	extras.onTextChange(POST_URL, [POST_URL], true);
 	await flush();
 	assert.strictEqual(extras.quote, null);
 	assert.strictEqual(extras.notice, CARDS.text.quoteNotFound);
 
 	const unresolved = makeDeps({resolveHandle: () => null});
-	const extrasUnresolved = new ComposerExtras(CONFIG, unresolved.deps);
+	const extrasUnresolved = new ComposerExtras(CONFIG, unresolved.deps, unresolved.deps.onChange);
 	extrasUnresolved.onTextChange(POST_URL, [POST_URL], true);
 	await flush();
 	assert.strictEqual(extrasUnresolved.quote, null);
@@ -277,7 +297,7 @@ test('ComposerExtras: 0 件の引用は quoteNotFound、cardyb の失敗はカ�
 
 	for (const response of [null, {status: 500, json: null}, {status: 200, json: {error: 'failed'}}]) {
 		const failing = makeDeps({fetchJson: () => response});
-		const extrasCard = new ComposerExtras(CONFIG, failing.deps);
+		const extrasCard = new ComposerExtras(CONFIG, failing.deps, failing.deps.onChange);
 		extrasCard.onTextChange(CARD_URL, [CARD_URL], true);
 		await flush();
 		assert.strictEqual(extrasCard.card, null);
@@ -290,7 +310,7 @@ test('ComposerExtras: 0 件の引用は quoteNotFound、cardyb の失敗はカ�
 	const throwing = makeDeps({fetchJson: () => {
 		throw new Error('network');
 	}});
-	const extrasThrow = new ComposerExtras(CONFIG, throwing.deps);
+	const extrasThrow = new ComposerExtras(CONFIG, throwing.deps, throwing.deps.onChange);
 	extrasThrow.onTextChange(CARD_URL, [CARD_URL], true);
 	await flush();
 	assert.strictEqual(extrasThrow.card, null);
@@ -298,7 +318,7 @@ test('ComposerExtras: 0 件の引用は quoteNotFound、cardyb の失敗はカ�
 
 test('ComposerExtras: カードと引用は 1 つずつ共存する', async () => {
 	const {deps} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	const text = `${CARD_URL} ${POST_URL}`;
 	extras.onTextChange(text, [CARD_URL, POST_URL], true);
 	await flush();
@@ -309,7 +329,7 @@ test('ComposerExtras: カードと引用は 1 つずつ共存する', async () =
 
 test('ComposerExtras: 画像があると sendableCard は null、画像を外すと戻る', async () => {
 	const {deps} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	assert.strictEqual(extras.sendableCard(0), null, '読み込み中のカードは送らない');
 	await flush();
@@ -335,7 +355,7 @@ test('ComposerExtras: 画像があると sendableCard は null、画像を外す
 
 test('ComposerExtras: resolveForSubmit は GIF の previewUrl を縮めて thumb にし、引用の ref は uri と cid だけ', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(POST_URL, [POST_URL], true);
 	await flush();
 	extras.setGif(gifItem());
@@ -357,7 +377,7 @@ test('ComposerExtras: resolveForSubmit は GIF の previewUrl を縮めて thumb
 
 test('ComposerExtras: resolveForSubmit はカードを external にし、画像があるときは付けない', async () => {
 	const {deps, calls} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	await flush();
 	const result = await extras.resolveForSubmit(() => {});
@@ -388,7 +408,7 @@ test('ComposerExtras: resolveForSubmit はサムネイルの取得に失敗し�
 	];
 	for (const override of cases) {
 		const {deps} = makeDeps(override);
-		const extras = new ComposerExtras(CONFIG, deps);
+		const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 		extras.setGif(gifItem());
 		const result = await extras.resolveForSubmit(() => {});
 		assert.strictEqual(result.external.$type, EXTERNAL_TYPE);
@@ -398,7 +418,7 @@ test('ComposerExtras: resolveForSubmit はサムネイルの取得に失敗し�
 
 	// 画像の URL を持たないカードは取得せずに thumb 無しで作る
 	const {deps, calls} = makeDeps({fetchJson: () => ({status: 200, json: {error: '', title: 't', description: '', image: ''}})});
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	await flush();
 	const result = await extras.resolveForSubmit(() => {});
@@ -406,7 +426,7 @@ test('ComposerExtras: resolveForSubmit はサムネイルの取得に失敗し�
 	assert.deepStrictEqual(calls.fetchBlob, []);
 
 	// 何も無ければすべて null
-	const none = new ComposerExtras(CONFIG, makeDeps().deps);
+	const none = newExtras(makeDeps().deps);
 	assert.deepStrictEqual(await none.resolveForSubmit(() => {}), {external: null, quote: null, quoteView: null});
 });
 
@@ -414,7 +434,7 @@ test('ComposerExtras: destroy の後に届いた応答は反映しない', async
 	const card = deferred();
 	const post = deferred();
 	const {deps, calls} = makeDeps({fetchJson: () => card.promise, fetchPost: () => post.promise});
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(`${CARD_URL} ${POST_URL}`, [CARD_URL, POST_URL], true);
 	await flush();
 	const before = calls.onChange;
@@ -433,14 +453,14 @@ test('ComposerExtras: destroy の後に届いた応答は反映しない', async
 test('ComposerExtras: reset は状態を空に戻し、取得中の応答を捨てる', async () => {
 	const card = deferred();
 	const {deps} = makeDeps({fetchJson: () => card.promise});
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.setGif(gifItem());
 	extras.onTextChange(CARD_URL, [CARD_URL], true);
 	extras.reset();
 	assert.strictEqual(extras.gif, null);
 	assert.strictEqual(extras.card, null);
 	assert.strictEqual(extras.quote, null);
-	assert.deepStrictEqual(extras.dismissed, []);
+	assert.strictEqual(extras.suppressed.size, 0);
 	assert.strictEqual(extras.notice, null);
 	card.resolve({status: 200, json: {error: '', title: '題名', description: '', image: ''}});
 	await flush();
@@ -465,7 +485,7 @@ test('ComposerExtras: render はメディアがあるあいだカードを隠し
 	const doc = new FakeDocument();
 	const container = doc.createElement('div');
 	const {deps} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.onTextChange(`${CARD_URL} ${POST_URL}`, [CARD_URL, POST_URL], true);
 
 	extras.render(container, 0, {onGifAlt: () => {}});
@@ -487,11 +507,11 @@ test('ComposerExtras: render はメディアがあるあいだカードを隠し
 	const remove = allByClass(container, CARDS.classes.remove)[0];
 	click(remove);
 	assert.strictEqual(extras.card, null);
-	assert.deepStrictEqual(extras.dismissed, [CARD_URL]);
+	assert.strictEqual(extras.isSuppressed(CARD_URL, 'dismissed'), true);
 
 	// 引用できない知らせ
 	const disabled = makeDeps({fetchPost: () => ({posts: [postView({viewer: {embeddingDisabled: true}})]})});
-	const extrasDisabled = new ComposerExtras(CONFIG, disabled.deps);
+	const extrasDisabled = new ComposerExtras(CONFIG, disabled.deps, disabled.deps.onChange);
 	extrasDisabled.onTextChange(POST_URL, [POST_URL], true);
 	await flush();
 	const box = doc.createElement('div');
@@ -500,7 +520,7 @@ test('ComposerExtras: render はメディアがあるあいだカードを隠し
 
 	// 何も無ければ隠す
 	const empty = doc.createElement('div');
-	new ComposerExtras(CONFIG, makeDeps().deps).render(empty, 0, {onGifAlt: () => {}});
+	newExtras(makeDeps().deps).render(empty, 0, {onGifAlt: () => {}});
 	assert.strictEqual(empty.children.length, 0);
 	assert.strictEqual(empty.hidden, true);
 });
@@ -519,7 +539,7 @@ test('ComposerExtras: render は GIF のプレビューを描き、ALT のボタ
 	};
 	const container = doc.createElement('div');
 	const {deps} = makeDeps();
-	const extras = new ComposerExtras(CONFIG, deps);
+	const extras = new ComposerExtras(CONFIG, deps, deps.onChange);
 	extras.setGif(gifItem());
 	let altButton = null;
 	extras.render(container, 0, {onGifAlt: (button) => {
@@ -534,7 +554,7 @@ test('ComposerExtras: render は GIF のプレビューを描き、ALT のボタ
 	assert.strictEqual(altButton, alt);
 
 	// 動画の URL が無い GIF は静止画で出す
-	const still = new ComposerExtras(CONFIG, makeDeps().deps);
+	const still = newExtras(makeDeps().deps);
 	still.setGif(gifItem({playerUrl: null, mp4Slug: null, webmSlug: null, gifUrl: 'https://example.com/a.gif'}));
 	const box = doc.createElement('div');
 	still.render(box, 0, {onGifAlt: () => {}});
@@ -542,4 +562,148 @@ test('ComposerExtras: render は GIF のプレビューを描き、ALT のボタ
 	const poster = allByClass(box, CARDS.classes.gifPoster)[0];
 	assert.strictEqual(poster.getAttribute('src'), gifItem().previewUrl);
 	assert.strictEqual(allByClass(box, CARDS.classes.gifAlt).length, 1, '静止画でも ALT と × は残る');
+});
+
+/**
+ * URL.createObjectURL / revokeObjectURL を差し替え、テストの終わりに戻す。
+ * @param {import('node:test').TestContext} t
+ * @returns {{created: string[], revoked: string[]}}
+ */
+function stubUrls(t) {
+	const original = {create: URL.createObjectURL, revoke: URL.revokeObjectURL};
+	const log = {created: [], revoked: []};
+	URL.createObjectURL = () => {
+		const url = `blob:thumb-${log.created.length + 1}`;
+		log.created.push(url);
+		return url;
+	};
+	URL.revokeObjectURL = (url) => {
+		log.revoked.push(url);
+	};
+	t.after(() => {
+		URL.createObjectURL = original.create;
+		URL.revokeObjectURL = original.revoke;
+	});
+	return log;
+}
+
+test('ComposerExtras: カードのサムネイルは取れた時点で 1 回だけ取り、プレビューは object URL、送信はその画像を縮めるだけ', async (t) => {
+	const urls = stubUrls(t);
+	const {deps, calls} = makeDeps();
+	const extras = newExtras(deps);
+	const container = new FakeDocument().createElement('div');
+	extras.onTextChange(CARD_URL, [CARD_URL], true);
+	await flush();
+	await flush();
+	assert.deepStrictEqual(calls.fetchBlob, ['https://cardyb.bsky.app/v1/image?url=x']);
+	assert.strictEqual(extras.card.thumb.status, 'ready');
+	extras.render(container, 0, {onGifAlt: () => {}});
+	const image = container.querySelector('img');
+	assert.strictEqual(image.getAttribute('src'), urls.created[0], 'プレビューが取得した画像の URL でない');
+
+	const result = await extras.resolveForSubmit(() => {});
+	assert.strictEqual(calls.fetchBlob.length, 1, '送信で取り直した');
+	assert.strictEqual(calls.prepareImage.length, 1);
+	assert.strictEqual(calls.prepareImage[0].blob, await extras.card.thumb.done);
+	assert.strictEqual(result.external.external.thumb.ref.$link, 'bafythumb');
+
+	// 外すと URL を捨てる
+	extras.removeCard();
+	assert.deepStrictEqual(urls.revoked, [urls.created[0]]);
+});
+
+test('ComposerExtras: サムネイルの取得中にカードを外すと、通信を打ち切り、届いた画像を使わない', async (t) => {
+	const urls = stubUrls(t);
+	const pending = deferred();
+	const signals = [];
+	const {deps} = makeDeps({fetchBlob: (url, timeoutMs, signal) => {
+		signals.push(signal);
+		return pending.promise;
+	}});
+	const extras = newExtras(deps);
+	extras.onTextChange(CARD_URL, [CARD_URL], true);
+	await flush();
+	assert.strictEqual(extras.card.thumb.status, 'loading');
+	assert.ok(signals[0] && signals[0].aborted === false, 'signal を渡していない');
+	const thumb = extras.card.thumb;
+	extras.removeCard();
+	assert.strictEqual(signals[0].aborted, true, '外しても通信を止めない');
+	pending.resolve({size: 1, type: 'image/jpeg'});
+	assert.strictEqual(await thumb.done, null);
+	await flush();
+	assert.deepStrictEqual(urls.created, [], '外した後に URL を作った');
+});
+
+test('ComposerExtras: サムネイルが取れなければプレビューは画像無しで、送信も thumb 無し', async () => {
+	const {deps, calls} = makeDeps({fetchBlob: () => null});
+	const extras = newExtras(deps);
+	extras.onTextChange(CARD_URL, [CARD_URL], true);
+	await flush();
+	await flush();
+	assert.strictEqual(extras.card.thumb.status, 'failed');
+	const container = new FakeDocument().createElement('div');
+	extras.render(container, 0, {onGifAlt: () => {}});
+	assert.strictEqual(container.querySelector('img'), null);
+	const result = await extras.resolveForSubmit(() => {});
+	assert.strictEqual('thumb' in result.external.external, false);
+	assert.strictEqual(calls.fetchBlob.length, 1);
+	assert.strictEqual(calls.prepareImage.length, 0);
+});
+
+test('ComposerExtras: カードの取得中に URL が消えたら、cardyb への通信を打ち切る', async () => {
+	const signals = [];
+	const {deps} = makeDeps({fetchJson: (url, timeoutMs, signal) => {
+		signals.push(signal);
+		return deferred().promise;
+	}});
+	const extras = newExtras(deps);
+	extras.onTextChange(CARD_URL, [CARD_URL], true);
+	assert.strictEqual(signals[0].aborted, false);
+	extras.onTextChange('', [], false);
+	assert.strictEqual(signals[0].aborted, true);
+});
+
+test('ComposerExtras: サムネイルを縮めるときプレビューを作らせない', async () => {
+	const {deps, calls} = makeDeps();
+	const extras = newExtras(deps);
+	calls.options = [];
+	const prepare = deps.prepareImage;
+	deps.prepareImage = (blob, crop, rules, options) => {
+		calls.options.push(options);
+		return prepare(blob, crop, rules);
+	};
+	extras.setGif(gifItem());
+	await extras.resolveForSubmit(() => {});
+	assert.deepStrictEqual(calls.options, [{preview: false}]);
+});
+
+test('ComposerExtras: render は変わらない部品を作り直さない (GIF を付けたまま URL を打っても GIF を作り直さない)', async () => {
+	const doc = new FakeDocument();
+	const create = doc.createElement.bind(doc);
+	doc.createElement = (tag) => {
+		const element = create(tag);
+		if (tag === 'video') {
+			element.paused = true;
+			element.play = () => Promise.resolve();
+			element.pause = () => {};
+		}
+		return element;
+	};
+	const container = doc.createElement('div');
+	const {deps} = makeDeps({fetchPost: () => deferred().promise});
+	const extras = newExtras(deps);
+	extras.setGif(gifItem());
+	extras.render(container, 0, {onGifAlt: () => {}});
+	const gifRoot = container.children[0];
+	const player = container.querySelector('video');
+	// 引用の取得が始まり「読み込み中」の 1 行が足される
+	extras.onTextChange(POST_URL, [POST_URL], true);
+	extras.render(container, 0, {onGifAlt: () => {}});
+	assert.strictEqual(container.children[0], gifRoot, 'GIF を作り直した');
+	assert.strictEqual(container.querySelector('video'), player);
+	assert.strictEqual(container.children.length, 2);
+	// ALT が変わったら作り直す
+	extras.setGifAlt('猫');
+	extras.render(container, 0, {onGifAlt: () => {}});
+	assert.notStrictEqual(container.children[0], gifRoot);
 });

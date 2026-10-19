@@ -1,6 +1,8 @@
+import {EXT_VIEWS} from '../common/config.js';
+
 /**
  * getProfile のレスポンスと画面の状態から、Bluesky 本体と同じ可視タブ列を組み立てる。
- * 順序と条件は EXT_CONFIG.profileTabs が持つ (設計文書 2.5)。
+ * 順序と条件は EXT_CONFIG.profileTabs が持つ。
  * @param {Object|null} profile app.bsky.actor.getProfile のレスポンス
  * @param {{isMe: boolean, hasSession: boolean}} context
  * @param {Object} config EXT_CONFIG
@@ -45,7 +47,7 @@ export function buildTabList(profile, context, config) {
  */
 function postsOnlyTabList(config) {
 	try {
-		const postsTab = config.profileTabs.find((t) => t.name === 'posts');
+		const postsTab = config.profileTabs.find((t) => t.view === EXT_VIEWS.POSTS);
 		return postsTab ? [{name: postsTab.name, view: postsTab.view}] : [];
 	} catch (error) {
 		return [];

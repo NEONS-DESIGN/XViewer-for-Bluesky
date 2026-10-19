@@ -12,13 +12,13 @@
  * @property {string} authorHandle   投稿者のハンドル (SPA 遷移の bridge に渡す。postHref からの再抽出はしない)
  * @property {'image'|'video'} type  先頭メディアの種別
  * @property {string} thumbUrl       先頭メディアのサムネイル URL
- * @property {string|null} fullsizeUrl  先頭メディアの原寸 URL (動画は null)
  * @property {string} alt            先頭メディアの alt
- * @property {{width:number,height:number}|null} dimensions  先頭メディアの寸法
  * @property {number} mediaCount     その投稿の添付総数 (複数枚バッジの出し分けに使う)
  * @property {Object[]} siblings     同じ投稿の全メディア (ライトボックスに渡す形)
  * @property {string[]} labels       投稿と作者に付いたラベル値
  */
+import {parseAtUri} from '../common/at-uri.js';
+import {buildUrl, fetchWithTimeout} from '../common/http.js';
 
 /**
  * embed から 0 件以上のメディアを取り出す。未知の形式は空配列。
@@ -100,20 +100,6 @@ function extractAllMediaFromEmbed(embed, config) {
 }
 
 /**
- * at:// URI から rkey を取り出す。
- * @param {string} uri
- * @returns {string|null}
- */
-function extractRkey(uri) {
-	if (typeof uri !== 'string') {
-		return null;
-	}
-	const parts = uri.split('/');
-	const rkey = parts[parts.length - 1];
-	return rkey || null;
-}
-
-/**
  * 投稿と作者に付いたラベル値を集める。
  * @param {Object} post
  * @returns {string[]}
@@ -180,7 +166,7 @@ export function toMediaEntries(feedItem, config) {
 		if (!post) {
 			return [];
 		}
-		const postId = extractRkey(post.uri);
+		const postId = parseAtUri(post.uri)?.rkey || null;
 		const handle = post.author && post.author.handle;
 		// authorDid は metricsContext の付加情報 (postAuthorDid) にしか使わない。
 		// 欠けているだけでタイルを丸ごと落とすのは強すぎるため必須条件から外す
@@ -205,9 +191,7 @@ export function toMediaEntries(feedItem, config) {
 			authorHandle: handle,
 			type: head.type,
 			thumbUrl: head.thumbUrl,
-			fullsizeUrl: head.fullsizeUrl,
 			alt: head.alt,
-			dimensions: head.dimensions,
 			mediaCount: media.length,
 			siblings,
 			labels
@@ -272,7 +256,10 @@ export function shouldBlur(entry, config) {
  */
 export class MediaStore {
 	constructor() {
-		this.items = new Map();
+		/** @type {Set<string>} 重複排除に使う key の集合 */
+		this.keys = new Set();
+		/** @type {MediaEntry[]} 追加順の全件。差分だけを取り出せるよう配列で持つ */
+		this.order = [];
 		this.listeners = [];
 	}
 
@@ -281,20 +268,30 @@ export class MediaStore {
 	 * @returns {boolean} 新規に格納したら true
 	 */
 	add(entry) {
-		if (!entry || !entry.key || this.items.has(entry.key)) {
+		if (!entry || !entry.key || this.keys.has(entry.key)) {
 			return false;
 		}
-		this.items.set(entry.key, entry);
+		this.keys.add(entry.key);
+		this.order.push(entry);
 		return true;
 	}
 
-	/** @returns {MediaEntry[]} 追加順の全件 */
+	/** @returns {MediaEntry[]} 追加順の全件 (写し) */
 	getAll() {
-		return [...this.items.values()];
+		return this.order.slice();
+	}
+
+	/**
+	 * start 件目から後ろだけを返す。描画済みの件数を渡して差分だけを取り出す。
+	 * @param {number} start 0 始まりの位置
+	 * @returns {MediaEntry[]} 追加順の写し。start が件数以上なら空配列
+	 */
+	getFrom(start) {
+		return this.order.slice(Math.max(0, Number(start) || 0));
 	}
 
 	get size() {
-		return this.items.size;
+		return this.order.length;
 	}
 
 	/**
@@ -302,17 +299,19 @@ export class MediaStore {
 	 * 呼び出し側 (UI の制御層) の責務。MediaFetcher からは強制されない。
 	 */
 	clear() {
-		this.items.clear();
+		this.keys.clear();
+		this.order = [];
 	}
 
+	/**
+	 * 1 ページぶんを入れ終えたときの通知を受ける。同じ関数は 2 度登録しない。
+	 * @param {(count: number) => void} listener
+	 * @returns {void}
+	 */
 	subscribe(listener) {
 		if (typeof listener === 'function' && !this.listeners.includes(listener)) {
 			this.listeners.push(listener);
 		}
-	}
-
-	unsubscribe(listener) {
-		this.listeners = this.listeners.filter((l) => l !== listener);
 	}
 
 	/**
@@ -346,13 +345,15 @@ export class MediaFetcher {
 	constructor(store, config, fetchImpl) {
 		this.store = store;
 		this.config = config;
-		this.fetchImpl = fetchImpl || ((...args) => globalThis.fetch(...args));
+		/** 省けば http.js が globalThis.fetch を使う */
+		this.fetchImpl = fetchImpl || null;
 		this.actor = null;
 		this.onBatchEnd = null;
 		this.generation = 0;
 		this.reset();
 	}
 
+	/** 取得の状態を最初に戻し、世代を進める (飛行中の応答を捨てさせる)。 */
 	reset() {
 		this.cursor = null;
 		this.exhausted = false;
@@ -360,8 +361,29 @@ export class MediaFetcher {
 		this.running = false;
 		this.errorCount = 0;
 		this.pageCount = 0;
+		/** 続けて中身 (グリッドに並べるもの) が 0 件だったページの数 */
+		this.emptyPageStreak = 0;
 		this.lastRunAt = 0;
 		this.generation += 1;
+	}
+
+	/**
+	 * 中身 0 件のページが続いて、自動では読み進めない状態か。
+	 * 動画だけのアカウントで、フィードの最後まで 0 件のまま取得し続けないための歯止め。
+	 * resumeAfterEmptyPages() を呼ぶまで fetchNext() は要求を出さない
+	 * @returns {boolean}
+	 */
+	get stalled() {
+		return this.emptyPageStreak >= this.config.api.emptyPageLimit;
+	}
+
+	/**
+	 * 利用者が「さらに読み込む」を押したときに、0 件の連続を数え直す。
+	 * 間隔 (cooldownMs) は変えない。
+	 * @returns {void}
+	 */
+	resumeAfterEmptyPages() {
+		this.emptyPageStreak = 0;
 	}
 
 	/**
@@ -376,8 +398,14 @@ export class MediaFetcher {
 		this.reset();
 	}
 
+	/** @returns {number} 次の要求を出せるまでの残り時間 (ms) */
 	get cooldownRemainingMs() {
 		return Math.max(0, this.config.api.cooldownMs - (Date.now() - this.lastRunAt));
+	}
+
+	/** @returns {number} 失敗の後、canRetry() が許すまでの残り時間 (ms) */
+	get retryRemainingMs() {
+		return Math.max(0, this.config.api.retryAfterMs - (Date.now() - this.lastRunAt));
 	}
 
 	/**
@@ -402,7 +430,7 @@ export class MediaFetcher {
 	 * @returns {Promise<void>}
 	 */
 	async fetchNext() {
-		if (this.running || this.exhausted || this.failed || !this.actor) {
+		if (this.running || this.exhausted || this.failed || this.stalled || !this.actor) {
 			return;
 		}
 		if (this.cooldownRemainingMs > 0) {
@@ -414,22 +442,20 @@ export class MediaFetcher {
 
 		try {
 			const api = this.config.api;
-			const url = new URL(api.origin + api.feedPath);
-			url.searchParams.set('actor', this.actor);
-			url.searchParams.set('filter', api.filter);
-			url.searchParams.set('limit', String(api.limit));
-			if (this.cursor) {
-				url.searchParams.set('cursor', this.cursor);
-			}
+			const url = buildUrl(api.origin, api.feedPath, {
+				actor: this.actor,
+				filter: api.filter,
+				limit: api.limit,
+				cursor: this.cursor || undefined
+			});
 
 			// 応答が返らないまま止まると running が立ったままになり、以後の fetchNext()
 			// がすべて素通りして「読み込み中...」で固まる。必ず時間で打ち切る
-			// (打ち切りは catch → countError() に落ちる)
-			const options = {credentials: 'omit'};
-			if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-				options.signal = AbortSignal.timeout(api.timeoutMs);
-			}
-			const response = await this.fetchImpl(url.toString(), options);
+			// (打ち切りは本文の読み込みまで含み、catch → countError() に落ちる)
+			const response = await fetchWithTimeout(url, api.timeoutMs, {
+				init: {credentials: 'omit'},
+				fetchImpl: this.fetchImpl || undefined
+			});
 
 			// 待っている間に対象が変わっていたら、この応答は丸ごと捨てる。
 			// 蓄積にもカーソルにも入れず、失敗にも数えない
@@ -459,6 +485,7 @@ export class MediaFetcher {
 
 			this.errorCount = 0;
 			this.pageCount += 1;
+			this.emptyPageStreak = parsed.entries.length === 0 ? this.emptyPageStreak + 1 : 0;
 			let added = 0;
 			for (const entry of parsed.entries) {
 				if (this.store.add(entry)) {
@@ -494,6 +521,7 @@ export class MediaFetcher {
 		}
 	}
 
+	/** 失敗を 1 回数え、続けて maxConsecutiveErrors 回に達したら failed にする。 */
 	countError() {
 		this.errorCount += 1;
 		if (this.errorCount >= this.config.api.maxConsecutiveErrors) {

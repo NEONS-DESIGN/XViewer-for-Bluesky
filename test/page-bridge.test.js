@@ -14,8 +14,10 @@ import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {
 	EXT_BRIDGE, checkXrpcRequest, checkThreadWrites, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
 	waitForLightboxHistory, toBlobRef, checkUploadBlob, checkUploadVideo, isBlobRef, BlobInbox, readBlobMessage, toProgressDetail, truncateMessage,
-	createVideoDeps, uploadVideoAction, cancelUploadVideo, setBlobInboxForTest
+	createVideoDeps, uploadVideoAction, cancelUploadVideo, setBlobInboxForTest,
+	callXrpc, uploadBlobAction, dispatchRequest, exceedsGraphemes, MAIN_TIMEOUTS
 } from '../src/inject/page-bridge.js';
+import {BRIDGE_TIMEOUT_REASON} from '../src/content/bridge-client.js';
 import {VIDEO_UPLOAD} from '../src/inject/video-upload.js';
 import {buildPostEmbed} from '../src/content/reply-embed.js';
 import {buildReplyRecord} from '../src/content/reply-text.js';
@@ -486,7 +488,7 @@ test('橋渡しの値は config.js と page-bridge.js が同じ BRIDGE_PROTOCOL 
 	assert.strictEqual(EXT_CONFIG.mediaGrid.bridge.routes, BRIDGE_PROTOCOL.routes);
 	assert.strictEqual(EXT_CONFIG.mediaGrid.bridge.requestEvent, BRIDGE_PROTOCOL.requestEvent);
 	assert.strictEqual(EXT_CONFIG.mediaGrid.bridge.resultEvent, BRIDGE_PROTOCOL.resultEvent);
-	assert.strictEqual(EXT_CONFIG.selectors.tabPrefix, BRIDGE_PROTOCOL.tabTestIdPrefix);
+	assert.ok(EXT_CONFIG.selectors.tab.includes(`"${BRIDGE_PROTOCOL.tabTestIdPrefix}"`));
 	assert.strictEqual(EXT_CONFIG.postActions.nsid, BRIDGE_PROTOCOL.nsid);
 	assert.strictEqual(EXT_CONFIG.postActions.collections, BRIDGE_PROTOCOL.collections);
 	assert.strictEqual(EXT_CONFIG.postActions.composerModes, BRIDGE_PROTOCOL.composerModes);
@@ -1195,4 +1197,311 @@ test('checkXrpcRequest: applyWrites は本人の repo だけ、validate は常�
 	assert.strictEqual(ok.body.validate, true);
 	assert.strictEqual(ok.needsReplyCheck, false);
 	assert.strictEqual(checkXrpcRequest(payload(ME), null).reason, 'repo-not-self');
+});
+
+test('checkXrpcRequest: bodyKeys の無い POST の規則 (threadWrite でない) は invalid-rule で通さない', () => {
+	const fakeNsid = 'app.bsky.test.noBodyKeys';
+	EXT_BRIDGE.xrpc[fakeNsid] = {target: 'appview', method: 'POST'};
+	try {
+		const result = checkXrpcRequest({nsid: fakeNsid, body: {anything: 1}}, SELF_DID);
+		assert.deepStrictEqual(result, {ok: false, reason: 'invalid-rule'});
+	} finally {
+		delete EXT_BRIDGE.xrpc[fakeNsid];
+	}
+});
+
+test('checkXrpcRequest: 返信であるかの確認は規則の replyCheck の印だけで決まる (rkey を持つだけでは求めない)', () => {
+	assert.strictEqual(EXT_BRIDGE.xrpc[BRIDGE_PROTOCOL.nsid.deleteRecord].replyCheck, true);
+	assert.strictEqual(EXT_BRIDGE.xrpc[BRIDGE_PROTOCOL.nsid.applyWrites].bodyKeys, undefined);
+	const fakeNsid = 'com.atproto.repo.testDelete';
+	EXT_BRIDGE.xrpc[fakeNsid] = {target: 'pds', method: 'POST', recordWrite: true, bodyKeys: ['repo', 'collection', 'rkey']};
+	try {
+		const result = checkXrpcRequest({
+			nsid: fakeNsid,
+			body: {repo: SELF_DID, collection: BRIDGE_PROTOCOL.collections.post, rkey: '3abc'}
+		}, SELF_DID);
+		assert.strictEqual(result.ok, true);
+		assert.strictEqual(result.needsReplyCheck, false);
+	} finally {
+		delete EXT_BRIDGE.xrpc[fakeNsid];
+	}
+});
+
+test('exceedsGraphemes: 長さが上限以下なら通し、超えるときは書記素で数える', () => {
+	assert.strictEqual(exceedsGraphemes('', 0), false);
+	assert.strictEqual(exceedsGraphemes('abc', 3), false);
+	assert.strictEqual(exceedsGraphemes('abcd', 3), true);
+	// 家族の絵文字は UTF-16 で 8 単位だが書記素は 1 つ
+	const family = '\u{1F468}‍\u{1F469}‍\u{1F467}';
+	assert.strictEqual(exceedsGraphemes(family.repeat(3), 3), false);
+	assert.strictEqual(exceedsGraphemes(family.repeat(4), 3), true);
+});
+
+test('打ち切りの時間: MAIN ワールドは分離ワールドの待ちより先に諦め、両方が BRIDGE_PROTOCOL.timeouts から来る', () => {
+	const bridge = EXT_CONFIG.mediaGrid.bridge;
+	const timeouts = BRIDGE_PROTOCOL.timeouts;
+	assert.strictEqual(bridge.timeoutMs, timeouts.requestMs);
+	assert.strictEqual(bridge.uploadTimeoutMs, timeouts.uploadMs);
+	assert.strictEqual(bridge.threadTimeoutMs, timeouts.threadMs);
+	assert.ok(timeouts.mainMarginMs > 0);
+	assert.ok(MAIN_TIMEOUTS.requestMs > 0 && MAIN_TIMEOUTS.requestMs < bridge.timeoutMs);
+	assert.ok(MAIN_TIMEOUTS.uploadMs > 0 && MAIN_TIMEOUTS.uploadMs < bridge.uploadTimeoutMs);
+	assert.ok(MAIN_TIMEOUTS.threadMs > 0 && MAIN_TIMEOUTS.threadMs < bridge.threadTimeoutMs);
+	// MAIN ワールドの打ち切りと分離ワールドの待ちの上限は、呼び出し側から見て同じ理由になる
+	assert.strictEqual(BRIDGE_PROTOCOL.reasons.timeout, BRIDGE_TIMEOUT_REASON);
+});
+
+/**
+ * AbortSignal.timeout を、手で鳴らせる signal に差し替えて fn を走らせる。
+ * @param {function(Array<{ms: number, controller: AbortController}>): Promise<void>} fn
+ */
+async function withFakeTimeouts(fn) {
+	const original = AbortSignal.timeout;
+	const made = [];
+	AbortSignal.timeout = (ms) => {
+		const controller = new AbortController();
+		made.push({ms, controller});
+		return controller.signal;
+	};
+	try {
+		await fn(made);
+	} finally {
+		AbortSignal.timeout = original;
+	}
+}
+
+/**
+ * 偽の本体のクライアント一式 (pds / appview とも同じ agent)。
+ * @param {Function} fetchHandler
+ * @param {string} did
+ */
+function fakeClients(fetchHandler, did) {
+	const agent = {did, fetchHandler};
+	return {pdsClient: {agent}, appviewClient: {agent}};
+}
+
+/** signal が鳴るまで解けず、鳴ったら reject する fetchHandler の応答 */
+function hangUntilAbort(init) {
+	return new Promise((resolve, reject) => {
+		init.signal.addEventListener('abort', () => reject(new Error('aborted')), {once: true});
+	});
+}
+
+/** マイクロタスクと即時のタスクを流す */
+function flushTasks() {
+	return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('callXrpc: applyWrites は threadMs で打ち切り、打ち切ったら timeout を返す (書けたかもしれない扱い)', async () => {
+	await withFakeTimeouts(async (made) => {
+		const calls = [];
+		const clients = fakeClients((url, init) => {
+			calls.push({url, init});
+			return hangUntilAbort(init);
+		}, ME);
+		const pending = callXrpc({nsid: BRIDGE_PROTOCOL.nsid.applyWrites, body: {repo: ME, writes: threadWrites(2)}}, () => clients);
+		await flushTasks();
+		assert.strictEqual(made.length, 1);
+		assert.strictEqual(made[0].ms, MAIN_TIMEOUTS.threadMs);
+		assert.strictEqual(calls.length, 1);
+		assert.strictEqual(calls[0].init.signal, made[0].controller.signal);
+		made[0].controller.abort();
+		assert.deepStrictEqual(await pending, {ok: false, reason: BRIDGE_PROTOCOL.reasons.timeout});
+	});
+});
+
+test('callXrpc: いいねの作成は requestMs で打ち切り、打ち切り以外の通信の失敗は fetch-failed', async () => {
+	await withFakeTimeouts(async (made) => {
+		const like = {
+			nsid: BRIDGE_PROTOCOL.nsid.createRecord,
+			body: {repo: SELF_DID, collection: BRIDGE_PROTOCOL.collections.like, record: {$type: BRIDGE_PROTOCOL.collections.like}}
+		};
+		const failing = fakeClients(async () => {
+			throw new Error('network');
+		}, SELF_DID);
+		assert.deepStrictEqual(await callXrpc(like, () => failing), {ok: false, reason: 'fetch-failed'});
+		assert.strictEqual(made[0].ms, MAIN_TIMEOUTS.requestMs);
+
+		const hanging = fakeClients((url, init) => hangUntilAbort(init), SELF_DID);
+		const pending = callXrpc(like, () => hanging);
+		await flushTasks();
+		made[1].controller.abort();
+		assert.deepStrictEqual(await pending, {ok: false, reason: BRIDGE_PROTOCOL.reasons.timeout});
+	});
+});
+
+test('callXrpc: 応答の本文が JSON でなくても落ちず、json は null', async () => {
+	const clients = fakeClients(async () => ({ok: true, status: 200, json: async () => { throw new Error('not json'); }}), SELF_DID);
+	const result = await callXrpc({nsid: BRIDGE_PROTOCOL.nsid.getPosts, params: {uris: ['at://x']}}, () => clients);
+	assert.deepStrictEqual(result, {ok: true, status: 200, json: null, reason: null});
+	assert.deepStrictEqual(await callXrpc({nsid: BRIDGE_PROTOCOL.nsid.getPosts}, () => null), {ok: false, reason: 'no-client'});
+});
+
+test('callXrpc: 投稿の削除は、返信の確認と削除の両方に同じ打ち切りの signal を渡す', async () => {
+	await withFakeTimeouts(async (made) => {
+		const rkey = '3m2aaaaaaaaa2';
+		const uri = `at://${SELF_DID}/${BRIDGE_PROTOCOL.collections.post}/${rkey}`;
+		const payload = {
+			nsid: BRIDGE_PROTOCOL.nsid.deleteRecord,
+			body: {repo: SELF_DID, collection: BRIDGE_PROTOCOL.collections.post, rkey}
+		};
+		const calls = [];
+		const reply = {posts: [{uri, record: {reply: {}}}]};
+		const clients = fakeClients(async (url, init) => {
+			calls.push({url, init});
+			return {ok: true, status: 200, json: async () => (calls.length === 1 ? reply : {})};
+		}, SELF_DID);
+		const ok = await callXrpc(payload, () => clients);
+		assert.strictEqual(ok.ok, true);
+		assert.strictEqual(calls.length, 2);
+		assert.ok(calls[0].url.includes(BRIDGE_PROTOCOL.nsid.getPosts));
+		assert.ok(calls[1].url.endsWith(BRIDGE_PROTOCOL.nsid.deleteRecord));
+		assert.strictEqual(calls[0].init.signal, made[0].controller.signal);
+		assert.strictEqual(calls[1].init.signal, made[0].controller.signal);
+
+		// 返信でなければ消さない
+		const notReply = fakeClients(async () => ({ok: true, status: 200, json: async () => ({posts: [{uri, record: {}}]})}), SELF_DID);
+		assert.deepStrictEqual(await callXrpc(payload, () => notReply),
+			{ok: false, reason: BRIDGE_PROTOCOL.reasons.postNotReply});
+
+		// 確認の途中で打ち切られたら timeout (削除は送らない)
+		const hangCalls = [];
+		const hanging = fakeClients((url, init) => {
+			hangCalls.push(url);
+			return hangUntilAbort(init);
+		}, SELF_DID);
+		const pending = callXrpc(payload, () => hanging);
+		await flushTasks();
+		made[made.length - 1].controller.abort();
+		assert.deepStrictEqual(await pending, {ok: false, reason: BRIDGE_PROTOCOL.reasons.timeout});
+		assert.strictEqual(hangCalls.length, 1);
+	});
+});
+
+test('uploadBlobAction: 到着の待ちと送信に uploadMs の打ち切りを渡し、打ち切ったら timeout', async () => {
+	const blob = new Blob([new Uint8Array(4)], {type: 'image/png'});
+	const blobId = 'b'.repeat(16);
+	await withFakeTimeouts(async (made) => {
+		const waits = [];
+		setBlobInboxForTest({waitFor: async (id, ms, signal) => {
+			waits.push({id, ms, signal});
+			return blob;
+		}});
+		try {
+			const calls = [];
+			const ok = fakeClients(async (url, init) => {
+				calls.push({url, init});
+				return {ok: true, status: 200, json: async () => ({blob: {$type: 'blob', ref: {$link: 'bafk'}, mimeType: 'image/png', size: 4}})};
+			}, SELF_DID);
+			assert.deepStrictEqual(await uploadBlobAction({blobId}, () => ok), {
+				ok: true, blob: {$type: 'blob', ref: {$link: 'bafk'}, mimeType: 'image/png', size: 4}, reason: null
+			});
+			assert.strictEqual(made[0].ms, MAIN_TIMEOUTS.uploadMs);
+			assert.strictEqual(waits[0].signal, made[0].controller.signal);
+			assert.strictEqual(calls[0].init.signal, made[0].controller.signal);
+
+			const hanging = fakeClients((url, init) => hangUntilAbort(init), SELF_DID);
+			const pending = uploadBlobAction({blobId}, () => hanging);
+			await flushTasks();
+			made[1].controller.abort();
+			assert.deepStrictEqual(await pending, {ok: false, reason: BRIDGE_PROTOCOL.reasons.timeout});
+		} finally {
+			setBlobInboxForTest(null);
+		}
+	});
+});
+
+test('uploadBlobAction: Blob が届かなければ blob-not-found、待ちのうちに打ち切られたら timeout', async () => {
+	await withFakeTimeouts(async (made) => {
+		setBlobInboxForTest({waitFor: async () => null});
+		try {
+			const blobId = 'c'.repeat(16);
+			assert.deepStrictEqual(await uploadBlobAction({blobId}, () => null),
+				{ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotFound});
+			setBlobInboxForTest({waitFor: async (id, ms, signal) => {
+				made[made.length - 1].controller.abort();
+				return signal.aborted ? null : new Blob(['x']);
+			}});
+			assert.deepStrictEqual(await uploadBlobAction({blobId}, () => null),
+				{ok: false, reason: BRIDGE_PROTOCOL.reasons.timeout});
+		} finally {
+			setBlobInboxForTest(null);
+		}
+	});
+});
+
+test('BlobInbox.waitFor: 取り消しの signal が鳴ったら null で解き、後から届いた Blob は箱に残る', async () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...timers});
+	const controller = new AbortController();
+	const pending = inbox.waitFor('id-00000001', 5000, controller.signal);
+	controller.abort();
+	assert.strictEqual(await pending, null);
+	assert.strictEqual(inbox.waiters.size, 0);
+	const blob = new Blob(['a']);
+	inbox.put('id-00000001', blob);
+	assert.strictEqual(inbox.take('id-00000001'), blob);
+	// 鳴った後の待ちは直ちに null
+	assert.strictEqual(await inbox.waitFor('id-00000002', 5000, controller.signal), null);
+	assert.strictEqual(inbox.waiters.size, 0);
+});
+
+test('BlobInbox.clear: 預かった Blob を捨て、到着を待っている要求を null で解く', async () => {
+	const timers = makeFakeTimers();
+	const inbox = new BlobInbox({ttlMs: 1000, maxEntries: 3, ...timers});
+	inbox.put('id-00000001', new Blob(['a']));
+	const pending = inbox.waitFor('id-00000002', 5000);
+	inbox.clear();
+	assert.strictEqual(await pending, null);
+	assert.strictEqual(inbox.take('id-00000001'), null);
+	assert.strictEqual(inbox.waiters.size, 0);
+});
+
+/**
+ * 返事のイベントを控える偽の document を置いて fn を走らせる。
+ * @param {function(Array<Object>): Promise<void>} fn 返事 (JSON を読んだもの) の一覧を受け取る
+ */
+async function withFakeDocument(fn) {
+	const saved = globalThis.document;
+	const replies = [];
+	globalThis.document = {
+		dispatchEvent: (event) => {
+			replies.push(JSON.parse(event.detail));
+			return true;
+		}
+	};
+	try {
+		await fn(replies);
+	} finally {
+		globalThis.document = saved;
+	}
+}
+
+test('dispatchRequest: 知らない操作・プロトタイプの名前は unknown-action、同期と非同期の操作は同じ経路で返事をする', async () => {
+	await withFakeDocument(async (replies) => {
+		await dispatchRequest({id: 1, action: 'no-such-action', payload: {}});
+		await dispatchRequest({id: 2, action: '__proto__', payload: {}});
+		await dispatchRequest({id: 3, action: 'toString', payload: {}});
+		await dispatchRequest({id: 4, action: BRIDGE_PROTOCOL.actions.getSession, payload: {}});
+		await dispatchRequest({id: 5, action: BRIDGE_PROTOCOL.actions.callXrpc, payload: {nsid: BRIDGE_PROTOCOL.nsid.getPosts}});
+		assert.deepStrictEqual(replies, [
+			{id: 1, ok: false, reason: 'unknown-action'},
+			{id: 2, ok: false, reason: 'unknown-action'},
+			{id: 3, ok: false, reason: 'unknown-action'},
+			{id: 4, ok: true, hasSession: false, did: null},
+			{id: 5, ok: false, reason: 'no-client'}
+		]);
+	});
+});
+
+test('dispatchRequest: ハンドラが投げても、その操作の失敗の理由で返事をする', async () => {
+	await withFakeDocument(async (replies) => {
+		const payload = {get blobId() { throw new Error('boom'); }};
+		await dispatchRequest({id: 7, action: BRIDGE_PROTOCOL.actions.cancelUploadVideo, payload});
+		await dispatchRequest({id: 8, action: BRIDGE_PROTOCOL.actions.uploadBlob, payload});
+		assert.deepStrictEqual(replies, [
+			{id: 7, ok: false, reason: 'handler-failed'},
+			{id: 8, ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed}
+		]);
+	});
 });

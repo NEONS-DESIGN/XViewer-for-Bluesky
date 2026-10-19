@@ -23,6 +23,19 @@ function deepFreeze(value) {
 	return value;
 }
 
+/** 画像として通す MIME (返信の embed の画像と、upload-blob が受け付ける画像) */
+const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+/** upload-blob が受け付ける画像 1 枚の大きさの上限 (バイト) */
+const IMAGE_MAX_BYTES = 2000000;
+
+/** 動画の字幕の MIME と大きさの上限 (バイト) */
+const CAPTION_MIME_TYPE = 'text/vtt';
+const CAPTION_MAX_BYTES = 20000;
+
+/** http(s) で始まり空白を含まない URL の形 (facet のリンクとリンクカードの uri)。正規表現の文字列 */
+const HTTP_URI_PATTERN = '^https?://\\S+$';
+
 /**
  * 橋渡しのイベント名・操作名・白名簿の値。
  * @readonly
@@ -65,13 +78,28 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 	/** 分離ワールドから MAIN ワールドへ Blob を預ける postMessage の type */
 	blobMessageType: 'ext:bridge-blob',
 	/**
+	 * 応答を待つ上限と、MAIN ワールドが通信を打ち切るまでの時間。
+	 * requestMs は既定、uploadMs は upload-blob、threadMs は applyWrites (返信の連なり) の待ち。
+	 * MAIN ワールドの打ち切りはそれぞれ mainMarginMs を引いた時間で、分離ワールドが諦める前に返事が届く。
+	 * 書き込みの打ち切りは reasons.timeout で返す (書けているかもしれないものとして扱わせる)
+	 */
+	timeouts: {
+		requestMs: 15000,
+		/** 画像 (最大 2MB) を PDS へ送り終えるまで待つため、requestMs より長くとる */
+		uploadMs: 60000,
+		/** 待ちきれなかったときは書けているかもしれないものとして扱うため、requestMs より長くとる */
+		threadMs: 60000,
+		mainMarginMs: 2000
+	},
+	/**
 	 * upload-blob が受け付ける Blob の条件と、預かり箱の寸法。
 	 * 検査は受け手の page-bridge.js が持つ。maxBytes は MIME ごとの上限で、
-	 * default は載っていない MIME の上限。通すのは画像だけ
+	 * default は載っていない MIME の上限。通すのは画像と動画の字幕 (text/vtt) だけ
+	 * (動画は upload-video が別の条件 (video) で受け付ける)
 	 */
 	upload: {
-		mimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'text/vtt'],
-		maxBytes: {default: 2000000, 'text/vtt': 20000},
+		mimeTypes: [...IMAGE_MIME_TYPES, CAPTION_MIME_TYPE],
+		maxBytes: {default: IMAGE_MAX_BYTES, [CAPTION_MIME_TYPE]: CAPTION_MAX_BYTES},
 		/** 預けた Blob を取りに来なかったときに捨てるまでの時間 */
 		inboxTtlMs: 30000,
 		/** 預かり箱の件数の上限。超えたら古いものから捨てる */
@@ -90,8 +118,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		maxBytes: 300000000,
 		blobMimeType: 'video/mp4',
 		maxCaptions: 1,
-		captionMimeType: 'text/vtt',
-		captionMaxBytes: 20000,
+		captionMimeType: CAPTION_MIME_TYPE,
+		captionMaxBytes: CAPTION_MAX_BYTES,
 		/** 字幕の言語タグの形 (正規表現の文字列) */
 		langPattern: '^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{1,8})*$',
 		/** embed の presentation に置いてよい値 */
@@ -163,8 +191,10 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 			maxUriBytes: 3000, maxTitleGraphemes: 300,
 			maxDescriptionGraphemes: 1000, maxThumbBytes: 1000000,
 			/** uri の形 (http(s) で始まり、空白を含まない) の正規表現の文字列 */
-			uriPattern: '^https?://\\S+$'
+			uriPattern: HTTP_URI_PATTERN
 		},
+		/** facet のリンクの uri の形 (リンクカードの uri と同じ)。正規表現の文字列 */
+		linkUriPattern: HTTP_URI_PATTERN,
 		/** gallery の item の $type */
 		galleryImageType: 'app.bsky.embed.gallery#image',
 		/** images の枚数の上限 */
@@ -174,7 +204,7 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** ALT 文の書記素数の上限 */
 		maxAltGraphemes: 2000,
 		/** 画像として通す MIME */
-		imageMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+		imageMimeTypes: IMAGE_MIME_TYPES,
 		/** 自己ラベルの $type */
 		selfLabelsType: 'com.atproto.label.defs#selfLabels',
 		/** 成人向けの自己ラベル (同時には 1 つまで) */
@@ -218,6 +248,11 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** 動画サービスへの送信を本体の認証で許されなかった */
 		uploadForbidden: 'upload-forbidden',
 		/** 動画の処理 (変換) が失敗した */
-		videoFailed: 'video-failed'
+		videoFailed: 'video-failed',
+		/**
+		 * 応答を待ちきれなかった (MAIN ワールドの打ち切り・分離ワールドの待ちの上限のどちらも同じ値)。
+		 * 書き込みでは届いたかもしれないため、失敗と決めつけて送り直さない
+		 */
+		timeout: 'timeout'
 	}
 });

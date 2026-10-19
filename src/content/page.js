@@ -5,6 +5,8 @@
  */
 import {EXT_VIEWS, EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
+import {buildUrl, fetchWithTimeout} from '../common/http.js';
+import {RemoteCache} from '../common/remote-cache.js';
 import {callBridge} from './bridge-client.js';
 import {buildTabList, findTabIndex} from './profile-tabs.js';
 
@@ -35,6 +37,9 @@ let navButtonManager = null;
 
 /** タブバーの mutation を監視し、選択タブの変化を検知するための入り口 */
 let tabObserver = null;
+
+/** onNavigate() が最後にタブバーの監視を張り直したときの location.href */
+let lastAttachedHref = null;
 
 /**
  * タブ列を確定できなかったときの再試行タイマーの id。
@@ -69,7 +74,7 @@ export function parseProfilePath(pathname, config) {
 
 /**
  * 左ナビのプロフィールリンクから、ログイン中の自分のハンドルを取り出す。
- * 実機で DOM を確認してから確定させる未確定項目 (設計文書 13 節)。
+ * リンクの href は /profile/<ハンドル> の形 (実機で確認した)。
  * @returns {string|null} 見つからなければ null
  */
 function getOwnHandle() {
@@ -145,23 +150,56 @@ export function isLightboxStatePushed() {
 }
 
 /**
+ * 拡張機能自身の要素か (投稿情報パネルの中にあるか)。
+ * パネルの中の画面 (返信欄の ALT・言語などの画面) は role="dialog" を持つため、
+ * 本体のライトボックスと取り違えないよう除く。
+ * @param {Element} element
+ * @param {string} panelSelector パネルのセレクタ (#<panelId>)
+ * @returns {boolean} 読めなければ false
+ */
+export function isInsideExtensionPanel(element, panelSelector) {
+	try {
+		return typeof element.closest === 'function' && element.closest(panelSelector) !== null;
+	} catch (error) {
+		return false;
+	}
+}
+
+/**
+ * 候補のうち、見えている本体のダイアログが 1 つでもあるか。
+ * display:none で残っているだけの要素と、拡張機能自身の要素は数えない。
+ * @param {ArrayLike<Element>} nodes ダイアログの候補
+ * @param {string} panelSelector 投稿情報パネルのセレクタ
+ * @returns {boolean}
+ */
+export function hasVisibleSiteDialog(nodes, panelSelector) {
+	for (let i = 0; i < nodes.length; i += 1) {
+		if (nodes[i].getClientRects().length > 0 && !isInsideExtensionPanel(nodes[i], panelSelector)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** @returns {string} 投稿情報パネルのセレクタ */
+function panelSelector() {
+	return '#' + EXT_CONFIG.lightboxPanel.panelId;
+}
+
+/**
  * ライトボックス (モーダル) が実際に画面に出ているかを DOM から判定する。
  * 表示判定の根拠はこちら。履歴フラグと違って「閉じたのに開いたまま」に
  * ならないため、どの閉じ方をされてもナビボタンが復帰できる。
  * display:none で残っているだけの要素は開いているとみなさない
  * (恒久的に隠れたモーダルが 1 つでもあるとボタンが永久に出なくなるため)。
+ * パネルの中の画面 (role="dialog") も数えない。数えると、その画面を開いたまま
+ * ブラウザバックしたとき、本体のダイアログが消えても開いたままと判定し続ける。
  * 失敗時は false (= ボタンを出す) に倒す。誤って隠し続けるより安全
  * @returns {boolean}
  */
 export function isLightboxVisible() {
 	try {
-		const nodes = document.querySelectorAll(EXT_CONFIG.lightbox.selector);
-		for (let i = 0; i < nodes.length; i += 1) {
-			if (nodes[i].getClientRects().length > 0) {
-				return true;
-			}
-		}
-		return false;
+		return hasVisibleSiteDialog(document.querySelectorAll(EXT_CONFIG.lightbox.selector), panelSelector());
 	} catch (error) {
 		console.error('[XViewer] ライトボックスの表示判定に失敗しました', error);
 		return false;
@@ -175,16 +213,18 @@ export function isLightboxVisible() {
  * **同じ目印の要素がページ内に複数あり、素の `querySelector` が非表示の方を掴む**
  * ことでこのプロジェクトは 2 回 Critical を踏んでいる (`postsFeed` / `profilePager`)。
  * 開閉の判定 (`isLightboxVisible()`) と介入対象を必ず同じ要素に
- * するため `querySelectorAll` + `getClientRects().length > 0` に揃え、同時に開く
- * ことがある投稿作成モーダルは `isLightboxDialog()` で除く
+ * するため `querySelectorAll` + `getClientRects().length > 0` に揃え、パネルの中の
+ * 画面も同じく除く。同時に開くことがある投稿作成モーダルは `isLightboxDialog()` で除く
  * @param {string} selector ダイアログのセレクタ (EXT_CONFIG.lightboxPanel.dialogSelector など)
  * @returns {Element|null}
  */
 export function findVisibleLightboxDialog(selector) {
 	try {
 		const nodes = document.querySelectorAll(selector);
+		const panel = panelSelector();
 		for (let i = 0; i < nodes.length; i += 1) {
 			if (nodes[i].getClientRects().length > 0
+				&& !isInsideExtensionPanel(nodes[i], panel)
 				&& isLightboxDialog(nodes[i], EXT_CONFIG.lightbox)) {
 				return nodes[i];
 			}
@@ -223,7 +263,7 @@ export function isLightboxDialog(dialog, config) {
  * **新しい document.body 全体の監視を足さないための仕組み。**
  * NavButtonManager.update() は既に毎回 isLightboxVisible() を計算しており、
  * その値が前回と変わったときだけここから知らせる。追加コストは真偽値 1 個の
- * 比較だけで済む (設計文書 7 節)
+ * 比較だけで済む
  */
 let lastLightboxVisible = null;
 const lightboxVisibilitySubscribers = [];
@@ -327,8 +367,8 @@ function isDomReadyForTabResolution() {
 
 /**
  * 選択中タブの index を返す。
- * EXT_CONFIG.selectors.tabUnderline が未確定 (null) の間は、
- * タブ押下を自前で追跡した値をそのまま使う。
+ * 監視中のタブバーの中で、下線バー (EXT_CONFIG.selectors.tabUnderline) を持つタブを探す。
+ * 見つからない (タブバーが未描画・下線が読めない) ときは、タブ押下を自前で追跡した値を使う。
  * @returns {number}
  */
 export function getSelectedTabIndex() {
@@ -352,7 +392,7 @@ export function getSelectedTabIndex() {
  * (Bluesky 本体がタブ切替時に対象タブ要素へ click イベントを発生させるため)。
  * index が実際に変わったときは、ナビボタンの表示状態もその場で更新する。
  * これを怠ると、URL が変わらない SPA 内のタブ切替でボタンの表示が古いまま残る
- * (レビューで検出された Critical 不具合)
+ * (Bluesky のプロフィールはタブを切り替えても URL が変わらない)
  */
 function trackTabClicks() {
 	try {
@@ -454,25 +494,28 @@ async function resolveTabs(actor) {
 			return null;
 		}
 
-		const api = EXT_CONFIG.mediaGrid.api;
-		const url = new URL(api.origin + api.profilePath);
-		url.searchParams.set('actor', actor);
-		// 応答が返らないまま止まると tabsResolving が立ちっぱなしになり、
-		// ensureTabsResolved() の再試行がすべて素通りしてタブ列が永久に未確定
-		// (= ナビボタンが隠れたまま) になる。必ず時間で打ち切る。
-		// 打ち切り・回線断・5xx は一時的な失敗として
-		// TABS_RETRY_LATER を返し、間隔を空けて引き直す。ここで [] に確定させると、
-		// 遅い回線でタイムアウトを 1 回踏んだだけで、遷移するまでナビボタンも
-		// グリッドも出なくなる (「諦めて二度と試さない」経路になる)
-		const options = {credentials: 'omit'};
-		if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-			options.signal = AbortSignal.timeout(api.timeoutMs);
+		const cached = profileCache.peek(actor);
+		let profile = cached;
+		if (profile === undefined) {
+			const api = EXT_CONFIG.mediaGrid.api;
+			// 応答が返らないまま止まると tabsResolving が立ちっぱなしになり、
+			// ensureTabsResolved() の再試行がすべて素通りしてタブ列が永久に未確定
+			// (= ナビボタンが隠れたまま) になる。必ず時間で打ち切る (本文の読み込みまで)。
+			// 打ち切り・回線断・5xx は一時的な失敗として
+			// TABS_RETRY_LATER を返し、間隔を空けて引き直す。ここで [] に確定させると、
+			// 遅い回線でタイムアウトを 1 回踏んだだけで、遷移するまでナビボタンも
+			// グリッドも出なくなる (「諦めて二度と試さない」経路になる)
+			const response = await fetchWithTimeout(
+				buildUrl(api.origin, api.profilePath, {actor}),
+				api.timeoutMs,
+				{init: {credentials: 'omit'}}
+			);
+			if (!response.ok) {
+				return isTransientProfileFailure(response, null) ? TABS_RETRY_LATER : [];
+			}
+			profile = await response.json();
+			rememberProfile(actor, profile);
 		}
-		const response = await fetch(url.toString(), options);
-		if (!response.ok) {
-			return isTransientProfileFailure(response, null) ? TABS_RETRY_LATER : [];
-		}
-		const profile = await response.json();
 		const context = {
 			isMe: isOwnProfile(actor, profile),
 			hasSession: hasSession()
@@ -487,6 +530,12 @@ async function resolveTabs(actor) {
 			return null;
 		}
 		if (domCount !== tabs.length) {
+			if (cached !== undefined) {
+				// 覚えていた応答が古い (リストやフィードが増えた) ことがある。
+				// 忘れて、引き直したうえで改めて検算する
+				forgetProfile(actor, cached);
+				return null;
+			}
 			console.error('[XViewer] タブ構成が想定と違うため機能を無効にします',
 				{算出: tabs.length, 実際: domCount});
 			return [];
@@ -495,6 +544,46 @@ async function resolveTabs(actor) {
 	} catch (error) {
 		console.error('[XViewer] タブ列の解決に失敗しました', error);
 		return isTransientProfileFailure(null, error) ? TABS_RETRY_LATER : [];
+	}
+}
+
+/**
+ * getProfile の応答を覚えておく。タブの往復・プロフィールの行き来のたびに引き直さない。
+ * キーは URL 上の actor と応答の did (ハンドルと DID のどちらで来ても同じ応答を使う)。
+ * 応答は公開 API のもので閲覧者に依らず、自分のプロフィールか・ログイン中かは
+ * 毎回その場で判定するため、アカウントを切り替えても混ざらない
+ */
+const profileCache = new RemoteCache({
+	limit: EXT_CONFIG.mediaGrid.api.profileCacheLimit,
+	ttlMs: EXT_CONFIG.mediaGrid.api.profileCacheTtlMs
+});
+
+/**
+ * getProfile の応答を actor と did の両方のキーで覚える。
+ * @param {string} actor URL 上の actor
+ * @param {Object|null} profile 応答
+ * @returns {void}
+ */
+function rememberProfile(actor, profile) {
+	if (!profile || typeof profile !== 'object') {
+		return;
+	}
+	profileCache.set(actor, profile);
+	if (typeof profile.did === 'string' && profile.did !== actor) {
+		profileCache.set(profile.did, profile);
+	}
+}
+
+/**
+ * 覚えていた応答を actor と did の両方のキーで忘れる。
+ * @param {string} actor
+ * @param {Object|null} profile
+ * @returns {void}
+ */
+function forgetProfile(actor, profile) {
+	profileCache.delete(actor);
+	if (profile && typeof profile.did === 'string') {
+		profileCache.delete(profile.did);
 	}
 }
 
@@ -972,7 +1061,7 @@ function getCurrentTabElements() {
  * 恒久的に張る MutationObserver の対象は必ずタブバー (pager) の subtree に限る。
  * document.body 全体を監視し続けると、投稿の追加のたびに発火して重くなるため。
  * ただしタブバーの「出現を待つ」間だけは body を一時的に監視する
- * (見つけた時点で必ず disconnect する。startWaiting の説明を参照)
+ * (見つけた時点で必ず disconnect する。待ち方は startWaiting が持つ)
  */
 class TabObserver {
 	/**
@@ -1116,6 +1205,18 @@ class TabObserver {
 	}
 
 	/**
+	 * 張り直しが要るか。監視していない (待機もしていない)、または監視中のタブバーが
+	 * DOM から外れた・描画されなくなったとき true。待機中はポーリングが張るので false。
+	 * @returns {boolean}
+	 */
+	needsReattach() {
+		if (!this.observer || !this.pagerEl) {
+			return this.waitIntervalId === null;
+		}
+		return !this.pagerEl.isConnected || !isRenderedElement(this.pagerEl);
+	}
+
+	/**
 	 * 監視中のタブバーが DOM から外れていたら、または押されたタブが別のタブバーに
 	 * 属していたら張り直す。外れた要素や、SPA 遷移で残った前の画面の要素の監視は
 	 * 二度と発火しないため、自力では気づけない。
@@ -1208,10 +1309,16 @@ async function onNavigate() {
 			navButtonManager.update();
 		}
 		// SPA 遷移でタブバーの要素が差し替わる (または非プロフィールページへ出て
-		// 消える) ため、attach() を呼び直す。pager が無ければ描画され次第
-		// tryAttach() が監視を張る。待ち時間に上限は無い
+		// 消える) ため、URL が変わったら attach() を呼び直す。pager が無ければ描画され次第
+		// tryAttach() が監視を張る。待ち時間に上限は無い。
+		// URL が同じ回 (モーダルの開閉・パネルの付け外しで body 直下の要素数だけが
+		// 変わった回) は、監視中のタブバーが外れた・描画されなくなったときだけ張り直す
 		if (tabObserver) {
-			tabObserver.attach();
+			const href = location.href;
+			if (href !== lastAttachedHref || tabObserver.needsReattach()) {
+				lastAttachedHref = href;
+				tabObserver.attach();
+			}
 		}
 		// まだ確定していなければ解決を試みる。DOM 未準備なら未確定のまま残り、
 		// 次の NavigationObserver / TabObserver の発火か、

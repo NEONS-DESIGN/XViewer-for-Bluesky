@@ -1,18 +1,27 @@
 /**
- * サムネイル格子の描画層。
- * 取得 (MediaFetcher) も蓄積 (MediaStore) も起動判断も知らず、
+ * サムネイル格子の描画層と、その起動・停止を決める制御層。
+ * 描画層 (MediaGrid) は取得 (MediaFetcher) も蓄積 (MediaStore) も起動判断も知らず、
  * 渡された MediaEntry の配列を並べることだけを行う。
  */
 import {EXT_VIEWS, EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
+import {createIcon} from '../common/icons.js';
+import {loadSyncSettings, watchSyncSettings} from '../common/sync-settings.js';
 import {callBridge} from './bridge-client.js';
 import {
 	currentTabs, getPageInfo, getSelectedTabIndex, isLightboxVisible, isLightboxStatePushed,
 	subscribeTabStateChange
 } from './page.js';
+import {openLightboxPayload, postRoute} from './routes.js';
 import {
 	shouldBlur, matchBlurLabels, formatBlurLabels, MediaStore, MediaFetcher
 } from './media-source.js';
+
+/** 複数枚の投稿に付けるアイコンの名前 (ICON_SHAPES のキー) */
+const MULTI_BADGE_ICON = 'filterNone';
+
+/** 設定の読み込みの失敗をログに出すときの名前 */
+const SETTINGS_LABEL = 'メディアグリッド';
 
 /**
  * グリッドを差し込む場所を探す。
@@ -64,6 +73,47 @@ export function findFeedParts() {
 }
 
 /**
+ * 取得と蓄積の状態。gridStatus() の入力。
+ * @typedef {Object} GridStatusState
+ * @property {number} size        蓄積の件数
+ * @property {boolean} failed     取得が失敗で止まっているか
+ * @property {boolean} exhausted  フィードの最後まで読んだか
+ * @property {boolean} finished   自前で読み進める回数の上限に達したか
+ * @property {boolean} stalled    中身 0 件のページが続いて自動では読み進めないか
+ */
+
+/**
+ * 状態表示の文言と、「さらに読み込む」ボタンを出すかを決める。
+ * @param {GridStatusState} state
+ * @param {Object} text EXT_CONFIG.mediaGrid.text
+ * @returns {{text: string, loadMore: boolean}}
+ */
+export function gridStatus(state, text) {
+	if (state.size === 0) {
+		if (state.failed) {
+			return {text: text.error, loadMore: false};
+		}
+		if (state.exhausted) {
+			return {text: text.empty, loadMore: false};
+		}
+		if (state.stalled) {
+			return {text: text.empty, loadMore: true};
+		}
+		return {text: text.loading, loadMore: false};
+	}
+	if (state.finished || state.exhausted) {
+		return {text: text.end, loadMore: false};
+	}
+	if (state.failed) {
+		return {text: text.error, loadMore: false};
+	}
+	if (state.stalled) {
+		return {text: text.stalled, loadMore: true};
+	}
+	return {text: text.loading, loadMore: false};
+}
+
+/**
  * MediaEntry の配列をタイル格子として描画する。
  * スクロールはページ全体 (window / documentElement) を見る。グリッド自身はスクロールを持たない。
  */
@@ -75,16 +125,33 @@ export class MediaGrid {
 		this.listEl = null;
 		/** @type {HTMLElement|null} 状態表示の要素 */
 		this.statusEl = null;
-		/** 何件描画済みか。render() の差分描画に使う */
+		/** @type {HTMLButtonElement|null} 中身 0 件のページが続いて止めたときに出す「さらに読み込む」 */
+		this.loadMoreEl = null;
+		/** 蓄積の何件目まで描画に回したか。render() の差分描画に使う */
 		this.renderedCount = 0;
 		/** window の scroll イベントで控える window.scrollY。isMounted の時点で読み直さない */
 		this.lastScrollTop = 0;
 		/** 末尾に近づいたときに Controller が差し込むコールバック */
 		this.onNearEnd = null;
+		/** 「さらに読み込む」を押したときに Controller が差し込むコールバック */
+		this.onLoadMore = null;
 		/** NSFW のぼかしを解除するか。Controller が設定を読んで setUnblur() で渡す */
 		this.unblurEnabled = EXT_CONFIG.mediaGrid.unblur.defaultEnabled;
+		/** @type {WeakMap<Element, MediaEntry>} タイルから entry を引く。押下は listEl で一括して受ける */
+		this.tileEntries = new WeakMap();
+		/** @type {SVGSVGElement|null} 複数枚アイコンの雛形。タイルごとに cloneNode で使い回す */
+		this.multiBadgeTemplate = null;
+		/** scroll の末尾判定を 1 フレームに 1 回へまとめるための requestAnimationFrame の id */
+		this.scrollFrameId = null;
 		/** removeEventListener で使い回すための束縛済みハンドラ */
 		this.boundHandleScroll = () => this.handleScroll();
+		this.boundHandleListClick = (event) => this.handleListClick(event);
+		this.boundHandleImageError = (event) => this.handleImageError(event);
+		this.boundHandleLoadMore = () => {
+			if (typeof this.onLoadMore === 'function') {
+				this.onLoadMore();
+			}
+		};
 	}
 
 	/**
@@ -109,18 +176,31 @@ export class MediaGrid {
 
 			const listEl = document.createElement('div');
 			listEl.className = config.listClass;
+			listEl.addEventListener('click', this.boundHandleListClick);
+			// img の error はバブリングしないため capture で受ける
+			listEl.addEventListener('error', this.boundHandleImageError, true);
 
 			const statusEl = document.createElement('div');
 			statusEl.id = config.statusId;
 
+			const loadMoreEl = document.createElement('button');
+			loadMoreEl.type = 'button';
+			loadMoreEl.className = config.loadMoreClass;
+			loadMoreEl.textContent = config.text.loadMore;
+			loadMoreEl.hidden = true;
+			loadMoreEl.addEventListener('click', this.boundHandleLoadMore);
+
 			containerEl.appendChild(listEl);
 			containerEl.appendChild(statusEl);
+			containerEl.appendChild(loadMoreEl);
 			container.prepend(containerEl);
 
 			this.containerEl = containerEl;
 			this.listEl = listEl;
 			this.statusEl = statusEl;
+			this.loadMoreEl = loadMoreEl;
 			this.renderedCount = 0;
+			this.tileEntries = new WeakMap();
 			this.lastScrollTop = window.scrollY;
 			// 要素を作り直したので、現在のぼかし解除設定を入れ直す
 			this.applyUnblur();
@@ -137,16 +217,22 @@ export class MediaGrid {
 	unmount() {
 		try {
 			window.removeEventListener('scroll', this.boundHandleScroll);
+			if (this.scrollFrameId !== null) {
+				cancelAnimationFrame(this.scrollFrameId);
+			}
 			if (this.containerEl && this.containerEl.parentElement) {
 				this.containerEl.remove();
 			}
 		} catch (error) {
 			console.error('[XViewer] グリッドの解除に失敗しました', error);
 		} finally {
+			this.scrollFrameId = null;
 			this.containerEl = null;
 			this.listEl = null;
 			this.statusEl = null;
+			this.loadMoreEl = null;
 			this.renderedCount = 0;
+			this.tileEntries = new WeakMap();
 		}
 	}
 
@@ -182,30 +268,42 @@ export class MediaGrid {
 	}
 
 	/**
-	 * scroll のたびに、スクロール位置の控えを更新して末尾判定を行う。
+	 * scroll のたびにスクロール位置を控え、末尾判定は 1 フレームに 1 回だけ行う。
+	 * 末尾判定は scrollHeight を読む (レイアウトを起こしうる) ため、scroll ごとには読まない。
+	 * @returns {void}
 	 */
 	handleScroll() {
 		this.lastScrollTop = window.scrollY;
-		this.checkNearEnd();
+		if (this.scrollFrameId !== null) {
+			return;
+		}
+		this.scrollFrameId = requestAnimationFrame(() => {
+			this.scrollFrameId = null;
+			if (this.isMounted) {
+				this.checkNearEnd();
+			}
+		});
 	}
 
 	/**
-	 * renderedCount からの差分だけを描く。
+	 * 新しく増えた entry を描き足す。呼び出し側は描画済みの件数 (renderedCount) より
+	 * 後ろの entry だけを渡す。
 	 * 1 件の描画に失敗しても renderedCount は進める
 	 * (据え置くと以後の描画が毎回同じ件で止まるため)。
 	 * 状態表示 (読み込み中 / すべて読み込みました など) はここでは扱わない。
 	 * @param {MediaEntry[]} entries
+	 * @returns {void}
 	 */
 	render(entries) {
-		if (!this.isMounted || !Array.isArray(entries)) {
+		if (!this.isMounted || !Array.isArray(entries) || entries.length === 0) {
 			return;
 		}
 		// 組み直しでは蓄積全件 (数百枚) を一度に描くため、接続済みの listEl へ
 		// 1 個ずつ足さず、fragment にまとめて 1 回で入れる
 		const fragment = document.createDocumentFragment();
-		for (let i = this.renderedCount; i < entries.length; i += 1) {
+		for (const entry of entries) {
 			try {
-				fragment.appendChild(this.createTile(entries[i]));
+				fragment.appendChild(this.createTile(entry));
 			} catch (error) {
 				console.error('[XViewer] タイルの描画に失敗しました', error);
 			} finally {
@@ -216,7 +314,7 @@ export class MediaGrid {
 	}
 
 	/**
-	 * 1 件ぶんのタイルを組み立てる。
+	 * 1 件ぶんのタイルを組み立てる。押下と読み込みの失敗は listEl が一括して受ける。
 	 * @param {MediaEntry} entry
 	 * @returns {HTMLAnchorElement}
 	 */
@@ -230,10 +328,6 @@ export class MediaGrid {
 		const img = document.createElement('img');
 		img.loading = 'lazy';
 		img.alt = entry.alt || '';
-		// 読み込めない画像はタイルごと除去する (代替表示は持たない)
-		img.addEventListener('error', () => {
-			tile.remove();
-		});
 		img.src = entry.thumbUrl;
 		tile.appendChild(img);
 
@@ -256,39 +350,78 @@ export class MediaGrid {
 			tile.appendChild(label);
 		}
 
-		tile.addEventListener('click', (event) => this.handleTileClick(event, entry, tile));
+		this.tileEntries.set(tile, entry);
 		return tile;
 	}
 
 	/**
-	 * 複数枚の投稿であることを示すアイコンを生成する。
-	 * 旧 X の複数枚アイコンは現存しないため、重なった 2 枚の四角形で近似する。
+	 * 複数枚の投稿であることを示すアイコンを返す。雛形を 1 度だけ作り、写しを渡す。
 	 * @returns {SVGSVGElement}
 	 */
 	createMultiBadge() {
-		const config = EXT_CONFIG.mediaGrid;
-		const ns = 'http://www.w3.org/2000/svg';
-		const svg = document.createElementNS(ns, 'svg');
-		svg.setAttribute('viewBox', '0 0 24 24');
-		svg.setAttribute('aria-hidden', 'true');
-		svg.classList.add(config.badgeClass);
-		const path = document.createElementNS(ns, 'path');
-		path.setAttribute('d', 'M7 3h11a3 3 0 0 1 3 3v11h-2V6a1 1 0 0 0-1-1H7V3zm-1 4h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z');
-		svg.appendChild(path);
-		return svg;
+		if (!this.multiBadgeTemplate) {
+			const svg = createIcon(document, MULTI_BADGE_ICON);
+			svg.classList.add(EXT_CONFIG.mediaGrid.badgeClass);
+			this.multiBadgeTemplate = svg;
+		}
+		return /** @type {SVGSVGElement} */ (this.multiBadgeTemplate.cloneNode(true));
+	}
+
+	/**
+	 * listEl の click。押されたタイルを探し、その entry で handleTileClick() を呼ぶ。
+	 * @param {MouseEvent} event
+	 * @returns {void}
+	 */
+	handleListClick(event) {
+		try {
+			const target = event.target;
+			if (!target || typeof target.closest !== 'function' || !this.listEl) {
+				return;
+			}
+			const tile = target.closest('.' + EXT_CONFIG.mediaGrid.tileClass);
+			if (!tile || !this.listEl.contains(tile)) {
+				return;
+			}
+			const entry = this.tileEntries.get(tile);
+			if (entry) {
+				this.handleTileClick(event, entry, tile);
+			}
+		} catch (error) {
+			console.error('[XViewer] タイル押下の振り分けに失敗しました', error);
+		}
+	}
+
+	/**
+	 * 読み込めない画像はタイルごと除去する (代替表示は持たない)。listEl の capture で受ける。
+	 * @param {Event} event
+	 * @returns {void}
+	 */
+	handleImageError(event) {
+		try {
+			const target = event.target;
+			if (!target || target.tagName !== 'IMG' || typeof target.closest !== 'function') {
+				return;
+			}
+			const tile = target.closest('.' + EXT_CONFIG.mediaGrid.tileClass);
+			if (tile && this.listEl && tile.parentElement === this.listEl) {
+				tile.remove();
+			}
+		} catch (error) {
+			console.error('[XViewer] 読み込めない画像の除去に失敗しました', error);
+		}
 	}
 
 	/**
 	 * タイルの押下。画像はライトボックス、動画は投稿ページへ SPA 遷移する。
 	 * ぼかし中は解除するだけで、2 回目の押下で初めて開く。
 	 *
-	 * 動画タイルは a の既定動作 (フルリロード) に任せていたが、実機で確認したところ
 	 * 拡張機能が作った a 要素は Bluesky のルーター (React Navigation) の管理外で、
-	 * フルリロードになることが判明した。
+	 * 既定動作に任せるとフルリロードになる (実機で確認した)。
 	 * そのため bridge の navigate アクションでルーターの push を直接呼ぶ。
 	 * @param {MouseEvent} event
 	 * @param {MediaEntry} entry
-	 * @param {HTMLElement} tile
+	 * @param {Element} tile
+	 * @returns {void}
 	 */
 	handleTileClick(event, entry, tile) {
 		try {
@@ -302,7 +435,7 @@ export class MediaGrid {
 			}
 			// 修飾キー付き (新しいタブで開く) は a の href に任せる。
 			// フルリロードになるが別タブなので害は無い
-			if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) {
+			if (event.ctrlKey || event.metaKey || event.shiftKey) {
 				return;
 			}
 			// a の href は失敗時の行き先として張ったままにしておき、既定動作だけ止める
@@ -312,23 +445,13 @@ export class MediaGrid {
 				this.navigateToPost(entry);
 				return;
 			}
-			callBridge(config.bridge.actions.openLightbox, {
+			// 1 投稿 1 タイルのため、開くのは常に先頭画像から
+			callBridge(config.bridge.actions.openLightbox, openLightboxPayload({
 				images: entry.siblings,
-				// 1 投稿 1 タイルのため、開くのは常に先頭画像から
 				index: 0,
-				/*
-				 * 本体が自分でライトボックスを開くときと同じ形の metricsContext を
-				 * 添える。これが入っていると投稿情報パネル (lightbox-panel.js) が
-				 * postUri を読めるようになり、パネル側は「グリッド由来かどうか」を
-				 * 知らずに済む (設計文書 3 節)
-				 */
-				metricsContext: {
-					postUri: entry.postUri,
-					// authorDid は欠けうる付加情報。無ければ本体と同じ「省略」の形に揃える
-					postAuthorDid: entry.authorDid || undefined,
-					layout: config.bridge.lightboxLayout
-				}
-			}).then((result) => {
+				postUri: entry.postUri,
+				authorDid: entry.authorDid
+			})).then((result) => {
 				if (!result || !result.ok) {
 					// ライトボックスが開けなければ SPA 遷移を試し、それも駄目なら通常遷移に落ちる
 					this.navigateToPost(entry);
@@ -350,14 +473,14 @@ export class MediaGrid {
 	 * 投稿ページへ SPA 遷移する。ブリッジが使えない・失敗した場合は通常遷移
 	 * (フルリロード) に落とす。代替ビューアは持たない。
 	 * @param {MediaEntry} entry
+	 * @returns {void}
 	 */
 	navigateToPost(entry) {
 		try {
-			const config = EXT_CONFIG.mediaGrid;
-			callBridge(config.bridge.actions.navigate, {
-				route: config.bridge.routes.post,
-				params: {name: entry.authorHandle, rkey: entry.postId}
-			}).then((result) => {
+			callBridge(
+				EXT_CONFIG.mediaGrid.bridge.actions.navigate,
+				postRoute(entry.authorHandle, entry.postId)
+			).then((result) => {
 				if (!result || !result.ok) {
 					window.location.href = entry.postHref;
 				}
@@ -374,12 +497,17 @@ export class MediaGrid {
 	}
 
 	/**
-	 * 状態表示の文言を差し替える。
+	 * 状態表示の文言と「さらに読み込む」の表示を差し替える。
 	 * @param {string} text
+	 * @param {boolean} [showLoadMore=false]
+	 * @returns {void}
 	 */
-	setStatus(text) {
+	setStatus(text, showLoadMore = false) {
 		if (this.statusEl) {
 			this.statusEl.textContent = text;
+		}
+		if (this.loadMoreEl) {
+			this.loadMoreEl.hidden = !showLoadMore;
 		}
 	}
 
@@ -395,6 +523,7 @@ export class MediaGrid {
 	 * スクロール位置を引き継ぐ。タイルは aspect-ratio で高さが決まり、
 	 * 蓄積の件数ぶんは render() が同期的に描き終えているため、画像の読み込みを待たずに戻せる。
 	 * @param {number} top
+	 * @returns {void}
 	 */
 	setScrollTop(top) {
 		try {
@@ -417,6 +546,7 @@ export class MediaGrid {
 	/**
 	 * ページの残り距離が nearEndPx 以下なら onNearEnd を呼ぶ。
 	 * グリッド要素のスクロールではなく、ページ全体 (documentElement) を見る。
+	 * @returns {void}
 	 */
 	checkNearEnd() {
 		try {
@@ -479,8 +609,14 @@ export class MediaGridController {
 		/** 組み直しで引き継ぐページのスクロール位置。失敗した回は次の sync() まで持ち越す */
 		this.pendingScrollTop = 0;
 
+		/** body 全体の監視からの sync() を 1 フレームに 1 回へまとめるための控え */
+		this.syncFramePending = false;
+		/** 失敗で止まった後、retryAfterMs が過ぎたら末尾判定をやり直すタイマーの id */
+		this.failedRetryTimerId = null;
+
 		this.fetcher.onBatchEnd = () => this.handleBatchEnd();
 		this.grid.onNearEnd = () => this.handleNearEnd();
+		this.grid.onLoadMore = () => this.handleLoadMore();
 		// 解除できるよう参照を保持する (disable() では解除しない。handleHarvest() 側で active を確認する)
 		this.onHarvest = () => this.handleHarvest();
 		this.store.subscribe(this.onHarvest);
@@ -502,36 +638,46 @@ export class MediaGridController {
 	 */
 	async init() {
 		const cfg = this.config;
+		const defaults = {
+			[cfg.storageKey]: cfg.defaultEnabled,
+			[cfg.unblur.storageKey]: cfg.unblur.defaultEnabled
+		};
 		try {
-			const stored = await chrome.storage.sync.get([cfg.storageKey, cfg.unblur.storageKey]);
-			this.enabled = stored[cfg.storageKey] ?? cfg.defaultEnabled;
-			this.grid.setUnblur(stored[cfg.unblur.storageKey] ?? cfg.unblur.defaultEnabled);
-		} catch (error) {
-			console.error('[XViewer] 設定の読み込みに失敗しました', error);
-		}
-		try {
+			const values = await loadSyncSettings(defaults, SETTINGS_LABEL);
+			this.enabled = values[cfg.storageKey];
+			this.grid.setUnblur(values[cfg.unblur.storageKey]);
 			// ポップアップでの変更をリロードなしで反映する
-			chrome.storage.onChanged.addListener((changes, area) => {
-				if (area !== 'sync') {
-					return;
-				}
+			watchSyncSettings(defaults, (changed) => {
 				// ぼかし解除はクラスの付け外しだけで済み、グリッドの組み直しは要らない
-				if (changes[cfg.unblur.storageKey]) {
-					this.grid.setUnblur(
-						changes[cfg.unblur.storageKey].newValue ?? cfg.unblur.defaultEnabled
-					);
+				if (cfg.unblur.storageKey in changed) {
+					this.grid.setUnblur(changed[cfg.unblur.storageKey]);
 				}
-				if (!changes[cfg.storageKey]) {
-					return;
+				if (cfg.storageKey in changed) {
+					this.enabled = changed[cfg.storageKey];
+					this.sync();
 				}
-				this.enabled = changes[cfg.storageKey].newValue ?? cfg.defaultEnabled;
-				this.sync();
-			});
+			}, SETTINGS_LABEL);
 		} catch (error) {
-			console.error('[XViewer] 設定変更の監視開始に失敗しました', error);
+			console.error('[XViewer] メディアグリッドの設定の反映に失敗しました', error);
 		}
 		this.initialized = true;
 		this.sync();
+	}
+
+	/**
+	 * 次のフレームで sync() を 1 回だけ呼ぶ。document.body 全体の監視は変化のまとまりごとに
+	 * 発火し、そのたびに sync() の先頭でタブバーを走査することになるため、ここでまとめる。
+	 * @returns {void}
+	 */
+	scheduleSync() {
+		if (this.syncFramePending) {
+			return;
+		}
+		this.syncFramePending = true;
+		requestAnimationFrame(() => {
+			this.syncFramePending = false;
+			this.sync();
+		});
 	}
 
 	/**
@@ -566,8 +712,7 @@ export class MediaGridController {
 			// むしろ起動を阻むだけなので条件に this.active を入れる。
 			// 判定は必ず DOM の実体 (isLightboxVisible) で行う。履歴フラグは
 			// 分離ワールドで古い値のまま残り、いったん立つと二度と下りない
-			// (2.3.0 で実機確認した Critical。page.js の
-			// isLightboxStatePushed のコメントを参照)
+			// (2.3.0 で実機確認した。論理和に含めていたためグリッドが二度と起動しなくなった)
 			if (this.active && isLightboxVisible()) {
 				// last* を記録せずに抜ける。ここで記録すると「判定済み」として
 				// 早期 return の対象になり、ライトボックスを閉じた後も
@@ -661,6 +806,7 @@ export class MediaGridController {
 			画面: (pageInfo && pageInfo.view) || null,
 			対象: (pageInfo && pageInfo.actor) || null,
 			蓄積: this.store.size,
+			中身0件の連続: this.fetcher.emptyPageStreak,
 			ライトボックス実体: isLightboxVisible(),
 			ライトボックス履歴フラグ: isLightboxStatePushed()
 		});
@@ -700,7 +846,7 @@ export class MediaGridController {
 		}
 		this.active = true;
 		ExtDebug.log('起動', {組み直し: isRemount === true, 蓄積: this.store.size});
-		this.grid.render(this.store.getAll());
+		this.renderNew();
 		this.updateStatus();
 		// 初期状態ではグリッドがスクロールできず scroll が発生しないため、ここで 1 回キックする
 		this.grid.checkNearEnd();
@@ -728,32 +874,26 @@ export class MediaGridController {
 	}
 
 	/**
-	 * 蓄積の状態に応じて表示を差し替える。
+	 * 蓄積のうち、まだ描画に回していない分だけをグリッドへ渡す。
+	 * @returns {void}
+	 */
+	renderNew() {
+		this.grid.render(this.store.getFrom(this.grid.renderedCount));
+	}
+
+	/**
+	 * 蓄積と取得の状態に応じて表示を差し替える。
 	 * @returns {void}
 	 */
 	updateStatus() {
-		const cfg = this.config;
-		if (this.store.size === 0) {
-			if (this.fetcher.failed) {
-				this.grid.setStatus(cfg.text.error);
-				return;
-			}
-			if (this.fetcher.exhausted) {
-				this.grid.setStatus(cfg.text.empty);
-				return;
-			}
-			this.grid.setStatus(cfg.text.loading);
-			return;
-		}
-		if (this.finished || this.fetcher.exhausted) {
-			this.grid.setStatus(cfg.text.end);
-			return;
-		}
-		if (this.fetcher.failed) {
-			this.grid.setStatus(cfg.text.error);
-			return;
-		}
-		this.grid.setStatus(cfg.text.loading);
+		const status = gridStatus({
+			size: this.store.size,
+			failed: this.fetcher.failed,
+			exhausted: this.fetcher.exhausted,
+			finished: this.finished,
+			stalled: this.fetcher.stalled
+		}, this.config.text);
+		this.grid.setStatus(status.text, status.loadMore);
 	}
 
 	/**
@@ -767,7 +907,7 @@ export class MediaGridController {
 		if (!this.active) {
 			return;
 		}
-		this.grid.render(this.store.getAll());
+		this.renderNew();
 		this.updateStatus();
 	}
 
@@ -776,13 +916,14 @@ export class MediaGridController {
 	 * @returns {void}
 	 */
 	handleNearEnd() {
-		if (this.finished) {
+		if (this.finished || this.fetcher.stalled) {
 			this.updateStatus();
 			return;
 		}
 		// canRetry() は再試行を許可するとき副作用として failed を戻す
 		if (this.fetcher.failed && !this.fetcher.canRetry()) {
 			this.updateStatus();
+			this.scheduleFailedRetry();
 			return;
 		}
 		if (this.fetcher.exhausted) {
@@ -790,6 +931,23 @@ export class MediaGridController {
 			return;
 		}
 		this.fetcher.fetchNext();
+	}
+
+	/**
+	 * 「さらに読み込む」の押下。中身 0 件の連続を数え直し、間隔を守って次の 1 ページを取る。
+	 * @returns {void}
+	 */
+	handleLoadMore() {
+		if (!this.active || !this.fetcher.stalled) {
+			return;
+		}
+		this.fetcher.resumeAfterEmptyPages();
+		this.updateStatus();
+		window.setTimeout(() => {
+			if (this.active) {
+				this.fetcher.fetchNext();
+			}
+		}, this.fetcher.cooldownRemainingMs);
 	}
 
 	/**
@@ -801,16 +959,25 @@ export class MediaGridController {
 			蓄積: this.store.size,
 			打ち切り: this.fetcher.exhausted,
 			失敗: this.fetcher.failed,
+			中身0件の連続: this.fetcher.emptyPageStreak,
 			自前で読み進めた回数: this.bootstrapCount
 		});
 		this.updateStatus();
-		if (this.fetcher.exhausted || this.fetcher.failed || this.finished) {
+		if (this.fetcher.exhausted || this.finished) {
+			return;
+		}
+		if (this.fetcher.failed) {
+			this.scheduleFailedRetry();
+			return;
+		}
+		// 中身 0 件のページが続いた。「さらに読み込む」が押されるまで自動では進めない
+		if (this.fetcher.stalled) {
 			return;
 		}
 		// まだ 1 件も取れていない = 対象アカウントの 1 ページ目が入っていない。
 		// enable() が撃った checkNearEnd() は running やクールダウンで弾かれることがあり、
 		// 弾かれると呼び直す者がいないまま「読み込み中...」で永久に固まる。
-		// 打ち切りは MediaFetcher 側 (maxConsecutiveErrors) が持つので、ここでは無制限に見えてよい
+		// 打ち切りは MediaFetcher 側 (maxConsecutiveErrors・emptyPageLimit) が持つ
 		if (this.store.size === 0) {
 			this.scheduleRetry();
 			return;
@@ -840,6 +1007,30 @@ export class MediaGridController {
 			}
 		}, this.fetcher.cooldownRemainingMs);
 	}
+
+	/**
+	 * 失敗で止まった後、retryAfterMs が過ぎたところで 1 回だけ末尾判定をやり直す。
+	 * グリッドが短くスクロールできないと scroll が起きず、再試行の機会が来ないため。
+	 * canRetry() と同じ時刻を待つだけで、要求の間隔は縮めない。予約済みなら何もしない。
+	 * @returns {void}
+	 */
+	scheduleFailedRetry() {
+		if (this.failedRetryTimerId !== null) {
+			return;
+		}
+		this.failedRetryTimerId = window.setTimeout(() => {
+			this.failedRetryTimerId = null;
+			if (!this.active || !this.fetcher.failed) {
+				return;
+			}
+			// タイマーの誤差で早く起きたら、残りを待ち直す
+			if (this.fetcher.retryRemainingMs > 0) {
+				this.scheduleFailedRetry();
+				return;
+			}
+			this.grid.checkNearEnd();
+		}, this.fetcher.retryRemainingMs);
+	}
 }
 
 /**
@@ -852,21 +1043,23 @@ let mediaGridController = null;
  * 拡張機能のメディアグリッド機能のエントリポイント。
  * MediaGridController を起動し、SPA 遷移・セルの遅延描画・タブ切替のいずれからも
  * sync() が呼ばれるようにする。起動は content/main.js が page.js の main() の後に呼ぶ。
- * @returns {void}
+ * @returns {Promise<void>} 設定の読み込みが終わったら解決する
  */
 export function initMediaGrid() {
 	try {
 		mediaGridController = new MediaGridController();
 		// タブ列の確定・選択タブの変化 (page.js の TabObserver) に追従する
 		subscribeTabStateChange(() => mediaGridController.sync());
-		mediaGridController.init();
+		const ready = mediaGridController.init();
 
-		// SPA 遷移とセルの遅延描画の双方に追従する
-		const observer = new MutationObserver(() => mediaGridController.sync());
+		// SPA 遷移とセルの遅延描画の双方に追従する。発火は 1 フレームに 1 回へまとめる
+		const observer = new MutationObserver(() => mediaGridController.scheduleSync());
 		observer.observe(document.body, {childList: true, subtree: true});
 
 		window.addEventListener('popstate', () => mediaGridController.sync());
+		return ready;
 	} catch (error) {
 		console.error('[XViewer] メディアグリッドの初期化に失敗しました', error);
+		return Promise.resolve();
 	}
 }

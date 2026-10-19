@@ -14,9 +14,13 @@
  * 高頻度のコールバックから呼ばれるため、無効時に文字列の組み立てや JSON 化を
  * 走らせてはいけない (呼び出し側で if を書かずに済むよう、判定はここで持つ)。
  *
- * 依存: config.js (EXT_CONFIG.debug)。起動 (init) は content/main.js が他のどれよりも先に呼ぶ。
+ * 依存: config.js (EXT_CONFIG.debug)、sync-settings.js。起動 (init) は content/main.js が他のどれよりも先に呼ぶ。
  */
 import {EXT_CONFIG} from './config.js';
+import {loadSyncSettings, watchSyncSettings} from './sync-settings.js';
+
+/** 設定の読み込みの失敗をログに出すときの名前 */
+const SETTINGS_LABEL = 'デバッグモード';
 
 export const ExtDebug = {
 	/** 有効かどうか。chrome.storage の保存値と変更通知で更新する */
@@ -38,22 +42,10 @@ export const ExtDebug = {
 	 */
 	async init() {
 		const cfg = EXT_CONFIG.debug;
-		try {
-			const stored = await chrome.storage.sync.get([cfg.storageKey]);
-			this.setEnabled(stored[cfg.storageKey] ?? cfg.defaultEnabled);
-		} catch (error) {
-			console.error('[XViewer] デバッグ設定の読み込みに失敗しました', error);
-		}
-		try {
-			chrome.storage.onChanged.addListener((changes, area) => {
-				if (area !== 'sync' || !changes[cfg.storageKey]) {
-					return;
-				}
-				this.setEnabled(changes[cfg.storageKey].newValue ?? cfg.defaultEnabled);
-			});
-		} catch (error) {
-			console.error('[XViewer] デバッグ設定の監視開始に失敗しました', error);
-		}
+		const defaults = {[cfg.storageKey]: cfg.defaultEnabled};
+		const values = await loadSyncSettings(defaults, SETTINGS_LABEL);
+		this.setEnabled(values[cfg.storageKey]);
+		watchSyncSettings(defaults, (changed) => this.setEnabled(changed[cfg.storageKey]), SETTINGS_LABEL);
 	},
 
 	/**

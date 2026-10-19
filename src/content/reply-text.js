@@ -41,6 +41,8 @@ import {extractLabels} from './media-source.js';
  * @property {string|null} parentUri 直接の返信先の AT URI
  * @property {string|null} parentHandle 開いた返信の中で、親が起点でないときの親の handle
  * @property {string[]|null} langs record.langs (返信への返信の言語の提案に使う)
+ * @property {Object|null} [node] 取得した threadViewPost そのもの (返信の画像から開き直すとき、
+ *   パネルに PostView と返信の一覧を渡して引き直しを省く)。自分で送った返信には無い
  */
 
 /** getPostThread の中で、中身のある投稿を表す $type */
@@ -99,7 +101,7 @@ const utf8Encoder = new TextEncoder();
  * @param {string} text
  * @returns {number}
  */
-function utf8Length(text) {
+export function utf8Length(text) {
 	return utf8Encoder.encode(text).length;
 }
 
@@ -323,11 +325,41 @@ function toReplyItem(node) {
 			parentUri: reply && reply.parent && typeof reply.parent.uri === 'string'
 				? reply.parent.uri
 				: null,
-			parentHandle: null
+			parentHandle: null,
+			node
 		};
 	} catch (error) {
 		return null;
 	}
+}
+
+/**
+ * getPostThread の応答から、起点の投稿の PostView を取り出す。
+ * @param {Object|null} json getPostThread の応答
+ * @returns {Object|null} 起点が中身のある投稿でなければ (見つからない・ブロック) null
+ */
+export function threadPostView(json) {
+	const thread = json && json.thread;
+	return thread && thread.$type === THREAD_VIEW_POST_TYPE && thread.post && typeof thread.post === 'object'
+		? thread.post
+		: null;
+}
+
+/**
+ * 返信の行のノードから、その返信を起点にした getPostThread の応答の形を作る。
+ * 直接の返信が揃っている (replies を持つ、または返信が 0 件) ときだけ作る。
+ * 深さの上限に届いたノードは replies を持たないため、作らずに引き直させる
+ * @param {Object|null} node threadViewPost
+ * @returns {Object|null} {thread} の形。揃っていなければ null
+ */
+export function threadFromNode(node) {
+	if (!node || node.$type !== THREAD_VIEW_POST_TYPE || !node.post) {
+		return null;
+	}
+	if (Array.isArray(node.replies)) {
+		return {thread: node};
+	}
+	return node.post.replyCount === 0 ? {thread: {...node, replies: []}} : null;
 }
 
 /**
@@ -457,19 +489,6 @@ export function fitTextareaHeight(scrollHeight, borderHeight, maxHeight) {
 		return {height: Math.min(wanted, maxHeight), scroll: false};
 	}
 	return {height: maxHeight, scroll: true};
-}
-
-/**
- * 入力中の本文が送れるかと、残りの文字数 (書記素) を返す。
- * @param {string} text
- * @param {{maxGraphemes: number, maxBytes: number}} limits
- * @returns {{ok: boolean, remaining: number}}
- */
-export function canSubmitReply(text, limits) {
-	const value = typeof text === 'string' ? text : '';
-	const remaining = limits.maxGraphemes - countGraphemes(value);
-	const ok = value.trim() !== '' && remaining >= 0 && utf8Length(value) <= limits.maxBytes;
-	return {ok, remaining};
 }
 
 /**

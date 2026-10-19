@@ -4,11 +4,13 @@
    data-theme は popup-ui.js が設定 (popupTheme) と OS の設定から決めて html 要素に付ける。
    ここにはこの画面でしか使わないトークンだけを置く。個々の規則に色を直書きしないこと。 */
 
-/* スイッチは本体の Switch (ON は primary_500、OFF は contrast_200、ノブは白) に合わせる */
+/* スイッチは本体の Switch (ON は primary_500、OFF は contrast_200、ノブは白) に合わせる。
+   どれも配色トークンと同じ値なので参照で持つ (ON は --accent、ノブはその上に載る --on-accent、
+   OFF は操作部品の枠 --control-border)。テーマの差し替えは tokens.css の側で済む */
 :root {
-	--switch-on: #006aff;
-	--switch-off: #313f54;
-	--switch-knob: #ffffff;
+	--switch-on: var(--accent);
+	--switch-off: var(--control-border);
+	--switch-knob: var(--on-accent);
 	/* 警告の文字。--danger と同値だが役割が違うので分けて持つ (--danger は取り消せない操作専用) */
 	--warning: #f65a7f;
 }
@@ -16,9 +18,6 @@
 /* ライトの値。下のメディアクエリの中にも同じ宣言がある。片方だけ直さないこと
    (中身が同じであることは test/popup-css.test.js が見張る) */
 :root[data-theme='light'] {
-	--switch-on: #006aff;
-	--switch-off: #c0cad8;
-	--switch-knob: #ffffff;
 	--warning: #ca123d;
 }
 
@@ -26,9 +25,6 @@
    宣言は上の :root[data-theme='light'] と同じ内容にする */
 @media (prefers-color-scheme: light) {
 	:root:not([data-theme]) {
-		--switch-on: #006aff;
-		--switch-off: #c0cad8;
-		--switch-knob: #ffffff;
 		--warning: #ca123d;
 	}
 }

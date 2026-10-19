@@ -14,7 +14,8 @@ import {
 	readJobStatus,
 	toVideoBlobRef,
 	uploadName,
-	runVideoUpload
+	runVideoUpload,
+	forgetPdsAud
 } from '../src/inject/video-upload.js';
 
 const PDS_HOST = 'chaga.us-west.host.bsky.network';
@@ -770,4 +771,102 @@ test('runVideoUpload: completedJobId が無ければ jobStatus.jobId で処理�
 		await runVideoUpload(makeVideo(10), completed.deps, new AbortController().signal),
 		{ok: true, blob: VIDEO_BLOB}
 	);
+});
+
+test('runVideoUpload: upload の進み具合は 1% 以上増えたときだけ知らせ、最初の 0 と最後の 1 は必ず知らせる', async () => {
+	const size = 400;
+	const made = makeDeps({
+		handlers: {
+			startUpload: () => ({status: 200, json: {jobId: 'job-1', partSizeBytes: size, partCount: 1}})
+		},
+		deps: {
+			// 1 バイトごとに進み具合を届ける (間引かなければ 400 回知らせることになる)
+			sendPart: async (args) => {
+				for (let sent = 1; sent <= args.chunk.size; sent++) args.onBytes(sent);
+				return {status: 200, json: {}};
+			}
+		}
+	});
+	const result = await runVideoUpload(makeVideo(size), made.deps, new AbortController().signal);
+	assert.strictEqual(result.ok, true);
+	const upload = made.progress.filter((p) => p.phase === 'upload').map((p) => p.progress);
+	assert.strictEqual(upload[0], 0);
+	assert.strictEqual(upload[upload.length - 1], 1);
+	assert.ok(upload.length <= 101, `間引かれていない: ${upload.length} 回`);
+	for (let i = 1; i < upload.length - 1; i++) {
+		assert.ok(upload[i] - upload[i - 1] >= 0.01 - 1e-12, `1% 未満の増えで知らせた: ${upload[i - 1]} → ${upload[i]}`);
+	}
+	// 段階が processing に変わったことも知らせる
+	assert.ok(made.progress.some((p) => p.phase === 'processing'));
+});
+
+test('runVideoUpload: 送り直しで部品の送れた量が 0 に戻っても、合計は差分で正しく数え直す', async () => {
+	let attempts = 0;
+	const made = makeDeps({
+		deps: {
+			sendPart: async (args) => {
+				args.onBytes(args.chunk.size);
+				if (args.partNumber === 1 && attempts++ === 0) return {status: 500, json: {}};
+				return {status: 200, json: {}};
+			}
+		}
+	});
+	const result = await runVideoUpload(makeVideo(10), made.deps, new AbortController().signal);
+	assert.strictEqual(result.ok, true);
+	const upload = made.progress.filter((p) => p.phase === 'upload').map((p) => p.progress);
+	assert.ok(upload.every((value) => value >= 0 && value <= 1), `範囲の外: ${upload}`);
+	assert.strictEqual(upload[upload.length - 1], 1);
+});
+
+test('runVideoUpload: 同じアカウントの 2 本目は PDS の DID を覚えていて getSession を省き、DID が変われば引き直す', async () => {
+	forgetPdsAud();
+	try {
+		let did = SESSION.did;
+		const run = async (overrides = {}) => {
+			const made = makeDeps({...overrides, deps: {sessionDid: () => did, ...overrides.deps}});
+			const result = await runVideoUpload(makeVideo(8), made.deps, new AbortController().signal);
+			const auth = made.calls.find((c) => c.fn === 'getServiceAuth' && c.lxm === VIDEO_UPLOAD.nsid.uploadBlob);
+			return {
+				result,
+				sessions: made.calls.filter((c) => c.fn === 'getSession').length,
+				aud: auth ? auth.aud : null
+			};
+		};
+		const first = await run();
+		assert.strictEqual(first.result.ok, true);
+		assert.strictEqual(first.sessions, 1);
+		const second = await run();
+		assert.strictEqual(second.result.ok, true);
+		assert.strictEqual(second.sessions, 0);
+		assert.strictEqual(second.aud, `did:web:${PDS_HOST}`);
+		// アカウントを切り替えた (応答の did とも合わない) ときは覚えずに毎回引く
+		did = 'did:plc:another';
+		assert.strictEqual((await run()).sessions, 1);
+		assert.strictEqual((await run()).sessions, 1);
+	} finally {
+		forgetPdsAud();
+	}
+});
+
+test('runVideoUpload: 失敗したアップロードの後は覚えていた PDS の DID を捨てる。sessionDid が無ければ覚えない', async () => {
+	forgetPdsAud();
+	try {
+		const deps = {sessionDid: () => SESSION.did};
+		const count = async (overrides) => {
+			const made = makeDeps(overrides);
+			await runVideoUpload(makeVideo(8), made.deps, new AbortController().signal);
+			return made.calls.filter((c) => c.fn === 'getSession').length;
+		};
+		assert.strictEqual(await count({deps}), 1);
+		assert.strictEqual(await count({
+			deps,
+			handlers: {startUpload: () => ({status: 500, json: {}})}
+		}), 0);
+		assert.strictEqual(await count({deps}), 1);
+		forgetPdsAud();
+		assert.strictEqual(await count({}), 1);
+		assert.strictEqual(await count({}), 1);
+	} finally {
+		forgetPdsAud();
+	}
 });

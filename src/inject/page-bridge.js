@@ -51,7 +51,8 @@ export const EXT_BRIDGE = {
 		 * ここに新しく repo 書き込み系の NSID を足すときは必ず recordWrite か threadWrite
 		 * (返信の連なりの applyWrites) のどちらかを付けること。
 		 * bodyKeys は POST の body に通すキーの白名簿。ここに無いキー
-		 * (validate / swapCommit など) は落として送る。record を持つものは
+		 * (validate / swapCommit など) は落として送る。threadWrite でない POST に
+		 * bodyKeys が無ければ通さない (invalid-rule)。record を持つものは
 		 * record.$type が collection と一致することも要求する
 		 */
 		[NSID.createRecord]: {
@@ -60,17 +61,19 @@ export const EXT_BRIDGE = {
 		},
 		/**
 		 * threadWrite: true は自分の返信の連なり (create の 2〜10 件) だけを通す目印。
-		 * checkXrpcRequest() が repo と checkThreadWrites() の検査を課す。
-		 * recordWrite と同じく文字列リテラルで別置きしない。
-		 * bodyKeys は白名簿の形を揃えるために書いてあるだけで、threadWrite の分岐は使わない
-		 * (body はその分岐が {repo, writes, validate: true} に組み直す)
+		 * checkXrpcRequest() が repo と checkThreadWrites() の検査を課し、body を
+		 * {repo, writes: 検査で写した writes, validate: true} に組み直すため bodyKeys を持たない。
+		 * recordWrite と同じく文字列リテラルで別置きしない
 		 */
 		[NSID.applyWrites]: {
-			target: 'pds', method: 'POST', threadWrite: true,
-			bodyKeys: ['repo', 'writes']
+			target: 'pds', method: 'POST', threadWrite: true
 		},
+		/**
+		 * replyCheck: true は、投稿 (postCollection) を消す前に、消す相手が返信であることを
+		 * appview から引いて確かめさせる目印
+		 */
 		[NSID.deleteRecord]: {
-			target: 'pds', method: 'POST', recordWrite: true,
+			target: 'pds', method: 'POST', recordWrite: true, replyCheck: true,
 			bodyKeys: ['repo', 'collection', 'rkey']
 		},
 		[NSID.createBookmark]: {
@@ -94,6 +97,33 @@ export const EXT_BRIDGE = {
 	/** open-composer が受け付けるモード */
 	composerModes: Object.freeze(Object.values(BRIDGE_PROTOCOL.composerModes))
 };
+
+/** 本文などの UTF-8 のバイト数を数える符号器。1 つだけ作って使い回す */
+const textEncoder = new TextEncoder();
+
+/** facet のリンクとリンクカードの uri の形 (http(s) で始まり空白を含まない) */
+const LINK_URI_REGEX = new RegExp(BRIDGE_PROTOCOL.postRecord.linkUriPattern);
+const EXTERNAL_URI_REGEX = new RegExp(BRIDGE_PROTOCOL.postRecord.external.uriPattern);
+
+/** facet のメンションの行き先 (DID) の形 */
+const MENTION_DID_REGEX = /^did:[a-z]+:\S+$/;
+
+/** 字幕の言語タグの形 */
+const CAPTION_LANG_REGEX = new RegExp(BRIDGE_PROTOCOL.video.langPattern);
+
+/** 返信の連なりの rkey (TID) の形 */
+const TID_REGEX = new RegExp(BRIDGE_PROTOCOL.thread.tidPattern);
+
+/**
+ * MAIN ワールドが本体の fetchHandler の通信を打ち切るまでの時間。
+ * 分離ワールドの待ちの上限より mainMarginMs だけ短く、打ち切った返事が先に届く
+ */
+const TIMEOUTS = BRIDGE_PROTOCOL.timeouts;
+export const MAIN_TIMEOUTS = Object.freeze({
+	requestMs: TIMEOUTS.requestMs - TIMEOUTS.mainMarginMs,
+	uploadMs: TIMEOUTS.uploadMs - TIMEOUTS.mainMarginMs,
+	threadMs: TIMEOUTS.threadMs - TIMEOUTS.mainMarginMs
+});
 
 let lightboxControls = null;
 let navigationControls = null;
@@ -421,7 +451,8 @@ function findComposerControls() {
 }
 
 /**
- * NSID の白名簿の規則に従って、実際に呼ぶクライアントを選ぶ。
+ * NSID の白名簿の規則に従って、repo の検査に使う DID を読むクライアントを選ぶ
+ * (callXrpc() が送る agent と同じ宛先)。
  * 白名簿に無い NSID なら appview 側を返す (その要求は checkXrpcRequest() が落とす)
  * @param {Object|null} clients findClients() の結果
  * @param {*} nsid payload.nsid (検査前の値)
@@ -478,9 +509,9 @@ function isAllowedFacetFeature(feature) {
 	}
 	switch (feature.$type) {
 		case 'app.bsky.richtext.facet#link':
-			return typeof feature.uri === 'string' && /^https?:\/\/\S+$/.test(feature.uri);
+			return typeof feature.uri === 'string' && LINK_URI_REGEX.test(feature.uri);
 		case 'app.bsky.richtext.facet#mention':
-			return typeof feature.did === 'string' && /^did:[a-z]+:\S+$/.test(feature.did);
+			return typeof feature.did === 'string' && MENTION_DID_REGEX.test(feature.did);
 		case 'app.bsky.richtext.facet#tag':
 			return typeof feature.tag === 'string' && feature.tag.length > 0;
 		default:
@@ -509,17 +540,32 @@ function areAllowedFacets(facets, textBytes) {
 	});
 }
 
+/** 書記素の区切り器。初めて要るときに 1 つだけ作る */
+let graphemeSegmenter = null;
+
 /**
- * 文字列の書記素 (ユーザーが 1 文字と感じる単位) の数を数える。
+ * 文字列の書記素 (ユーザーが 1 文字と感じる単位) の数が上限を超えるか。
+ * 書記素の数は UTF-16 の長さを超えないため、長さが上限以下なら数えずに通す。
+ * 数えるときも上限を超えた時点で打ち切る
  * @param {string} text
- * @returns {number}
+ * @param {number} max 書記素の数の上限
+ * @returns {boolean} 上限を超えるなら true
  */
-function countGraphemes(text) {
-	let count = 0;
-	for (const unused of new Intl.Segmenter().segment(text)) {
-		count += 1;
+export function exceedsGraphemes(text, max) {
+	if (text.length <= max) {
+		return false;
 	}
-	return count;
+	if (graphemeSegmenter === null) {
+		graphemeSegmenter = new Intl.Segmenter();
+	}
+	let count = 0;
+	for (const unused of graphemeSegmenter.segment(text)) {
+		count += 1;
+		if (count > max) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /**
@@ -574,7 +620,7 @@ function isEmbedImage(item, requireRatio, extraKeys) {
 	}
 	if (!isStrictEmbedBlob(item.image)
 		|| typeof item.alt !== 'string'
-		|| countGraphemes(item.alt) > rule.maxAltGraphemes) {
+		|| exceedsGraphemes(item.alt, rule.maxAltGraphemes)) {
 		return false;
 	}
 	if (item.aspectRatio === undefined) {
@@ -630,10 +676,10 @@ function isExternalEmbed(embed) {
 		|| typeof card.description !== 'string') {
 		return false;
 	}
-	if (new TextEncoder().encode(card.uri).length > rule.external.maxUriBytes
-		|| !new RegExp(rule.external.uriPattern).test(card.uri)
-		|| countGraphemes(card.title) > rule.external.maxTitleGraphemes
-		|| countGraphemes(card.description) > rule.external.maxDescriptionGraphemes) {
+	if (textEncoder.encode(card.uri).length > rule.external.maxUriBytes
+		|| !EXTERNAL_URI_REGEX.test(card.uri)
+		|| exceedsGraphemes(card.title, rule.external.maxTitleGraphemes)
+		|| exceedsGraphemes(card.description, rule.external.maxDescriptionGraphemes)) {
 		return false;
 	}
 	return card.thumb === undefined
@@ -661,7 +707,7 @@ function isVideoCaption(caption) {
 	const rule = BRIDGE_PROTOCOL.video;
 	return hasOnlyKeys(caption, ['lang', 'file'])
 		&& typeof caption.lang === 'string'
-		&& new RegExp(rule.langPattern).test(caption.lang)
+		&& CAPTION_LANG_REGEX.test(caption.lang)
 		&& isStrictEmbedBlob(caption.file, rule.captionMaxBytes, [rule.captionMimeType]);
 }
 
@@ -679,7 +725,7 @@ function isVideoEmbed(embed) {
 		return false;
 	}
 	if (embed.alt !== undefined && (typeof embed.alt !== 'string'
-		|| countGraphemes(embed.alt) > EXT_BRIDGE.postRecord.maxAltGraphemes)) {
+		|| exceedsGraphemes(embed.alt, EXT_BRIDGE.postRecord.maxAltGraphemes))) {
 		return false;
 	}
 	if (embed.captions !== undefined && (!Array.isArray(embed.captions)
@@ -779,7 +825,7 @@ export function checkPostRecord(record) {
 		return {ok: false, reason: reasons.postNotReply};
 	}
 	const textBytes = typeof record.text === 'string'
-		? new TextEncoder().encode(record.text).length
+		? textEncoder.encode(record.text).length
 		: -1;
 	if (textBytes < 0 || textBytes > rule.maxTextBytes) {
 		return {ok: false, reason: reasons.postRecordNotAllowed};
@@ -838,7 +884,6 @@ export function checkThreadWrites(writes, repo) {
 		if (!Array.isArray(writes) || writes.length < rule.minPosts || writes.length > rule.maxPosts) {
 			return fail;
 		}
-		const tid = new RegExp(rule.tidPattern);
 		const seen = new Set();
 		const checked = [];
 		for (let i = 0; i < writes.length; i += 1) {
@@ -852,7 +897,7 @@ export function checkThreadWrites(writes, repo) {
 				return fail;
 			}
 			if (write.$type !== rule.createType || write.collection !== EXT_BRIDGE.postCollection
-				|| typeof write.rkey !== 'string' || !tid.test(write.rkey) || seen.has(write.rkey)) {
+				|| typeof write.rkey !== 'string' || !TID_REGEX.test(write.rkey) || seen.has(write.rkey)) {
 				return fail;
 			}
 			seen.add(write.rkey);
@@ -886,8 +931,9 @@ export function checkThreadWrites(writes, repo) {
 /**
  * call-xrpc の要求を検査する。**通らないものはここで落とす。**
  * NSID の白名簿、レコード書き込みの collection、repo が本人かの 3 段。
- * 投稿の作成は返信の record だけを通し、投稿の削除には needsReplyCheck を
- * 付けて返す (消す相手が返信であることの確認は通信を伴うため callXrpc() が行う)。
+ * 投稿の作成は返信の record だけを通し、replyCheck の規則 (deleteRecord) で投稿を消すときは
+ * needsReplyCheck を付けて返す (消す相手が返信であることの確認は通信を伴うため callXrpc() が行う)。
+ * threadWrite でない POST の規則に bodyKeys が無ければ invalid-rule で落とす。
  * applyWrites (threadWrite) は repo が本人かを確かめ、writes を checkThreadWrites() で
  * 検査し (#create の app.bsky.feed.post の返信の連なり 2〜10 件だけ)、body を
  * {repo, writes: 検査で写した writes, validate: true} に組み直して返す (bodyKeys は使わない)
@@ -950,9 +996,9 @@ export function checkXrpcRequest(payload, sessionDid) {
 		}
 	}
 	// 白名簿のキーだけを写して送る (validate: false などの余分な指定を通さない)。
-	// bodyKeys が無い規則は body をそのまま通す (recordWrite の検査は上で済んでいる)
+	// bodyKeys の無い POST の規則は、何を通すかが決まっていないため通さない
 	if (!Array.isArray(rule.bodyKeys)) {
-		return {ok: true, rule, body, needsReplyCheck: false};
+		return {ok: false, reason: 'invalid-rule'};
 	}
 	const sanitized = {};
 	for (let i = 0; i < rule.bodyKeys.length; i += 1) {
@@ -961,7 +1007,8 @@ export function checkXrpcRequest(payload, sessionDid) {
 			sanitized[key] = body[key];
 		}
 	}
-	if (rule.bodyKeys.indexOf('record') !== -1) {
+	const hasRecord = rule.bodyKeys.includes('record');
+	if (hasRecord) {
 		// レコードの $type は collection と一致させる (別コレクション形の
 		// レコードを自分の like コレクションに置けないようにする)
 		const record = sanitized.record;
@@ -969,12 +1016,12 @@ export function checkXrpcRequest(payload, sessionDid) {
 			return {ok: false, reason: 'record-type-mismatch'};
 		}
 	}
-	if (rule.bodyKeys.indexOf('rkey') !== -1
+	if (rule.bodyKeys.includes('rkey')
 		&& (typeof sanitized.rkey !== 'string' || !sanitized.rkey)) {
 		return {ok: false, reason: 'invalid-rkey'};
 	}
 	const isPost = isRecordWrite && body.collection === EXT_BRIDGE.postCollection;
-	if (isPost && rule.bodyKeys.indexOf('record') !== -1) {
+	if (isPost && hasRecord) {
 		const postCheck = checkPostRecord(sanitized.record);
 		if (!postCheck.ok) {
 			return postCheck;
@@ -984,26 +1031,67 @@ export function checkXrpcRequest(payload, sessionDid) {
 		ok: true,
 		rule,
 		body: sanitized,
-		needsReplyCheck: isPost && rule.bodyKeys.indexOf('rkey') !== -1
+		needsReplyCheck: isPost && rule.replyCheck === true
 	};
+}
+
+/**
+ * 本体のクライアント一式から、宛先 (pds / appview) の agent を取り出す。
+ * @param {Object|null} clients findClients() の結果
+ * @param {'pds'|'appview'} target 宛先
+ * @returns {Object|null} fetchHandler を持つ agent。無ければ null
+ */
+function getAgent(clients, target) {
+	const client = clients
+		? (target === 'pds' ? clients.pdsClient : clients.appviewClient)
+		: null;
+	const agent = client && client.agent;
+	return agent && typeof agent.fetchHandler === 'function' ? agent : null;
+}
+
+/**
+ * 応答の本文を JSON として読む。読めなければ null。
+ * @param {{json: function(): Promise<any>}} response fetch / fetchHandler の応答
+ * @returns {Promise<any>}
+ */
+async function readJsonSafely(response) {
+	try {
+		return await response.json();
+	} catch (error) {
+		return null;
+	}
+}
+
+/**
+ * 文字列を JSON として読む。読めなければ null。
+ * @param {string} text
+ * @returns {any}
+ */
+function parseJsonSafely(text) {
+	try {
+		return JSON.parse(text);
+	} catch (error) {
+		return null;
+	}
 }
 
 /**
  * 消そうとしている投稿が返信であることを、本体の appview から引いて確かめる。
  * @param {Object|null} clients findClients() の結果
  * @param {{repo: string, rkey: string}} body 検査済みの deleteRecord の body
+ * @param {AbortSignal} signal 打ち切り (削除の要求全体の上限)
  * @returns {Promise<boolean>} 確かめられなかったときも false (消さない側に倒す)
  */
-async function confirmReplyPost(clients, body) {
+async function confirmReplyPost(clients, body, signal) {
 	try {
-		const agent = clients && clients.appviewClient && clients.appviewClient.agent;
-		if (!agent || typeof agent.fetchHandler !== 'function') {
+		const agent = getAgent(clients, 'appview');
+		if (!agent) {
 			return false;
 		}
 		const uri = `at://${body.repo}/${EXT_BRIDGE.postCollection}/${body.rkey}`;
 		const response = await agent.fetchHandler(
 			`/xrpc/${NSID.getPosts}${buildQuery({uris: [uri]})}`,
-			{method: 'GET', headers: {accept: 'application/json'}}
+			{method: 'GET', headers: {accept: 'application/json'}, signal}
 		);
 		if (response.ok !== true) {
 			return false;
@@ -1042,31 +1130,41 @@ export function buildQuery(params) {
 /**
  * 本体の認証済み fetchHandler を借りて XRPC を 1 回呼ぶ。
  * **白名簿を通ったものだけが実際に飛ぶ。**
+ * 分離ワールドが待ちを諦める前に通信を打ち切る (applyWrites は threadMs、ほかは requestMs。
+ * 投稿の削除の前の確認もこの上限に含む)。打ち切ったら reason は timeout
+ * (書き込みは届いたかもしれないため、呼び出し側は送り直さない)
  * @param {Object} payload {nsid, params, body}
+ * @param {function(): (Object|null)} [lookupClients] 本体のクライアント一式を探す (テストで差し替える)
  * @returns {Promise<{ok: boolean, status?: number, json?: Object|null,
  *   reason: string|null}>}
  */
-async function callXrpc(payload) {
-	const clients = findClients();
+export async function callXrpc(payload, lookupClients = findClients) {
+	const clients = lookupClients();
 	if (!clients) {
 		return {ok: false, reason: 'no-client'};
 	}
 	// repo の検査に使う DID は、書き込みを送るのと同じクライアントから読む
-	const client = pickClient(clients, payload && payload.nsid);
-	const checked = checkXrpcRequest(payload, readSessionDid(client));
+	const checked = checkXrpcRequest(payload, readSessionDid(pickClient(clients, payload && payload.nsid)));
 	if (!checked.ok) {
 		return {ok: false, reason: checked.reason};
 	}
-	const agent = client && client.agent;
-	if (!agent || typeof agent.fetchHandler !== 'function') {
+	const agent = getAgent(clients, checked.rule.target);
+	if (!agent) {
 		return {ok: false, reason: 'no-agent'};
 	}
-	if (checked.needsReplyCheck && !(await confirmReplyPost(clients, checked.body))) {
-		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.postNotReply};
+	const signal = AbortSignal.timeout(checked.rule.threadWrite === true
+		? MAIN_TIMEOUTS.threadMs
+		: MAIN_TIMEOUTS.requestMs);
+	if (checked.needsReplyCheck && !(await confirmReplyPost(clients, checked.body, signal))) {
+		return {
+			ok: false,
+			reason: signal.aborted ? BRIDGE_PROTOCOL.reasons.timeout : BRIDGE_PROTOCOL.reasons.postNotReply
+		};
 	}
 	const init = {
 		method: checked.rule.method,
-		headers: {accept: 'application/json'}
+		headers: {accept: 'application/json'},
+		signal
 	};
 	let path = `/xrpc/${payload.nsid}`;
 	if (checked.rule.method === 'GET') {
@@ -1078,12 +1176,7 @@ async function callXrpc(payload) {
 	}
 	try {
 		const response = await agent.fetchHandler(path, init);
-		let json = null;
-		try {
-			json = await response.json();
-		} catch (error) {
-			json = null;
-		}
+		const json = await readJsonSafely(response);
 		return {
 			ok: response.ok === true,
 			status: response.status,
@@ -1091,7 +1184,7 @@ async function callXrpc(payload) {
 			reason: response.ok === true ? null : 'http-error'
 		};
 	} catch (error) {
-		return {ok: false, reason: 'fetch-failed'};
+		return {ok: false, reason: signal.aborted ? BRIDGE_PROTOCOL.reasons.timeout : 'fetch-failed'};
 	}
 }
 
@@ -1266,27 +1359,41 @@ export class BlobInbox {
 	 * 分離ワールドの postMessage は後から届くため、要求のほうが先に着くことがある。
 	 * @param {string} id
 	 * @param {number} timeoutMs 待つ上限
-	 * @returns {Promise<Blob|null>} 上限までに届かなければ null
+	 * @param {AbortSignal} [signal] 取り消し。鳴ったら待ちをやめて null
+	 * @returns {Promise<Blob|null>} 上限までに届かない・取り消されたら null
 	 */
-	waitFor(id, timeoutMs) {
+	waitFor(id, timeoutMs, signal) {
 		if (this.entries.has(id)) {
 			return Promise.resolve(this.take(id));
 		}
+		if (signal && signal.aborted) {
+			return Promise.resolve(null);
+		}
 		return new Promise((resolve) => {
-			const timer = this.setTimer(() => {
-				const list = this.waiters.get(id) || [];
-				const rest = list.filter((fn) => fn !== done);
+			let timer = null;
+			const settle = (blob) => {
+				this.clearTimer(timer);
+				if (signal) {
+					signal.removeEventListener('abort', onAbort);
+				}
+				resolve(blob);
+			};
+			// put() は待ちの一覧を外してから done を呼ぶ。期限切れと取り消しは自分で外す
+			const done = (blob) => settle(blob);
+			const giveUp = () => {
+				const rest = (this.waiters.get(id) || []).filter((fn) => fn !== done);
 				if (rest.length > 0) {
 					this.waiters.set(id, rest);
 				} else {
 					this.waiters.delete(id);
 				}
-				resolve(null);
-			}, timeoutMs);
-			const done = (blob) => {
-				this.clearTimer(timer);
-				resolve(blob);
+				settle(null);
 			};
+			const onAbort = () => giveUp();
+			timer = this.setTimer(giveUp, timeoutMs);
+			if (signal) {
+				signal.addEventListener('abort', onAbort, {once: true});
+			}
 			const list = this.waiters.get(id) || [];
 			list.push(done);
 			this.waiters.set(id, list);
@@ -1308,12 +1415,19 @@ export class BlobInbox {
 	}
 
 	/**
-	 * 箱を空にする。
+	 * 箱を空にする (ページを離れるとき)。到着を待っている要求は null で解く。
 	 * @returns {void}
 	 */
 	clear() {
 		for (const id of [...this.entries.keys()]) {
 			this.discard(id);
+		}
+		const waiting = [...this.waiters.values()];
+		this.waiters.clear();
+		for (const list of waiting) {
+			for (const resolve of list) {
+				resolve(null);
+			}
 		}
 	}
 
@@ -1372,45 +1486,52 @@ export function setBlobInboxForTest(inbox) {
 /**
  * 預かった Blob を本体の認証済み fetchHandler で PDS へアップロードする。
  * **MIME・サイズの検査を通ったものだけが飛ぶ。** 認証は本体に任せ、トークンには触らない。
+ * Blob の到着の待ちも含めて、分離ワールドが待ちを諦める前 (uploadMs) に打ち切り、reason は timeout
  * @param {{blobId: string}} payload 預けたときの id
+ * @param {function(): (Object|null)} [lookupClients] 本体のクライアント一式を探す (テストで差し替える)
  * @returns {Promise<{ok: boolean, blob?: Object, reason: string|null}>}
  */
-async function uploadBlobAction(payload) {
+export async function uploadBlobAction(payload, lookupClients = findClients) {
+	const signal = AbortSignal.timeout(MAIN_TIMEOUTS.uploadMs);
 	const id = payload && payload.blobId;
 	const blob = (blobInbox && typeof id === 'string' && BLOB_ID_REGEX.test(id))
-		? await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs)
+		? await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs, signal)
 		: null;
 	if (!blob) {
-		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.blobNotFound};
+		return {
+			ok: false,
+			reason: signal.aborted ? BRIDGE_PROTOCOL.reasons.timeout : BRIDGE_PROTOCOL.reasons.blobNotFound
+		};
 	}
 	const checked = checkUploadBlob({type: blob.type, size: blob.size});
 	if (!checked.ok) {
 		return {ok: false, reason: checked.reason};
 	}
-	const clients = findClients();
+	const clients = lookupClients();
 	if (!clients) {
 		return {ok: false, reason: 'no-client'};
 	}
-	const agent = clients.pdsClient && clients.pdsClient.agent;
-	if (!agent || typeof agent.fetchHandler !== 'function') {
+	const agent = getAgent(clients, 'pds');
+	if (!agent) {
 		return {ok: false, reason: 'no-agent'};
 	}
 	try {
 		const response = await agent.fetchHandler(`/xrpc/${NSID.uploadBlob}`, {
 			method: 'POST',
 			headers: {'content-type': blob.type, accept: 'application/json'},
-			body: blob
+			body: blob,
+			signal
 		});
 		if (response.ok !== true) {
 			return {ok: false, reason: 'http-error'};
 		}
-		const json = await response.json();
+		const json = await readJsonSafely(response);
 		if (!json || !isBlobRef(json.blob, UPLOAD.mimeTypes)) {
-			return {ok: false, reason: 'bad-response'};
+			return {ok: false, reason: signal.aborted ? BRIDGE_PROTOCOL.reasons.timeout : 'bad-response'};
 		}
 		return {ok: true, blob: toBlobRef(json.blob), reason: null};
 	} catch (error) {
-		return {ok: false, reason: 'fetch-failed'};
+		return {ok: false, reason: signal.aborted ? BRIDGE_PROTOCOL.reasons.timeout : 'fetch-failed'};
 	}
 }
 
@@ -1476,8 +1597,8 @@ function withRequestTimeout(signal) {
  * @returns {Promise<any>}
  */
 async function getWithAgent(clients, nsid, params, signal) {
-	const agent = clients && clients.pdsClient && clients.pdsClient.agent;
-	if (!agent || typeof agent.fetchHandler !== 'function') {
+	const agent = getAgent(clients, 'pds');
+	if (!agent) {
 		throw new Error('no-agent');
 	}
 	const response = await agent.fetchHandler(`/xrpc/${nsid}${buildQuery(params)}`, {
@@ -1554,13 +1675,7 @@ async function videoRequestJson(signal, method, nsid, opts) {
 		init.body = JSON.stringify(opts.body);
 	}
 	const response = await fetch(`${VIDEO_UPLOAD.origin}/xrpc/${nsid}${buildQuery(opts.params)}`, init);
-	let json = null;
-	try {
-		json = await response.json();
-	} catch (error) {
-		json = null;
-	}
-	return {status: response.status, json};
+	return {status: response.status, json: await readJsonSafely(response)};
 }
 
 /**
@@ -1587,13 +1702,7 @@ function sendVideoPart(signal, args) {
 		};
 		xhr.onload = () => {
 			cleanup();
-			let json = null;
-			try {
-				json = JSON.parse(xhr.responseText);
-			} catch (error) {
-				json = null;
-			}
-			resolve({status: xhr.status, json});
+			resolve({status: xhr.status, json: parseJsonSafely(xhr.responseText)});
 		};
 		const fail = () => {
 			cleanup();
@@ -1629,6 +1738,8 @@ export function createVideoDeps(clients, signal, onProgress) {
 			return json.token;
 		},
 		getSession: () => getWithAgent(clients, VIDEO_UPLOAD.nsid.getSession, undefined, signal),
+		// getSession を送るのと同じ PDS 側のクライアントの DID (PDS の DID を覚えるキー)
+		sessionDid: () => readSessionDid(clients && clients.pdsClient),
 		requestJson: (method, nsid, opts) => videoRequestJson(signal, method, nsid, opts || {}),
 		// ほかの部品が諦めたときの args.signal と、取り消しの signal のどちらでも止める
 		sendPart: (args) => sendVideoPart(args && args.signal ? AbortSignal.any([signal, args.signal]) : signal, args),
@@ -1670,7 +1781,7 @@ export async function uploadVideoAction(payload, requestId) {
  * @returns {Promise<{ok: boolean, blob?: Object, reason?: string, message?: string}>}
  */
 async function runUploadVideo(id, controller, requestId) {
-	const blob = await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs);
+	const blob = await blobInbox.waitFor(id, UPLOAD.arriveTimeoutMs, controller.signal);
 	if (controller.signal.aborted) {
 		return {ok: false, reason: BRIDGE_PROTOCOL.reasons.canceled};
 	}
@@ -1754,73 +1865,60 @@ function handleRequest(event) {
 	try {
 		dispatchRequest(detail);
 	} catch (error) {
-		reply(detail.id, {ok: false, reason: 'handler-failed'});
+		reply(detail.id, {ok: false, reason: HANDLER_FAILED_REASON});
 	}
 }
 
+/** ハンドラが投げた・失敗したときに返す既定の理由 */
+const HANDLER_FAILED_REASON = 'handler-failed';
+
+/**
+ * action ごとのハンドラと、ハンドラが投げたときに返す理由。
+ * run は結果か、結果に解ける Promise を返す (同期の操作も同じ経路で返事をする)
+ * @type {Object<string, {run: function(Object, number): (Object|Promise<Object>), failReason: string}>}
+ */
+const REQUEST_HANDLERS = Object.freeze({
+	[EXT_BRIDGE.actions.openLightbox]: {run: (payload) => openLightbox(payload), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.switchTab]: {run: (payload) => switchTab(payload), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.navigate]: {run: (payload) => navigate(payload), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.getLightbox]: {run: () => getLightbox(), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.closeLightbox]: {run: () => closeLightboxAndSettle(), failReason: 'close-failed'},
+	[EXT_BRIDGE.actions.callXrpc]: {run: (payload) => callXrpc(payload), failReason: 'call-failed'},
+	[EXT_BRIDGE.actions.openComposer]: {run: (payload) => openComposer(payload), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.getSession]: {run: () => getSession(), failReason: HANDLER_FAILED_REASON},
+	[EXT_BRIDGE.actions.uploadBlob]: {
+		run: (payload) => uploadBlobAction(payload),
+		failReason: BRIDGE_PROTOCOL.reasons.uploadFailed
+	},
+	[EXT_BRIDGE.actions.uploadVideo]: {
+		run: (payload, id) => uploadVideoAction(payload, id),
+		failReason: BRIDGE_PROTOCOL.reasons.uploadFailed
+	},
+	[EXT_BRIDGE.actions.cancelUploadVideo]: {
+		run: (payload) => cancelUploadVideo(payload),
+		failReason: HANDLER_FAILED_REASON
+	}
+});
+
 /**
  * action ごとのハンドラを呼び、結果を reply() で返す。
+ * ハンドラが投げても、Promise が reject しても、その操作の failReason で必ず返事をする
  * @param {{id: number, action: string, payload: Object}} detail
- * @returns {void}
+ * @returns {Promise<void>}
  */
-function dispatchRequest(detail) {
-	if (detail.action === EXT_BRIDGE.actions.openLightbox) {
-		reply(detail.id, openLightbox(detail.payload));
-		return;
+export function dispatchRequest(detail) {
+	const handler = typeof detail.action === 'string'
+		&& Object.prototype.hasOwnProperty.call(REQUEST_HANDLERS, detail.action)
+		? REQUEST_HANDLERS[detail.action]
+		: null;
+	if (!handler) {
+		reply(detail.id, {ok: false, reason: 'unknown-action'});
+		return Promise.resolve();
 	}
-	if (detail.action === EXT_BRIDGE.actions.switchTab) {
-		reply(detail.id, switchTab(detail.payload));
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.navigate) {
-		reply(detail.id, navigate(detail.payload));
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.getLightbox) {
-		reply(detail.id, getLightbox());
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.closeLightbox) {
-		closeLightboxAndSettle().then(
-			(result) => reply(detail.id, result),
-			() => reply(detail.id, {ok: false, reason: 'close-failed'})
-		);
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.callXrpc) {
-		callXrpc(detail.payload).then(
-			(result) => reply(detail.id, result),
-			() => reply(detail.id, {ok: false, reason: 'call-failed'})
-		);
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.openComposer) {
-		reply(detail.id, openComposer(detail.payload));
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.getSession) {
-		reply(detail.id, getSession());
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.uploadBlob) {
-		uploadBlobAction(detail.payload).then(
-			(result) => reply(detail.id, result),
-			() => reply(detail.id, {ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed})
-		);
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.uploadVideo) {
-		uploadVideoAction(detail.payload, detail.id).then(
-			(result) => reply(detail.id, result),
-			() => reply(detail.id, {ok: false, reason: BRIDGE_PROTOCOL.reasons.uploadFailed})
-		);
-		return;
-	}
-	if (detail.action === EXT_BRIDGE.actions.cancelUploadVideo) {
-		reply(detail.id, cancelUploadVideo(detail.payload));
-		return;
-	}
-	reply(detail.id, {ok: false, reason: 'unknown-action'});
+	return new Promise((resolve) => resolve(handler.run(detail.payload, detail.id))).then(
+		(result) => reply(detail.id, result),
+		() => reply(detail.id, {ok: false, reason: handler.failReason})
+	);
 }
 
 // export はテストから import するためのもの。束 (inject.js) は globalName を持たない IIFE なので、
@@ -1846,6 +1944,8 @@ if (typeof document !== 'undefined') {
 				}
 			}
 		});
+		// ページを離れるときは預かった Blob (動画は最大 300MB) を手放す
+		window.addEventListener('pagehide', () => blobInbox.clear());
 	} catch (error) {
 		console.error('[XViewer] 橋渡しの起動に失敗しました', error);
 	}

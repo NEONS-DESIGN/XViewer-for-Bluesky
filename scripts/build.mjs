@@ -3,7 +3,8 @@
  * content script は MV3 で ESM を読めないため IIFE 1 本にまとめる。
  * page world へ注入する page-bridge.js は world が違うので別の束にし、こちらだけ strict にする。
  * content.css とポップアップの HTML / CSS / 配色トークンは静的ファイルとして置く。(static-files.mjs)
- * popup は拡張のページとして開くので ESM で束ねる。content/inject とは別の設定にする。(popupOptionsFor)
+ * popup・絵文字・動画の再生は拡張のページとして開くので ESM で束ねる。束の作り方は BUNDLES の表 1 つにまとめ、
+ * 通常のビルドと監視モードの両方がこの表を回す。
  *
  * 出力はブラウザごとに分ける。(scripts/browsers.mjs) Chrome 系は dist、Firefox は dist-firefox。
  * 束ねる元のソースは同じで、違うのは esbuild の target と manifest に差し込むキーだけ。
@@ -45,74 +46,65 @@ const CSS_FILE_PATTERN = /\.css$/;
 const INJECT_BANNER = '"use strict";';
 
 /**
- * ブラウザごとの esbuild の設定を作る。
+ * 束 1 本の作り方。
+ * @typedef {Object} BundleSpec
+ * @property {string} name 束の名前 (表の中の目印)
+ * @property {Record<string, string>|string[]} entryPoints 入口
+ * @property {'iife'|'esm'} format content script と MAIN world は IIFE、拡張のページは ESM。どれも分割はしない
+ * @property {{js: string}} [banner] 先頭に足す行
+ */
+
+/**
+ * 束の表。出力先は同じでも書き出すファイルが重ならないため、並べて作れる。
+ * content script は MV3 で ESM を読めないため IIFE。inject (MAIN world) は content と同じ作りに strict の先頭行だけ足す。
+ * popup・絵文字ピッカーのページ・動画の再生 (hls.js を含む) は拡張のページなので ESM。
+ * @type {readonly BundleSpec[]}
+ */
+const BUNDLES = Object.freeze([
+	{ name: 'content', entryPoints: CONTENT_ENTRY_POINTS, format: 'iife' },
+	{ name: 'inject', entryPoints: INJECT_ENTRY_POINTS, format: 'iife', banner: { js: INJECT_BANNER } },
+	{ name: 'popup', entryPoints: POPUP_ENTRY_POINTS, format: 'esm' },
+	{ name: 'emoji', entryPoints: EMOJI_ENTRY_POINTS, format: 'esm' },
+	{ name: 'video', entryPoints: VIDEO_ENTRY_POINTS, format: 'esm' },
+]);
+
+/**
+ * 束 1 本のブラウザごとの esbuild の設定を作る。
  * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
+ * @param {BundleSpec} spec 束の作り方
  * @returns {import('esbuild').BuildOptions} esbuild の設定
  */
-function buildOptionsFor(target) {
+function bundleOptionsFor(target, spec) {
 	return {
-		entryPoints: CONTENT_ENTRY_POINTS,
+		entryPoints: spec.entryPoints,
 		outdir: target.outDir,
 		bundle: true,
-		format: 'iife',
+		format: spec.format,
 		target: target.esbuildTarget,
 		// 監視中は読みやすさを残す。配布物は縮める
 		minify: !WATCH,
 		// 日本語などの文字を \uXXXX に逃がさず UTF-8 のまま出す
 		charset: 'utf8',
 		logLevel: 'info',
+		...(spec.banner ? { banner: spec.banner } : {}),
 	};
 }
 
 /**
- * inject (MAIN world) の esbuild の設定を作る。content と同じ設定に strict の先頭行だけ足す。
- * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
- * @returns {import('esbuild').BuildOptions} esbuild の設定
+ * 処理をすべて待ってから、1 件でも失敗していれば最初の失敗を投げる。
+ * (外側の片付けが出力先を消す最中に、残りの書き込みが続かないように)
+ * @template T
+ * @param {Promise<T>[]} promises 待つ処理
+ * @returns {Promise<T[]>} すべて成功したときの結果
+ * @throws {*} 最初に見つかった失敗の理由
  */
-function injectOptionsFor(target) {
-	return {
-		...buildOptionsFor(target),
-		entryPoints: INJECT_ENTRY_POINTS,
-		banner: { js: INJECT_BANNER },
-	};
-}
-
-/**
- * popup の esbuild の設定を作る。
- * popup は拡張のページなので ESM で束ねる。分割はしない。
- * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
- * @returns {import('esbuild').BuildOptions} esbuild の設定
- */
-function popupOptionsFor(target) {
-	return {
-		...buildOptionsFor(target),
-		entryPoints: POPUP_ENTRY_POINTS,
-		format: 'esm',
-	};
-}
-
-/**
- * 絵文字ピッカーのページの esbuild の設定を作る。popup と同じく ESM で束ねる。
- * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
- * @returns {import('esbuild').BuildOptions} esbuild の設定
- */
-function emojiOptionsFor(target) {
-	return {
-		...popupOptionsFor(target),
-		entryPoints: EMOJI_ENTRY_POINTS,
-	};
-}
-
-/**
- * 動画の再生の束の esbuild の設定を作る。hls.js を含めて ESM で束ねる。
- * @param {import('./browsers.mjs').BrowserTarget} target 作るブラウザ
- * @returns {import('esbuild').BuildOptions} esbuild の設定
- */
-function videoOptionsFor(target) {
-	return {
-		...popupOptionsFor(target),
-		entryPoints: VIDEO_ENTRY_POINTS,
-	};
+async function settleAll(promises) {
+	const results = await Promise.allSettled(promises);
+	const failed = results.find((result) => result.status === 'rejected');
+	if (failed) {
+		throw failed.reason;
+	}
+	return results.map((result) => result.value);
 }
 
 /**
@@ -168,8 +160,8 @@ async function writeManifest(target, packageVersion) {
  * @returns {Promise<void>}
  */
 async function copyStatic(target) {
-	// 1 件が落ちても残りの書き込みを待ってから投げる。(外側の片付けが出力先を消す最中に書き込みが続かないように)
-	const results = await Promise.allSettled(staticFilesFor(target.outDir).map(async ([from, to]) => {
+	// 1 件が落ちても残りの書き込みを待ってから投げる
+	await settleAll(staticFilesFor(target.outDir).map(async ([from, to]) => {
 		// コピー先からディレクトリを決める。置き場所が増えても書き足さなくて済む
 		await mkdir(dirname(to), { recursive: true });
 		try {
@@ -183,10 +175,6 @@ async function copyStatic(target) {
 			throw new Error(`${from} をコピーできません: ${error.message}`);
 		}
 	}));
-	const failed = results.find((result) => result.status === 'rejected');
-	if (failed) {
-		throw failed.reason;
-	}
 }
 
 /**
@@ -228,16 +216,8 @@ async function build(targets) {
 	if (WATCH) {
 		for (const target of targets) {
 			await resetOutDir(target);
-			const ctx = await context(buildOptionsFor(target));
-			const injectCtx = await context(injectOptionsFor(target));
-			const popupCtx = await context(popupOptionsFor(target));
-			const emojiCtx = await context(emojiOptionsFor(target));
-			const videoCtx = await context(videoOptionsFor(target));
-			await ctx.watch();
-			await injectCtx.watch();
-			await popupCtx.watch();
-			await emojiCtx.watch();
-			await videoCtx.watch();
+			const contexts = await settleAll(BUNDLES.map((spec) => context(bundleOptionsFor(target, spec))));
+			await settleAll(contexts.map((ctx) => ctx.watch()));
 			await emitAssets(target, packageVersion);
 			completed.add(target.name);
 		}
@@ -249,11 +229,7 @@ async function build(targets) {
 	// 1 ブラウザずつ最後まで作る。Chrome 系が先なので、Firefox 側で落ちても dist は作り終えている
 	for (const target of targets) {
 		await resetOutDir(target);
-		await bundle(buildOptionsFor(target));
-		await bundle(injectOptionsFor(target));
-		await bundle(popupOptionsFor(target));
-		await bundle(emojiOptionsFor(target));
-		await bundle(videoOptionsFor(target));
+		await settleAll(BUNDLES.map((spec) => bundle(bundleOptionsFor(target, spec))));
 		await emitAssets(target, packageVersion);
 		completed.add(target.name);
 	}

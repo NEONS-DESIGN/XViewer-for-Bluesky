@@ -7,11 +7,12 @@
  *
  * **DOM を知らない。** 見た目は lightbox-panel.js が持つ。
  *
- * 依存: config.js (EXT_CONFIG) / bridge-client.js (callBridge)
+ * 依存: config.js (EXT_CONFIG) / at-uri.js / bridge-client.js (callBridge)
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
-import {callBridge} from './bridge-client.js';
+import {parseAtUri} from '../common/at-uri.js';
+import {callBridge, BRIDGE_TIMEOUT_REASON} from './bridge-client.js';
 
 /**
  * 投稿への反応の状態。パネルが手元に持ち、押すたびに作り直す。
@@ -24,35 +25,58 @@ import {callBridge} from './bridge-client.js';
  * @property {{reply: number, repost: number, like: number, quote: number}} counts
  */
 
-/**
- * レコードの AT URI を分解する正規表現。
- * **コレクションを問わない。** lightbox-panel.js の PANEL_POST_URI_PATTERN は
- * app.bsky.feed.post に限定しているため、いいね・リポストのレコードには使えない
- */
-const POST_ACTION_RECORD_URI_PATTERN = /^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/;
-
-/** 橋渡しの応答を待ちきれなかったときの理由 (bridge-client.js の callBridge が返す) */
-const BRIDGE_TIMEOUT = 'timeout';
+/** スレッドの書き込みが届いたか確かめられなかったときの理由 (送り直すと重複する) */
+export const THREAD_UNCONFIRMED_REASON = 'thread-unconfirmed';
 
 /**
- * レコードの AT URI を分解する。
+ * レコードの AT URI を分解する。**collection を問わない** (いいね・リポストのレコードにも使う)。
  * @param {string} uri at://<did>/<collection>/<rkey>
  * @returns {{did: string, collection: string, rkey: string}|null} 形が違えば null
  */
 export function parseRecordUri(uri) {
-	try {
-		if (typeof uri !== 'string') {
-			return null;
-		}
-		const matched = POST_ACTION_RECORD_URI_PATTERN.exec(uri);
-		if (!matched) {
-			return null;
-		}
-		return {did: matched[1], collection: matched[2], rkey: matched[3]};
-	} catch (error) {
-		console.error('[XViewer] レコード URI の解析に失敗しました', error);
-		return null;
-	}
+	return parseAtUri(uri);
+}
+
+/** 送った後に回線が切れたときの理由 (橋渡しの call-xrpc が返す) */
+const FETCH_FAILED_REASON = 'fetch-failed';
+
+/** サーバの不調を表す HTTP の状態の下限 (書き込みが届いたかは分からない) */
+const SERVER_ERROR_STATUS = 500;
+
+/**
+ * 書き込みの失敗のうち、サーバ側で書けているかもしれないものか。
+ * @param {{reason: string|null, status: number|null}} result call() の結果
+ * @returns {boolean}
+ */
+export function isMaybeWritten(result) {
+	return result.reason === BRIDGE_TIMEOUT_REASON
+		|| result.reason === FETCH_FAILED_REASON
+		|| (Number.isFinite(result.status) && result.status >= SERVER_ERROR_STATUS);
+}
+
+/**
+ * 反応数を 0 以上の整数にする。数でなければ 0。
+ * @param {*} value
+ * @returns {number}
+ */
+export function toCount(value) {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
+/**
+ * 反応の状態を写す。counts も作り直し、元を書き換えない。
+ * @param {ActionState} state
+ * @returns {ActionState}
+ */
+function cloneActionState(state) {
+	return {
+		liked: state.liked,
+		likeUri: state.likeUri,
+		reposted: state.reposted,
+		repostUri: state.repostUri,
+		bookmarked: state.bookmarked,
+		counts: {...state.counts}
+	};
 }
 
 /**
@@ -77,10 +101,10 @@ export function readViewerState(viewer, counts) {
 		repostUri,
 		bookmarked: !!(viewer && viewer.bookmarked === true),
 		counts: {
-			reply: typeof normalizedCounts.reply === 'number' ? normalizedCounts.reply : 0,
-			repost: typeof normalizedCounts.repost === 'number' ? normalizedCounts.repost : 0,
-			like: typeof normalizedCounts.like === 'number' ? normalizedCounts.like : 0,
-			quote: typeof normalizedCounts.quote === 'number' ? normalizedCounts.quote : 0
+			reply: toCount(normalizedCounts.reply),
+			repost: toCount(normalizedCounts.repost),
+			like: toCount(normalizedCounts.like),
+			quote: toCount(normalizedCounts.quote)
 		}
 	};
 }
@@ -98,19 +122,7 @@ export function readViewerState(viewer, counts) {
  * @returns {ActionState} 新しい状態。知らない種別なら中身の同じものを返す
  */
 export function toggleActionState(state, kind) {
-	const next = {
-		liked: state.liked,
-		likeUri: state.likeUri,
-		reposted: state.reposted,
-		repostUri: state.repostUri,
-		bookmarked: state.bookmarked,
-		counts: {
-			reply: state.counts.reply,
-			repost: state.counts.repost,
-			like: state.counts.like,
-			quote: state.counts.quote
-		}
-	};
+	const next = cloneActionState(state);
 	if (kind === 'like') {
 		next.liked = !state.liked;
 		next.likeUri = null;
@@ -144,19 +156,7 @@ export function toggleActionState(state, kind) {
  * @returns {ActionState} 新しい状態。知らない種別なら中身の同じものを返す
  */
 export function mergeActionKind(state, kind, source) {
-	const next = {
-		liked: state.liked,
-		likeUri: state.likeUri,
-		reposted: state.reposted,
-		repostUri: state.repostUri,
-		bookmarked: state.bookmarked,
-		counts: {
-			reply: state.counts.reply,
-			repost: state.counts.repost,
-			like: state.counts.like,
-			quote: state.counts.quote
-		}
-	};
+	const next = cloneActionState(state);
 	if (kind === 'like') {
 		next.liked = source.liked;
 		next.likeUri = source.likeUri;
@@ -228,8 +228,8 @@ export class PostActions {
 		 * 失敗 (タイムアウトなど) まで覚えると、一度の通信の乱れでそのタブが
 		 * 以後ずっと未ログイン扱いに固定されてしまうため、取れなかった場合は
 		 * 次回の呼び出しでもう一度問い合わせる。
-		 * アカウントを切り替えるとページが作り直されるため、
-		 * ここで古い値を持ち続ける経路は無い
+		 * 本体のアカウント切り替えはリロードを伴わないため、ライトボックスを開くたびに
+		 * refreshSessionDid() で問い合わせ直し、repo-not-self を受けたら捨てる
 		 * @type {string|null}
 		 */
 		this.sessionDid = null;
@@ -240,6 +240,8 @@ export class PostActions {
 		 * @type {string|null|undefined}
 		 */
 		this.knownDid = undefined;
+		/** refreshSessionDid() が最後に答えを得た時刻 (ms)。未ログインの答えを短いあいだ使い回すのに使う */
+		this.refreshedAt = 0;
 	}
 
 	/**
@@ -263,6 +265,7 @@ export class PostActions {
 		const changed = previous !== undefined && previous !== did;
 		this.knownDid = did;
 		this.sessionDid = did;
+		this.refreshedAt = Date.now();
 		if (changed) {
 			ExtDebug.log('ログイン中の DID が変わった', {前: previous, 後: did});
 		}
@@ -273,12 +276,16 @@ export class PostActions {
 	 * ログイン中の DID を返す。
 	 * **失敗は覚えない。** `sessionDid` が付いた (= 成功した) ときだけキャッシュとして
 	 * 使い、取れなかった場合は次回の呼び出しで再度 get-session を試す。
-	 * 未ログインの利用者は押すたびに問い合わせが走るが、押下時にしか走らないため許容する
+	 * ただし refreshSessionDid() が直前 (sessionTrustMs 以内) に「未ログイン」と答えていれば、
+	 * 問い合わせ直さずにそれを使う (ライトボックスを開くたびに 2 回問い合わせないため)
 	 * @returns {Promise<string|null>} 未ログイン・橋渡し失敗なら null
 	 */
 	async getSessionDid() {
 		if (this.sessionDid !== null) {
 			return this.sessionDid;
+		}
+		if (this.knownDid === null && Date.now() - this.refreshedAt < this.config.sessionTrustMs) {
+			return null;
 		}
 		const actions = EXT_CONFIG.mediaGrid.bridge.actions;
 		const result = await callBridge(actions.getSession, {});
@@ -296,7 +303,8 @@ export class PostActions {
 	 * @param {string} nsid EXT_CONFIG.postActions.nsid のいずれか
 	 * @param {{params?: Object, body?: Object, timeoutMs?: number}} options timeoutMs は橋渡しの応答を待つ上限
 	 *   (省けば橋渡しの既定)
-	 * @returns {Promise<{ok: boolean, json: Object|null, reason: string|null}>}
+	 * @returns {Promise<{ok: boolean, json: Object|null, reason: string|null, status: number|null}>}
+	 *   status は相手が HTTP で答えたときだけ数 (橋渡しの失敗・打ち切りは null)
 	 */
 	async call(nsid, options) {
 		const actions = EXT_CONFIG.mediaGrid.bridge.actions;
@@ -306,17 +314,18 @@ export class PostActions {
 			params: options && options.params,
 			body: options && options.body
 		}, Number.isFinite(timeoutMs) && timeoutMs > 0 ? {timeoutMs} : {});
+		const status = result && Number.isFinite(result.status) ? result.status : null;
 		if (!result || !result.ok) {
 			const reason = (result && result.reason) || 'no-result';
-			ExtDebug.log('投稿操作の呼び出しが失敗', {nsid, 理由: reason});
+			ExtDebug.log('投稿操作の呼び出しが失敗', {nsid, 理由: reason, status});
 			if (reason === this.config.reasons.repoNotSelf) {
 				// 橋渡しが「本人の repo ではない」と言った = 覚えていた DID が古い
 				// (アカウント切り替え)。次の問い合わせで引き直す
 				this.sessionDid = null;
 			}
-			return {ok: false, json: null, reason};
+			return {ok: false, json: null, reason, status};
 		}
-		return {ok: true, json: result.json || null, reason: null};
+		return {ok: true, json: result.json || null, reason: null, status};
 	}
 
 	/**
@@ -332,17 +341,17 @@ export class PostActions {
 	}
 
 	/**
-	 * 返信の一覧のために、投稿のスレッドを認証付きで引く。
-	 * 認証付きで引くのは viewer.replyDisabled とミュート・ブロックを反映させるため
+	 * 投稿のスレッドを認証付きで引く (パネルの投稿と返信の一覧を 1 回で読む)。
+	 * 認証付きで引くのは viewer (いいね済みか・replyDisabled) とミュート・ブロックを反映させるため
 	 * @param {string} uri 起点の投稿の AT URI
-	 * @param {number} depth 下へ辿る深さ
-	 * @returns {Promise<Object|null>} getPostThread の応答。失敗なら null
+	 * @param {number} depth 下へ辿る深さ (0 なら投稿だけ)
+	 * @returns {Promise<{ok: boolean, json: Object|null, reason: string|null, status: number|null}>}
+	 *   見つからない投稿は ok: false・status: 400 (lexicon の NotFound)
 	 */
-	async fetchThread(uri, depth) {
-		const result = await this.call(this.config.nsid.getPostThread, {
+	fetchThread(uri, depth) {
+		return this.call(this.config.nsid.getPostThread, {
 			params: {uri, depth, parentHeight: 0}
 		});
-		return result.ok ? result.json : null;
 	}
 
 	/**
@@ -441,14 +450,15 @@ export class PostActions {
 				body: {repo: did, writes},
 				timeoutMs: EXT_CONFIG.mediaGrid.bridge.threadTimeoutMs
 			});
-			if (!result.ok && result.reason === BRIDGE_TIMEOUT) {
-				// 送った後に待ちきれなかった = 書けているかもしれない。失敗として残すと送り直しで二重になる
-				return {ok: false, results: null, writes, reason: 'thread-unconfirmed'};
+			if (!result.ok && isMaybeWritten(result)) {
+				// 送った後に待ちきれなかった・回線が切れた・サーバが 5xx を返した = 書けているかもしれない。
+				// 失敗として残すと送り直しで二重になる
+				return {ok: false, results: null, writes, reason: THREAD_UNCONFIRMED_REASON};
 			}
 			if (result.ok) {
 				const results = readThreadResults(result.json, writes, did, this.config.collections.post);
 				if (results === null) {
-					return {ok: false, results: null, writes, reason: 'thread-unconfirmed'};
+					return {ok: false, results: null, writes, reason: THREAD_UNCONFIRMED_REASON};
 				}
 				return {ok: true, results, writes, reason: null};
 			}

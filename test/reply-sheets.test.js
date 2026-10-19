@@ -6,8 +6,9 @@ import {
 	SheetHost, formatText, altState, languageName, orderLanguages, filterLanguages,
 	openAltSheet, openLabelSheet, openLanguageSheet,
 	isLanguageLocked, isEmojiMessage, buildEmojiUrl, pickEmojiTheme, extensionOrigin,
-	placePopover, popoverScrollDelta
+	placePopover, popoverScrollDelta, resolveMaxAlt, buildAltField, openEmojiSheet
 } from '../src/content/reply-sheets.js';
+import {openVideoSheet} from '../src/content/video-sheet.js';
 import {toSourceDelta, sourceStep, cropKeyAction} from '../src/content/crop-sheet.js';
 
 const COMPOSE = EXT_CONFIG.lightboxReplies.compose;
@@ -345,8 +346,8 @@ test('SheetHost: 開いたボタンが消えていたら restoreFocus、無け�
 	panel.append(other);
 	const replacement = doc.createElement('button');
 	panel.append(replacement);
-	host.open({...inputSpec(doc, {done: 0, cancel: 0}), onDone: () => opener.remove(),
-		restoreFocus: () => replacement.focus()}, opener);
+	host.open({...inputSpec(doc, {done: 0, cancel: 0}), onDone: () => opener.remove()}, opener,
+		{restoreFocus: () => replacement.focus()});
 	click(panel.querySelector(`[data-role="${ROLES.done}"]`));
 	assert.strictEqual(doc.activeElement, replacement);
 	const reopened = doc.createElement('button');
@@ -401,16 +402,70 @@ test('SheetHost: 開いたボタンが描き直しで外れても、持ち主 (o
 	assert.strictEqual(host.isOpenedFrom(form), false);
 });
 
-test('SheetHost: options の restoreFocus は spec の restoreFocus より優先する', () => {
+test('SheetHost: 画面には必ず「キャンセル」と「完了」の 2 つを出す', () => {
 	const {doc, panel, opener} = setup();
 	const host = new SheetHost(panel, COMPOSE);
-	const fromSpec = doc.createElement('button');
-	const fromOptions = doc.createElement('button');
-	panel.append(fromSpec, fromOptions);
-	host.open({...inputSpec(doc, {done: 0, cancel: 0}), onDone: () => opener.remove(),
-		restoreFocus: () => fromSpec.focus()}, opener, {restoreFocus: () => fromOptions.focus()});
-	click(panel.querySelector(`[data-role="${ROLES.done}"]`));
-	assert.strictEqual(doc.activeElement, fromOptions);
+	host.open(inputSpec(doc, {done: 0, cancel: 0}), opener);
+	const layer = panel.querySelector(`[data-role="${ROLES.layer}"]`);
+	assert.strictEqual(layer.querySelector(`[data-role="${ROLES.cancel}"]`).textContent, COMPOSE.text.sheetCancel);
+	assert.strictEqual(layer.querySelector(`[data-role="${ROLES.done}"]`).textContent, COMPOSE.text.sheetDone);
+	host.close(false);
+});
+
+test('resolveMaxAlt: 正の整数ならそれ、そうでなければ既定の上限', () => {
+	assert.strictEqual(resolveMaxAlt(995, 2000), 995);
+	assert.strictEqual(resolveMaxAlt(undefined, 2000), 2000);
+	assert.strictEqual(resolveMaxAlt(0, 2000), 2000);
+	assert.strictEqual(resolveMaxAlt(-3, 2000), 2000);
+	assert.strictEqual(resolveMaxAlt(1.5, 2000), 2000);
+	assert.strictEqual(resolveMaxAlt('10', 2000), 2000);
+});
+
+test('buildAltField: 残りを数え、上限を超えたら「完了」を止め、Ctrl+Enter は超えていないときだけ done を呼ぶ', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	let alt = null;
+	let done = 0;
+	host.open({
+		title: '題',
+		build: (body) => {
+			alt = buildAltField(host, doc, {value: 'ab', max: 3, placeholder: '説明', done: () => { done += 1; }});
+			body.append(alt.frame, alt.remaining);
+			alt.sync();
+		}
+	}, opener);
+	const doneButton = panel.querySelector(`[data-role="${ROLES.done}"]`);
+	assert.strictEqual(alt.field.getAttribute('placeholder'), '説明');
+	assert.strictEqual(alt.field.getAttribute('aria-label'), COMPOSE.text.altLabel);
+	assert.strictEqual(alt.remaining.textContent, formatText(COMPOSE.text.altRemaining, {count: 1}));
+	assert.strictEqual(doneButton.disabled, false);
+	const ctrlEnter = () => {
+		const event = new FakeEvent('keydown', {key: 'Enter'});
+		event.ctrlKey = true;
+		alt.field.dispatchEvent(event);
+		return event;
+	};
+	assert.ok(ctrlEnter().defaultPrevented);
+	assert.strictEqual(done, 1);
+	alt.field.value = 'abcd';
+	alt.field.dispatchEvent(new FakeEvent('input'));
+	assert.strictEqual(doneButton.disabled, true);
+	assert.ok(alt.remaining.classList.contains(COMPOSE.classes.warn));
+	ctrlEnter();
+	assert.strictEqual(done, 1, '上限を超えているあいだは done を呼ばない');
+	host.close(false);
+});
+
+test('buildAltField: placeholder を渡さなければ付けない', () => {
+	const {doc, panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	let alt = null;
+	host.open({title: '題', build: (body) => {
+		alt = buildAltField(host, doc, {value: '', max: 10, done: () => {}});
+		body.append(alt.frame);
+	}}, opener);
+	assert.strictEqual(alt.field.getAttribute('placeholder'), null);
+	host.close(false);
 });
 
 const POPOVER = COMPOSE.popover;
@@ -568,4 +623,138 @@ test('SheetHost: 吹き出しを開いたボタンで開き直すと閉じるだ
 	assert.strictEqual(host.isOpen(), true);
 	assert.strictEqual(host.isOpenedFrom(other), true);
 	assert.strictEqual(panel.querySelectorAll(`[data-role="${ROLES.layer}"]`).length, 1);
+});
+
+/**
+ * requestAnimationFrame を手で進められる窓をパネルの文書に持たせる。
+ * @param {object} doc 偽の文書
+ * @returns {{frames: Function[], run: () => void}}
+ */
+function withFrames(doc) {
+	const frames = [];
+	doc.defaultView = {
+		...doc.defaultView,
+		requestAnimationFrame: (fn) => frames.push(fn),
+		cancelAnimationFrame: (id) => { frames[id - 1] = null; },
+		addEventListener: () => {},
+		removeEventListener: () => {}
+	};
+	const run = () => {
+		const pending = frames.splice(0);
+		for (const fn of pending) if (fn) fn();
+	};
+	return {frames, run};
+}
+
+test('SheetHost: 吹き出しの置き直しはパネルの送りを 1 フレーム 1 回にまとめ、吹き出しの中の送りでは置き直さない', () => {
+	const {doc, panel, opener} = setup();
+	const {frames, run} = withFrames(doc);
+	const host = new SheetHost(panel, COMPOSE);
+	host.open(popoverSpec(doc, {cancel: 0}), opener);
+	let placed = 0;
+	host.placeCurrentPopover = () => { placed += 1; };
+	const layer = panel.querySelector(`[data-role="${ROLES.layer}"]`);
+	const inner = layer.querySelector('[data-role="test-item"]');
+	inner.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	assert.strictEqual(frames.length, 0, '吹き出しの中の送りでは置き直さない');
+	const thread = doc.createElement('div');
+	panel.append(thread);
+	thread.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	panel.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	thread.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	assert.strictEqual(frames.length, 1, '同じフレームの送りは 1 回にまとめる');
+	assert.strictEqual(placed, 0);
+	run();
+	assert.strictEqual(placed, 1);
+	thread.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	host.close(false);
+	run();
+	assert.strictEqual(placed, 1, '閉じたら待っている置き直しを取り消す');
+	thread.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	assert.strictEqual(frames.length, 0, '閉じた後の送りは拾わない');
+});
+
+test('openEmojiSheet: 準備できたと知らせるまで読み込み中の 1 行を重ね、知らせが来たら外す', () => {
+	const {doc, panel, opener} = setup();
+	const listeners = [];
+	doc.defaultView = {
+		...doc.defaultView,
+		addEventListener: (type, fn) => { if (type === 'message') listeners.push(fn); },
+		removeEventListener: (type, fn) => {
+			const index = listeners.indexOf(fn);
+			if (index !== -1) listeners.splice(index, 1);
+		}
+	};
+	const origin = 'chrome-extension://abc';
+	globalThis.chrome = {runtime: {getURL: (path) => `${origin}/${path}`}};
+	try {
+		const host = new SheetHost(panel, COMPOSE);
+		openEmojiSheet(host, opener, () => {});
+		const frame = panel.querySelector('iframe');
+		const loading = panel.querySelector(`.${COMPOSE.classes.emojiLoading}`);
+		assert.ok(frame, 'iframe が無い');
+		assert.ok(loading, '読み込み中の 1 行が無い');
+		assert.strictEqual(loading.getAttribute('role'), 'status');
+		assert.strictEqual(loading.textContent, COMPOSE.text.emojiLoading);
+		assert.strictEqual(loading.hidden, false);
+		frame.contentWindow = {};
+		listeners[0]({source: {}, origin, data: {type: COMPOSE.emoji.readyType}});
+		assert.strictEqual(loading.hidden, false, '別の送り主の知らせは受けない');
+		listeners[0]({source: frame.contentWindow, origin, data: {type: COMPOSE.emoji.readyType}});
+		assert.strictEqual(loading.hidden, true);
+		assert.ok(host.isOpen(), '準備の知らせでは閉じない');
+		host.close(false);
+		assert.strictEqual(listeners.length, 0, '閉じたら通知の受け口を外す');
+	} finally {
+		delete globalThis.chrome;
+	}
+});
+
+test('openEmojiSheet: 失敗の知らせで iframe と読み込み中の 1 行を隠し、失敗の 1 行を出す', () => {
+	const {doc, panel, opener} = setup();
+	const listeners = [];
+	doc.defaultView = {
+		...doc.defaultView,
+		addEventListener: (type, fn) => { if (type === 'message') listeners.push(fn); },
+		removeEventListener: () => {}
+	};
+	const origin = 'chrome-extension://abc';
+	globalThis.chrome = {runtime: {getURL: (path) => `${origin}/${path}`}};
+	try {
+		const host = new SheetHost(panel, COMPOSE);
+		openEmojiSheet(host, opener, () => {});
+		const frame = panel.querySelector('iframe');
+		const loading = panel.querySelector(`.${COMPOSE.classes.emojiLoading}`);
+		const error = panel.querySelector('[role="alert"]');
+		assert.strictEqual(error.hidden, true);
+		frame.contentWindow = {};
+		listeners[0]({source: frame.contentWindow, origin, data: {type: COMPOSE.emoji.closeType, error: true}});
+		assert.strictEqual(frame.hidden, true);
+		assert.strictEqual(loading.hidden, true);
+		assert.strictEqual(error.hidden, false);
+		host.close(false);
+	} finally {
+		delete globalThis.chrome;
+	}
+});
+
+test('openVideoSheet: ALT の欄に動画用の placeholder を付ける', () => {
+	const {panel, opener} = setup();
+	const host = new SheetHost(panel, COMPOSE);
+	openVideoSheet(host, {previewUrl: '', alt: '', caption: null, languageCodes: ['ja'], defaultLang: 'ja', locale: 'ja'},
+		opener, () => {});
+	const field = panel.querySelector('textarea');
+	assert.strictEqual(field.getAttribute('placeholder'), COMPOSE.text.videoAltPlaceholder);
+	assert.strictEqual(field.getAttribute('aria-label'), COMPOSE.text.altLabel);
+	host.close(false);
+});
+
+test('SheetHost: 吹き出しを開かず閉じても置き直しの監視を残さない (ALT の画面は監視を足さない)', () => {
+	const {doc, panel, opener} = setup();
+	const {frames} = withFrames(doc);
+	const host = new SheetHost(panel, COMPOSE);
+	openAltSheet(host, {previewUrl: '', alt: ''}, opener, () => {});
+	panel.dispatchEvent(new FakeEvent('scroll', {bubbles: false}));
+	assert.strictEqual(frames.length, 0);
+	host.close(false);
 });

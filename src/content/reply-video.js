@@ -5,16 +5,20 @@
  * 非同期の続き (寸法の読み取り・進み具合・結果) は、始めたときの状態と回の番号が今も同じときだけ
  * 反映する。外した・別の動画に替えた・撤去した後に届いたものは黙って捨てる。
  *
- * 依存: video-rules.js、embed-cards.js (buildGifPlayer / prefersReducedMotion)、sheet-dom.js、
- *       reply-attachments.js (createIconButton)、icons.js (createIcon)、blob-transfer.js (既定のアップロード)
+ * 依存: config.js (寸法の読み取りの既定の待ち時間)、video-rules.js、embed-cards.js (buildGifPlayer)、motion.js、
+ *       sheet-dom.js、reply-attachments.js (createIconButton)、icons.js (createIcon)、object-url.js、request-slot.js
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {createIcon} from '../common/icons.js';
-import {checkVideoFile, checkVideoMeta, checkCaptionFile, videoStatusText, videoErrorText} from './video-rules.js';
-import {buildGifPlayer, prefersReducedMotion} from './embed-cards.js';
+import {prefersReducedMotion} from '../common/motion.js';
+import {
+	checkVideoFile, checkVideoMeta, checkCaptionFile, videoStatusText, videoErrorText, toPercent
+} from './video-rules.js';
+import {buildGifPlayer} from './embed-cards.js';
 import {createElement, createButton} from './sheet-dom.js';
-import {uploadVideo, cancelVideoUpload} from './blob-transfer.js';
 import {createIconButton} from './reply-attachments.js';
+import {createObjectUrl, revokeObjectUrl} from './object-url.js';
+import {createRequestSlot} from './request-slot.js';
 
 /** 字幕の印に使うアイコン */
 const CAPTION_ICON = 'closedCaption';
@@ -37,12 +41,11 @@ const CAPTION_ICON = 'closedCaption';
  */
 
 /**
- * ComposerVideo が使う外の処理。
+ * ComposerVideo が使う外の処理 (入力欄の ComposerDeps のうち動画の分)。
  * @typedef {Object} VideoDeps
- * @property {(blob: Blob, onProgress: (event: {phase: string, progress: (number|null)}) => void) => {id: string, done: Promise<{ok: boolean, blob: (Object|null), reason: (string|null), message: (string|null)}>}} [uploadVideo]
- * @property {(id: string) => void} [cancelVideoUpload]
- * @property {(file: File) => Promise<{width: number, height: number, duration: number}|null>} [readMeta]
- * @property {() => void} onChange 状態が変わったとき (描き直しの合図)
+ * @property {(blob: Blob, onProgress: (event: {phase: string, progress: (number|null)}) => void) => {id: string, done: Promise<{ok: boolean, blob: (Object|null), reason: (string|null), message: (string|null)}>}} uploadVideo
+ * @property {(id: string) => void} cancelVideoUpload
+ * @property {(file: File) => Promise<{width: number, height: number, duration: number}|null>} readVideoMeta
  */
 
 /**
@@ -56,35 +59,27 @@ const CAPTION_ICON = 'closedCaption';
 const RUNNING_PHASES = ['upload', 'processing'];
 
 /**
- * オブジェクト URL を作る。作れなければ空。
- * @param {Blob} blob
- * @returns {string}
+ * 進み具合を、状態の 1 行に出す値 (百分率の整数。不明は null) にする。
+ * @param {number|null} progress
+ * @returns {number|null}
  */
-function createUrl(blob) {
-	try {
-		return URL.createObjectURL(blob) || '';
-	} catch (error) {
-		return '';
-	}
+function shownPercent(progress) {
+	return Number.isFinite(progress) ? toPercent(progress) : null;
 }
 
 /**
- * オブジェクト URL を破棄する。空なら何もしない。
- * @param {string} url
- * @returns {void}
+ * 進み具合の知らせを反映すべきか。段階が変わったか、状態の 1 行に出す百分率が変わったときだけ真。
+ * @param {{phase: string, progress: (number|null)}} current いまの段階と進み具合
+ * @param {{phase: string, progress: (number|null)}} next 届いた段階と進み具合
+ * @returns {boolean}
  */
-function revokeUrl(url) {
-	if (!url) return;
-	try {
-		URL.revokeObjectURL(url);
-	} catch (error) {
-		// 破棄の失敗は表示に影響させない
-	}
+export function isVisibleProgressChange(current, next) {
+	return current.phase !== next.phase || shownPercent(current.progress) !== shownPercent(next.progress);
 }
 
 /**
  * 動画の幅・高さ・長さ (秒) を読む。video にオブジェクト URL を入れ、loadedmetadata か error を待つ。
- * 読めない・時間切れは null。URL は必ず破棄する。
+ * 読めない・時間切れは null。URL は必ず破棄し、video の読み込みも止める。
  * @param {File} file 動画
  * @param {Document} [doc] video を作る文書
  * @param {number} [timeoutMs] 諦めるまでの時間 (ミリ秒)。省略すると compose.video.metaTimeoutMs
@@ -101,11 +96,15 @@ export function readVideoMeta(file, doc = globalThis.document, timeoutMs = EXT_C
 			settled = true;
 			if (timer !== null) clearTimeout(timer);
 			try {
-				if (video) video.removeAttribute('src');
+				if (video) {
+					video.removeAttribute('src');
+					// src を外しただけでは読み込みが続くため、空の状態で読み直させて止める
+					if (typeof video.load === 'function') video.load();
+				}
 			} catch (error) {
 				// 外せなくても URL の破棄は続ける
 			}
-			revokeUrl(url);
+			revokeObjectUrl(url);
 			resolve(value);
 		};
 		try {
@@ -117,7 +116,7 @@ export function readVideoMeta(file, doc = globalThis.document, timeoutMs = EXT_C
 			});
 			video.addEventListener('error', () => finish(null));
 			timer = setTimeout(() => finish(null), timeoutMs);
-			url = createUrl(file);
+			url = createObjectUrl(file);
 			if (!url) {
 				finish(null);
 				return;
@@ -155,24 +154,21 @@ export async function readCaptionFile(file, rule) {
 export class ComposerVideo {
 	/**
 	 * @param {Object} config EXT_CONFIG.lightboxReplies
-	 * @param {VideoDeps} deps
+	 * @param {VideoDeps} deps 口は呼ぶたびに引く (差し替えに追随する)
+	 * @param {() => void} [onChange] 状態が変わったとき (描き直しの合図)
 	 */
-	constructor(config, deps) {
+	constructor(config, deps, onChange) {
 		this.config = config;
 		this.compose = config.compose;
 		this.cards = config.cards;
 		this.rule = config.compose.video;
 		this.text = config.compose.text;
-		this.deps = {
-			uploadVideo,
-			cancelVideoUpload,
-			readMeta: (file) => readVideoMeta(file, globalThis.document, this.rule.metaTimeoutMs),
-			...deps
-		};
+		this.deps = deps;
+		this.onChange = typeof onChange === 'function' ? onChange : null;
 		/** @type {VideoState|null} */
 		this.state = null;
-		/** アップロードの回の番号。始める・外す・空に戻すたびに進め、届いた進み具合と結果に照らす */
-		this.uploadSeq = 0;
+		/** アップロードの回。始める・外す・空に戻すたびに入れ替え、届いた進み具合と結果に照らす */
+		this.upload = createRequestSlot();
 		/** 描いているプレビュー (進み具合だけの変化では作り直さない) */
 		this.view = null;
 		/** 最後の render で受け取った処理。作り直さずに描いたプレビューのボタンもこれを呼ぶ @type {VideoHandlers} */
@@ -187,7 +183,7 @@ export class ComposerVideo {
 	notify() {
 		if (this.destroyed) return;
 		try {
-			if (typeof this.deps.onChange === 'function') this.deps.onChange();
+			if (this.onChange) this.onChange();
 		} catch (error) {
 			console.error('[XViewer] 動画の状態の変化を知らせられませんでした', error);
 		}
@@ -226,7 +222,7 @@ export class ComposerVideo {
 
 		let meta = null;
 		try {
-			meta = await this.deps.readMeta(file);
+			meta = await this.deps.readVideoMeta(file);
 		} catch (error) {
 			meta = null;
 		}
@@ -241,7 +237,7 @@ export class ComposerVideo {
 		state.width = measured.width;
 		state.height = measured.height;
 		state.durationMs = measured.durationMs;
-		state.url = createUrl(file);
+		state.url = createObjectUrl(file);
 		this.startUpload(state);
 		return {ok: true};
 	}
@@ -252,9 +248,8 @@ export class ComposerVideo {
 	 * @returns {void}
 	 */
 	startUpload(state) {
-		this.uploadSeq += 1;
-		const seq = this.uploadSeq;
-		const isCurrent = () => !this.destroyed && this.state === state && this.uploadSeq === seq;
+		const token = this.upload.begin();
+		const isCurrent = () => !this.destroyed && this.state === state && this.upload.isCurrent(token);
 		state.phase = 'upload';
 		state.progress = 0;
 		state.blob = null;
@@ -285,7 +280,8 @@ export class ComposerVideo {
 	}
 
 	/**
-	 * 進み具合を反映する。
+	 * 進み具合を反映する。状態の 1 行に出す百分率と段階が前と同じなら知らせない
+	 * (知らせると入力欄が描き直しと送信ボタンの判定を毎回やり直すため)。
 	 * @param {VideoState} state
 	 * @param {{phase: string, progress: (number|null)}} event
 	 * @returns {void}
@@ -294,9 +290,11 @@ export class ComposerVideo {
 		try {
 			if (!event || RUNNING_PHASES.indexOf(event.phase) === -1) return;
 			if (RUNNING_PHASES.indexOf(state.phase) === -1) return;
-			state.phase = event.phase;
-			state.progress = Number.isFinite(event.progress) ? event.progress : null;
-			this.notify();
+			const next = {phase: event.phase, progress: Number.isFinite(event.progress) ? event.progress : null};
+			const visible = isVisibleProgressChange(state, next);
+			state.phase = next.phase;
+			state.progress = next.progress;
+			if (visible) this.notify();
 		} catch (error) {
 			console.error('[XViewer] 動画の進み具合を反映できませんでした', error);
 		}
@@ -359,9 +357,9 @@ export class ComposerVideo {
 	clear() {
 		const state = this.state;
 		this.state = null;
-		this.uploadSeq += 1;
+		this.upload.cancel();
 		this.view = null;
-		if (state) revokeUrl(state.url);
+		if (state) revokeObjectUrl(state.url);
 	}
 
 	/**
@@ -434,14 +432,14 @@ export class ComposerVideo {
 	}
 
 	/**
-	 * 描き分けが要る変化を表す鍵。これが同じあいだは状態の 1 行だけを書き換える。
-	 * @param {boolean} busy
+	 * 描き分けが要る変化を表す鍵。これが同じあいだは状態の 1 行とボタンの押せる / 押せないだけを書き換える
+	 * (送信中かどうかは鍵に入れない。送信の始まりと終わりで動画を作り直すと再生が最初に戻るため)。
 	 * @returns {string}
 	 */
-	viewKey(busy) {
+	viewKey() {
 		const state = this.state;
 		return JSON.stringify([
-			state.url, state.alt !== '', !!state.caption, state.phase === 'error', state.phase === 'reading', !!busy
+			state.url, state.alt !== '', !!state.caption, state.phase === 'error', state.phase === 'reading'
 		]);
 	}
 
@@ -467,7 +465,7 @@ export class ComposerVideo {
 			container.hidden = false;
 			this.handlers = handlers || {};
 			const statusText = videoStatusText({phase: state.phase, progress: state.progress, message: state.error}, this.text);
-			const key = this.viewKey(busy);
+			const key = this.viewKey();
 			const doc = container.ownerDocument;
 			let view = this.view;
 			if (!view || view.container !== container || view.state !== state || !container.contains(view.shell)) {
@@ -490,10 +488,24 @@ export class ComposerVideo {
 				view.actions.hidden = actions.length === 0;
 				view.key = key;
 			}
+			this.applyBusy(view, busy);
 			if (view.status.textContent !== statusText) view.status.textContent = statusText;
 		} catch (error) {
 			console.error('[XViewer] 動画のプレビューを描けませんでした', error);
 		}
+	}
+
+	/**
+	 * プレビューのボタン (ALT・×・再試行) を、送信中は押せなくし、終われば戻す。再生のボタンは触らない。
+	 * @param {{media: HTMLElement, actions: HTMLElement}} view
+	 * @param {boolean} busy
+	 * @returns {void}
+	 */
+	applyBusy(view, busy) {
+		const tools = view.media.querySelector(`.${this.cards.classes.gifTools}`);
+		const buttons = (tools ? Array.from(tools.querySelectorAll('button')) : [])
+			.concat(Array.from(view.actions.querySelectorAll('button')));
+		for (const button of buttons) button.disabled = !!busy;
 	}
 
 	/**

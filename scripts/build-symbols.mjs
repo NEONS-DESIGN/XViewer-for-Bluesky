@@ -39,6 +39,7 @@ const ICON_SOURCES = {
 	playArrow: { file: 'play_arrow-fill', label: 'GIF を再生' },
 	closedCaption: { file: 'closed_caption-fill', label: '字幕' },
 	add: { file: 'add-fill', label: 'スレッドに投稿を追加 (プラス)' },
+	filterNone: { file: 'filter_none-fill', label: 'メディアグリッドの複数枚の投稿の印 (重なった四角)' },
 };
 
 /** 原本の置き場。 */

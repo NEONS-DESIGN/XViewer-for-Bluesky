@@ -63,7 +63,7 @@ function keyMoves(count) {
  * @param {Document} doc 対象のドキュメント
  * @param {readonly TabEntry[]} entries タブとパネルの組
  * @param {{label: string, initialId?: string|null}} options 並び全体の読み上げ名と、最初に選ぶタブの id
- * @returns {{list: HTMLElement, currentId: () => string|null}} タブの並びと、今選んでいるタブの id を返す関数
+ * @returns {{list: HTMLElement}} タブの並び
  */
 export function renderTabs(doc, entries, {label, initialId = null}) {
 	const list = doc.createElement('div');
@@ -138,5 +138,5 @@ export function renderTabs(doc, entries, {label, initialId = null}) {
 	});
 
 	select(current, false);
-	return {list, currentId: () => entries[current]?.id ?? null};
+	return {list};
 }

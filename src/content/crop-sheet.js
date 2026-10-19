@@ -5,10 +5,10 @@
  * 四隅で大きさを変える。枠にフォーカスがあるときは矢印キーで動かし、Shift+矢印で大きさを変える。
  * 枠の値は元の画像の画素で持ち、計算は crop-box.js の純関数に任せる。
  *
- * 依存: crop-box.js (initialBox, moveBox, resizeBox, isFullImage)、sheet-dom.js
+ * 依存: crop-box.js (initialBox, moveBox, resizeBox, isFullImage, isUsableImage, isBoxInImage, matchAspect)、sheet-dom.js
  */
-import {initialBox, moveBox, resizeBox, isFullImage} from './crop-box.js';
-import {createElement, createButton, formatText} from './sheet-dom.js';
+import {initialBox, moveBox, resizeBox, isFullImage, isUsableImage, isBoxInImage, matchAspect} from './crop-box.js';
+import {createElement, createButton, createAlert, formatText} from './sheet-dom.js';
 
 /** @typedef {import('./image-prepare.js').CropRect} CropRect */
 
@@ -64,28 +64,6 @@ export function cropKeyAction(event, steps) {
 }
 
 /**
- * 画像の大きさが使えるか (幅・高さが 1 画素以上の有限の数)。
- * @param {{width: number, height: number}|undefined} image 元の画像の大きさ
- * @returns {boolean}
- */
-function isUsableImage(image) {
-	return !!image && Number.isFinite(image.width) && Number.isFinite(image.height)
-		&& image.width >= 1 && image.height >= 1;
-}
-
-/**
- * 渡された枠が画像の中に収まる正しい枠か。
- * @param {CropRect|null} crop 枠
- * @param {{width: number, height: number}} image 元の画像の大きさ
- * @returns {boolean}
- */
-function isUsableCrop(crop, image) {
-	return !!crop && [crop.x, crop.y, crop.width, crop.height].every(Number.isFinite)
-		&& crop.x >= 0 && crop.y >= 0 && crop.width > 0 && crop.height > 0
-		&& crop.x + crop.width <= image.width && crop.y + crop.height <= image.height;
-}
-
-/**
  * 切り抜きの画面の状態と描画を持つ。枠の値が変わるたびに render() で表示へ写す。
  */
 class CropEditor {
@@ -93,14 +71,20 @@ class CropEditor {
 	 * @param {Document} doc 対象の文書
 	 * @param {Object} config EXT_CONFIG.lightboxReplies.compose
 	 * @param {{width: number, height: number}} image 元の画像の大きさ
-	 * @param {CropRect|null} crop 今の切り抜き
+	 * @param {CropRect|null} crop 今の切り抜き。比のボタンは、この枠に当てはまる比を選んだ状態で開く
 	 */
 	constructor(doc, config, image, crop) {
 		this.doc = doc;
 		this.config = config;
 		this.image = {width: Math.floor(image.width), height: Math.floor(image.height)};
-		this.aspect = config.crop.aspects[0];
-		this.box = isUsableCrop(crop, this.image) ? {...crop} : initialBox(this.image, this.aspect.ratio);
+		const aspects = config.crop.aspects;
+		if (isBoxInImage(crop, this.image)) {
+			this.box = {...crop};
+			this.aspect = matchAspect(this.box, aspects);
+		} else {
+			this.aspect = aspects[0];
+			this.box = initialBox(this.image, this.aspect.ratio);
+		}
 		this.drag = null;
 		this.aspectButtons = [];
 	}
@@ -134,9 +118,7 @@ class CropEditor {
 		this.boxEl = this.buildBox();
 		this.frame.append(this.img, this.shadeClip, this.boxEl);
 		this.stage.append(this.frame);
-		this.error = createElement(doc, 'p', classes.error, text.cropFailed);
-		this.error.setAttribute('role', 'alert');
-		this.error.hidden = true;
+		this.error = createAlert(doc, classes.error, text.cropFailed);
 		this.img.addEventListener('error', () => {
 			this.stage.hidden = true;
 			this.error.hidden = false;
@@ -337,8 +319,8 @@ export function openCropSheet(host, input, opener, onSave, options) {
 			const doc = body.ownerDocument;
 			const win = doc.defaultView;
 			if (!isUsableImage(input?.image)) {
-				const error = createElement(doc, 'p', config.classes.error, config.text.cropFailed);
-				error.setAttribute('role', 'alert');
+				const error = createAlert(doc, config.classes.error, config.text.cropFailed);
+				error.hidden = false;
 				body.append(error);
 				host.setDoneDisabled(true);
 				return undefined;

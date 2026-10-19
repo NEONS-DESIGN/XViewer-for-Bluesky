@@ -3,8 +3,10 @@
  * embed の view の分類は純関数で、DOM の組み立ては文書と設定を引数で受け取る。
  */
 
-import {createElement} from './sheet-dom.js';
+import {createElement, createButton, onIsolatedClick} from './sheet-dom.js';
 import {createIconButton} from './reply-attachments.js';
+
+export {prefersReducedMotion} from '../common/motion.js';
 
 /** 引用先の投稿に付いた画像のサムネイルを探す深さの上限 (embeds の入れ子) */
 const MAX_EMBED_DEPTH = 2;
@@ -148,19 +150,6 @@ function applyRecord(result, record, rule) {
 }
 
 /**
- * 動きを減らす設定か。
- * @param {Window} win
- * @returns {boolean}
- */
-export function prefersReducedMotion(win) {
-	try {
-		return Boolean(win.matchMedia('(prefers-reduced-motion: reduce)').matches);
-	} catch (_e) {
-		return false;
-	}
-}
-
-/**
  * 外すボタン (右上の ×)。押しても親の押下は起こさない。
  * @param {Document} doc
  * @param {Object} classes cards.classes
@@ -170,11 +159,7 @@ export function prefersReducedMotion(win) {
  */
 function createRemoveButton(doc, classes, label, onRemove) {
 	const button = createIconButton(doc, classes.remove, 'close', label);
-	button.addEventListener('click', (event) => {
-		event.preventDefault();
-		event.stopPropagation();
-		onRemove();
-	});
+	onIsolatedClick(button, () => onRemove());
 	return button;
 }
 
@@ -313,27 +298,25 @@ export function buildQuoteCard(doc, model, opts) {
 }
 
 /**
- * 再生と停止を切り替えるボタン。video の play / pause に合わせて名前と見た目 (is-playing) を変える。
+ * 再生と停止を切り替えるボタン。video の play / pause に合わせて名前と見た目 (classes.playing) を変える。
  * 押しても親の押下は起こさない。
  * @param {Document} doc
  * @param {HTMLVideoElement} video
- * @param {string} className ボタンのクラス
+ * @param {Object} classes cards.classes (gifPlay と playing を使う)
  * @param {{play: string, pause: string}} labels 止まっているとき・流れているときのボタンの名前
  * @param {boolean} playing 作った時点の名前を「止める」にするか (自動再生のとき)
  * @returns {HTMLButtonElement}
  */
-function createPlayToggle(doc, video, className, labels, playing) {
-	const toggle = createIconButton(doc, className, 'playArrow', playing ? labels.pause : labels.play);
+function createPlayToggle(doc, video, classes, labels, playing) {
+	const toggle = createIconButton(doc, classes.gifPlay, 'playArrow', playing ? labels.pause : labels.play);
 	const sync = () => {
 		const nowPlaying = !video.paused;
 		const label = nowPlaying ? labels.pause : labels.play;
 		toggle.setAttribute('aria-label', label);
 		toggle.title = label;
-		toggle.classList.toggle('is-playing', nowPlaying);
+		toggle.classList.toggle(classes.playing, nowPlaying);
 	};
-	toggle.addEventListener('click', (event) => {
-		event.preventDefault();
-		event.stopPropagation();
+	onIsolatedClick(toggle, () => {
 		try {
 			if (video.paused) {
 				const started = video.play();
@@ -365,7 +348,8 @@ function focusSafely(element) {
 
 /**
  * GIF のプレイヤーを組み立てる。動画は消音・ループ・インライン再生。
- * autoplay が偽なら、押すと再生・停止できる再生ボタンを重ねる。
+ * autoplay が偽なら、押すと再生・停止できる再生ボタンを重ねる。そのときは押されるまで中身を落とさない
+ * (preload は metadata にし、posterUrl があれば最初の絵に使う)。
  * @param {Document} doc
  * @param {{sources: Array<{src: string, type: string}>, width: number, height: number}} player
  * @param {{classes: Object, text: Object, label: string, autoplay: boolean, posterUrl?: string|null, onRemove?: () => void, onAlt?: (button: HTMLButtonElement) => void, altDone?: boolean}} opts
@@ -384,7 +368,8 @@ export function buildGifPlayer(doc, player, opts) {
 	video.setAttribute('muted', '');
 	video.setAttribute('loop', '');
 	video.setAttribute('playsinline', '');
-	video.setAttribute('preload', 'auto');
+	video.setAttribute('preload', opts.autoplay ? 'auto' : 'metadata');
+	if (opts.posterUrl) video.setAttribute('poster', opts.posterUrl);
 	video.setAttribute('aria-label', opts.label);
 	for (const one of player.sources) {
 		const source = createElement(doc, 'source');
@@ -394,7 +379,7 @@ export function buildGifPlayer(doc, player, opts) {
 	}
 	root.append(video);
 
-	const toggle = createPlayToggle(doc, video, classes.gifPlay, {play: text.gifPlay, pause: text.gifPause}, opts.autoplay);
+	const toggle = createPlayToggle(doc, video, classes, {play: text.gifPlay, pause: text.gifPause}, opts.autoplay);
 	root.append(toggle);
 
 	// 読み込みの失敗は video ではなく各 source に飛び、バブリングもしない。全部が失敗したら静止画にする
@@ -430,14 +415,9 @@ export function buildGifPlayer(doc, player, opts) {
 		const tools = createElement(doc, 'span', classes.gifTools);
 		if (opts.onAlt) {
 			const onAlt = opts.onAlt;
-			const alt = createElement(doc, 'button', classes.gifAlt, opts.altDone ? text.gifAltDone : text.gifAlt);
-			alt.type = 'button';
+			const alt = createButton(doc, classes.gifAlt, opts.altDone ? text.gifAltDone : text.gifAlt);
 			if (opts.altDone) alt.classList.add(classes.gifAltDone);
-			alt.addEventListener('click', (event) => {
-				event.preventDefault();
-				event.stopPropagation();
-				onAlt(alt);
-			});
+			onIsolatedClick(alt, () => onAlt(alt));
 			tools.append(alt);
 		}
 		if (opts.onRemove) tools.append(createRemoveButton(doc, classes, text.removeGif, opts.onRemove));
@@ -497,13 +477,8 @@ export function buildVideoCard(doc, view, opts) {
 		for (const one of items) one.remove();
 		if (!opts.onOpenPost) return null;
 		const onOpenPost = opts.onOpenPost;
-		const button = createElement(doc, 'button', classes.videoFallback, text.videoOpenPost);
-		button.type = 'button';
-		button.addEventListener('click', (event) => {
-			event.preventDefault();
-			event.stopPropagation();
-			onOpenPost();
-		});
+		const button = createButton(doc, classes.videoFallback, text.videoOpenPost);
+		onIsolatedClick(button, () => onOpenPost());
 		root.append(button);
 		return button;
 	};
@@ -532,7 +507,7 @@ export function buildVideoCard(doc, view, opts) {
 		play.remove();
 		root.append(video);
 		const toggle = isGif
-			? createPlayToggle(doc, video, classes.gifPlay, {play: text.videoPlay, pause: text.videoPause}, false)
+			? createPlayToggle(doc, video, classes, {play: text.videoPlay, pause: text.videoPause}, false)
 			: null;
 		if (toggle) root.append(toggle);
 		// 押したボタンは外したため、フォーカスが文書の先頭へ落ちないよう再生の操作へ移す
@@ -560,11 +535,7 @@ export function buildVideoCard(doc, view, opts) {
 			fail();
 		}
 	};
-	play.addEventListener('click', (event) => {
-		event.preventDefault();
-		event.stopPropagation();
-		begin(true);
-	});
+	onIsolatedClick(play, () => begin(true));
 	if (isGif && opts.autoplay) begin(false);
 	return root;
 }

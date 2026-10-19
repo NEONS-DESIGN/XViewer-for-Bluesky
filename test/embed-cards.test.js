@@ -222,6 +222,49 @@ test('buildGifPlayer: 消音・ループ・インラインで、autoplay の真�
 	assert.strictEqual(auto.querySelector('button').getAttribute('aria-label'), GIF_TEXT.gifPause);
 });
 
+test('buildGifPlayer: 自動で流さないときは preload を metadata にし、posterUrl を最初の絵にする', () => {
+	const idle = docWithVideoStub();
+	buildGifPlayer(idle.doc, GIF_PLAYER, {
+		classes: CARDS.classes, text: GIF_TEXT, label: 'ねこ', autoplay: false, posterUrl: 'https://cdn/p.jpg'
+	});
+	assert.strictEqual(idle.videos[0].getAttribute('preload'), 'metadata');
+	assert.strictEqual(idle.videos[0].getAttribute('poster'), 'https://cdn/p.jpg');
+
+	const auto = docWithVideoStub();
+	buildGifPlayer(auto.doc, GIF_PLAYER, {classes: CARDS.classes, text: GIF_TEXT, label: 'ねこ', autoplay: true});
+	assert.strictEqual(auto.videos[0].getAttribute('preload'), 'auto');
+	assert.strictEqual(auto.videos[0].getAttribute('poster'), null, 'posterUrl が無ければ付けない');
+});
+
+test('buildGifPlayer: 流れているあいだだけ切り替えのボタンに cards.classes.playing を付ける', () => {
+	assert.strictEqual(CARDS.classes.playing, 'is-playing');
+	const {doc} = docWithVideoStub();
+	const root = buildGifPlayer(doc, GIF_PLAYER, {classes: CARDS.classes, text: GIF_TEXT, label: 'ねこ', autoplay: false});
+	const toggle = byClass(root, CARDS.classes.gifPlay);
+	assert.strictEqual(toggle.classList.contains(CARDS.classes.playing), false);
+	click(toggle);
+	assert.strictEqual(toggle.classList.contains(CARDS.classes.playing), true);
+	click(toggle);
+	assert.strictEqual(toggle.classList.contains(CARDS.classes.playing), false);
+});
+
+test('buildGifPlayer: 中のボタンの押下は親へ伝えず、既定の動作も止める', () => {
+	const {doc} = docWithVideoStub();
+	const root = buildGifPlayer(doc, GIF_PLAYER, {
+		classes: CARDS.classes, text: GIF_TEXT, label: 'ねこ', autoplay: false, onRemove: () => {}, onAlt: () => {}
+	});
+	const outer = doc.createElement('a');
+	outer.append(root);
+	let reached = 0;
+	outer.addEventListener('click', () => { reached += 1; });
+	for (const button of root.querySelectorAll('button')) {
+		const event = new FakeEvent('click');
+		button.dispatchEvent(event);
+		assert.ok(event.defaultPrevented);
+	}
+	assert.strictEqual(reached, 0);
+});
+
 test('buildGifPlayer: ボタンで再生と停止が切り替わり、onAlt / onRemove が呼ばれる', () => {
 	const {doc, videos} = docWithVideoStub();
 	const calls = [];

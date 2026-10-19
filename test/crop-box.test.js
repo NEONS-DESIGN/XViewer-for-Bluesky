@@ -5,7 +5,13 @@
 import test from 'node:test';
 import assert from 'node:assert';
 
-import {initialBox, moveBox, resizeBox, isFullImage} from '../src/content/crop-box.js';
+import {
+	initialBox, moveBox, resizeBox, isFullImage, isValidImage, isUsableImage, isValidBox, isBoxInImage, matchAspect
+} from '../src/content/crop-box.js';
+import {openCropSheet} from '../src/content/crop-sheet.js';
+import {SheetHost} from '../src/content/reply-sheets.js';
+import {EXT_CONFIG} from '../src/common/config.js';
+import {FakeDocument, click} from './helpers/fake-dom.js';
 
 const IMAGE = {width: 4000, height: 3000};
 const MIN = 32;
@@ -213,4 +219,82 @@ test('resizeBox: 各角で複数の移動量でも反対の角が動かず比を
 			}
 		}
 	}
+});
+
+test('isValidImage / isUsableImage: 有限の正数か、1 画素以上か', () => {
+	assert.strictEqual(isValidImage({width: 0.5, height: 2}), true);
+	assert.strictEqual(isUsableImage({width: 0.5, height: 2}), false);
+	assert.strictEqual(isUsableImage({width: 1, height: 1}), true);
+	assert.strictEqual(isUsableImage({width: Infinity, height: 10}), false);
+	assert.strictEqual(isUsableImage(undefined), false);
+	assert.strictEqual(isValidImage(null), false);
+});
+
+test('isValidBox / isBoxInImage: 4 値が有限で、画像の中に収まる大きさのある枠か', () => {
+	assert.strictEqual(isValidBox({x: 0, y: 0, width: NaN, height: 1}), false);
+	assert.strictEqual(isBoxInImage({x: 0, y: 0, width: 4000, height: 3000}, IMAGE), true);
+	assert.strictEqual(isBoxInImage({x: 1, y: 0, width: 4000, height: 3000}, IMAGE), false);
+	assert.strictEqual(isBoxInImage({x: 0, y: 0, width: 0, height: 10}, IMAGE), false);
+	assert.strictEqual(isBoxInImage({x: -1, y: 0, width: 10, height: 10}, IMAGE), false);
+	assert.strictEqual(isBoxInImage(null, IMAGE), false);
+});
+
+const ASPECTS = EXT_CONFIG.lightboxReplies.compose.crop.aspects;
+
+test('matchAspect: 比で作った枠には、その比を選ぶ (丸めの 1 画素は許す)', () => {
+	for (const aspect of ASPECTS.filter((one) => one.ratio)) {
+		assert.strictEqual(matchAspect(initialBox(IMAGE, aspect.ratio), ASPECTS), aspect, aspect.id);
+		const resized = resizeBox(initialBox(IMAGE, aspect.ratio), 'se', -517, -233, IMAGE, aspect.ratio, MIN);
+		assert.strictEqual(matchAspect(resized, ASPECTS), aspect, `${aspect.id} を変形した後`);
+	}
+});
+
+test('matchAspect: どの比にも当てはまらなければ自由、不正な枠でも自由', () => {
+	const free = ASPECTS.find((one) => one.ratio === null);
+	assert.strictEqual(matchAspect({x: 0, y: 0, width: 1000, height: 300}, ASPECTS), free);
+	assert.strictEqual(matchAspect({x: 0, y: 0, width: 0, height: 300}, ASPECTS), free);
+	assert.strictEqual(matchAspect(null, ASPECTS), free);
+	assert.strictEqual(matchAspect({x: 0, y: 0, width: 10, height: 10}, []), undefined);
+});
+
+/**
+ * 切り抜きの画面を開き、比のボタンの押下状態を返す。
+ * @param {{x: number, y: number, width: number, height: number}|null} crop 今の切り抜き
+ * @returns {{pressed: string|undefined, host: SheetHost, buttons: object[]}}
+ */
+function openCropWith(crop) {
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	const doc = new FakeDocument();
+	doc.defaultView = {...doc.defaultView, URL: {createObjectURL: () => 'blob:x', revokeObjectURL: () => {}}};
+	// 偽の DOM は style を持たないため、枠の位置を書き込める入れ物を足す
+	const create = doc.createElement.bind(doc);
+	doc.createElement = (tagName) => Object.assign(create(tagName), {style: {}});
+	const panel = doc.createElement('aside');
+	const opener = doc.createElement('button');
+	panel.append(opener);
+	doc.body.append(panel);
+	const host = new SheetHost(panel, compose);
+	openCropSheet(host, {source: {}, image: IMAGE, crop}, opener, () => {});
+	const buttons = panel.querySelectorAll(`.${compose.classes.cropAspect}`);
+	const pressed = buttons.find((button) => button.getAttribute('aria-pressed') === 'true');
+	return {pressed: pressed && pressed.textContent, host, buttons};
+}
+
+test('openCropSheet: 開き直すと、前の枠に当てはまる比のボタンを選んだ状態で開く', () => {
+	const names = EXT_CONFIG.lightboxReplies.compose.text.aspectNames;
+	assert.strictEqual(openCropWith(initialBox(IMAGE, 1)).pressed, names['1:1']);
+	assert.strictEqual(openCropWith(initialBox(IMAGE, 16 / 9)).pressed, names['16:9']);
+	assert.strictEqual(openCropWith({x: 10, y: 10, width: 1000, height: 300}).pressed, names.free);
+	assert.strictEqual(openCropWith(null).pressed, names.free);
+});
+
+test('openCropSheet: 「元に戻す」で自由に戻る', () => {
+	const {host, buttons} = openCropWith(initialBox(IMAGE, 1));
+	const names = EXT_CONFIG.lightboxReplies.compose.text.aspectNames;
+	const panel = host.panelEl;
+	const reset = panel.querySelectorAll('button').find((button) => button.textContent === EXT_CONFIG.lightboxReplies.compose.text.cropReset);
+	click(reset);
+	const pressed = buttons.find((button) => button.getAttribute('aria-pressed') === 'true');
+	assert.strictEqual(pressed.textContent, names.free);
+	host.close(false);
 });

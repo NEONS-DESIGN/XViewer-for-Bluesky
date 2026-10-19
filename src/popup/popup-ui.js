@@ -299,7 +299,7 @@ function renderSettingsPanel(ctx, onReset) {
  * @param {() => void} deps.onReset 初期化を確定したときの処理
  * @param {string|null} [deps.notice] 最初から出しておく通知 (読み込み・初期化の失敗)
  * @param {string|null} [deps.initialTab] 最初に開くタブの id。省くと先頭
- * @returns {{dispose: () => void, currentTab: () => string|null}} 片付けと、今開いているタブの id
+ * @returns {{dispose: () => void}} 片付け
  */
 export function renderPopup({doc, root, settings, onChange, onReset, notice = null, initialTab = null}) {
 	const theme = resolveTheme(settings.theme, doc.defaultView);
@@ -384,7 +384,6 @@ export function renderPopup({doc, root, settings, onChange, onReset, notice = nu
 				lock.dispose();
 			}
 			root.replaceChildren();
-		},
-		currentTab: tabs.currentId
+		}
 	};
 }

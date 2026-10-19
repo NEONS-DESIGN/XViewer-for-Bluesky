@@ -298,3 +298,81 @@ test('fetchNext は 1 回の fetch にタイムアウトの signal を渡す', a
 		assert.ok(impl.options[0].signal instanceof AbortSignal, 'signal が無い');
 	}
 });
+
+test('MediaStore.getFrom は描画済みの件数より後ろだけを返す', () => {
+	const store = new MediaStore();
+	['a', 'b', 'c'].forEach((key) => store.add(makeEntry(key)));
+	assert.deepStrictEqual(store.getFrom(1).map((e) => e.key), ['b', 'c']);
+	assert.deepStrictEqual(store.getFrom(3), []);
+	assert.deepStrictEqual(store.getFrom(0).map((e) => e.key), ['a', 'b', 'c']);
+	// 写しを返す (受け取った側が並べ替えても蓄積は変わらない)
+	store.getFrom(0).reverse();
+	assert.deepStrictEqual(store.getAll().map((e) => e.key), ['a', 'b', 'c']);
+	store.clear();
+	assert.strictEqual(store.size, 0);
+	assert.strictEqual(store.add(makeEntry('a')), true, 'clear の後は同じ key を入れ直せる');
+});
+
+test('中身 0 件のページが emptyPageLimit 回続いたら止まり、要求を出さない', async () => {
+	const limit = config.api.emptyPageLimit;
+	const responses = [];
+	for (let i = 0; i < limit + 1; i += 1) {
+		responses.push({body: videoOnlyFeedBody([`v${i}`], `cur${i}`)});
+	}
+	const impl = makeFetch(responses);
+	const store = new MediaStore();
+	const fetcher = new MediaFetcher(store, config, impl);
+	fetcher.setActor('alice.test');
+	for (let i = 0; i < limit; i += 1) {
+		assert.strictEqual(fetcher.stalled, false, `${i} 回目の前`);
+		fetcher.lastRunAt = 0;
+		await fetcher.fetchNext();
+	}
+	assert.strictEqual(fetcher.emptyPageStreak, limit);
+	assert.strictEqual(fetcher.stalled, true);
+	assert.strictEqual(fetcher.exhausted, false, 'フィードの終端ではない');
+
+	fetcher.lastRunAt = 0;
+	await fetcher.fetchNext();
+	assert.strictEqual(impl.calls.length, limit, '止まっている間は要求を出さない');
+
+	// 「さらに読み込む」で数え直すと、次の 1 ページを取りに行く
+	fetcher.resumeAfterEmptyPages();
+	assert.strictEqual(fetcher.stalled, false);
+	await fetcher.fetchNext();
+	assert.strictEqual(impl.calls.length, limit + 1);
+	assert.ok(impl.calls[limit].includes(`cursor=cur${limit - 1}`), '続きから読む');
+});
+
+test('中身のあるページが来たら 0 件の連続を数え直す', async () => {
+	const store = new MediaStore();
+	const fetcher = new MediaFetcher(store, config, makeFetch([
+		{body: videoOnlyFeedBody(['v1'], 'c1')},
+		{body: feedBody(['p1'], 'c2')}
+	]));
+	fetcher.setActor('alice.test');
+	await fetcher.fetchNext();
+	assert.strictEqual(fetcher.emptyPageStreak, 1);
+	fetcher.lastRunAt = 0;
+	await fetcher.fetchNext();
+	assert.strictEqual(fetcher.emptyPageStreak, 0);
+});
+
+test('対象アカウントが変わったら 0 件の連続も数え直す', async () => {
+	const store = new MediaStore();
+	const fetcher = new MediaFetcher(store, config, makeFetch([{body: videoOnlyFeedBody(['v1'], 'c1')}]));
+	fetcher.setActor('alice.test');
+	await fetcher.fetchNext();
+	fetcher.emptyPageStreak = config.api.emptyPageLimit;
+	fetcher.setActor('bob.test');
+	assert.strictEqual(fetcher.stalled, false);
+});
+
+test('retryRemainingMs は canRetry() が許すまでの残り時間を返す', () => {
+	const fetcher = new MediaFetcher(new MediaStore(), config, makeFetch([]));
+	fetcher.lastRunAt = Date.now();
+	assert.ok(fetcher.retryRemainingMs > 0);
+	assert.ok(fetcher.retryRemainingMs <= config.api.retryAfterMs);
+	fetcher.lastRunAt = Date.now() - config.api.retryAfterMs - 1;
+	assert.strictEqual(fetcher.retryRemainingMs, 0);
+});

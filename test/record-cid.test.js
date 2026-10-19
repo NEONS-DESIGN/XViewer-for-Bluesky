@@ -73,3 +73,8 @@ test('TID: 13 文字・先頭は 234567a-j、時刻が戻っても前より大�
 	assert.strictEqual(decodeTid(second).micros, decodeTid(first).micros + 1);
 	assert.strictEqual(decodeTid('bad'), null);
 });
+
+test('encodeDagCbor: base32 (b で始まる) でない $link は TypeError', () => {
+	assert.throws(() => encodeDagCbor({$link: 'zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG'}), TypeError);
+	assert.throws(() => encodeDagCbor({$link: ''}), TypeError);
+});

@@ -8,12 +8,14 @@
  * 言語の保存・通信は、返信欄が deps として渡す口だけを使う。書き込みは呼び出し層 (PostActions)
  * と橋渡しを通る。
  *
- * 依存: debug.js / icons.js / bridge-protocol.js / reply-text.js / reply-embed.js / reply-sheets.js /
- *       reply-attachments.js / reply-submit.js / sheet-dom.js / reply-post.js / reply-thread.js / record-cid.js
+ * 依存: debug.js / icons.js / bridge-protocol.js / motion.js / reply-text.js / reply-embed.js / reply-sheets.js /
+ *       reply-attachments.js / reply-submit.js / sheet-dom.js / reply-post.js / reply-thread.js / record-cid.js /
+ *       notice-line.js
  */
 import {ExtDebug} from '../common/debug.js';
 import {createIcon} from '../common/icons.js';
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
+import {scrollBehavior} from '../common/motion.js';
 import {resolveReplyRef} from './reply-text.js';
 import {normalizeLanguages, suggestReplyLanguage} from './reply-embed.js';
 import {openLanguageSheet, languageName} from './reply-sheets.js';
@@ -25,6 +27,7 @@ import {
 	isEmptyPost, splitEmptyPosts, canAddPost, canSubmitThread, chainThreadRecords, chainTargets
 } from './reply-thread.js';
 import {computeRecordCid, nextTid} from './record-cid.js';
+import {NoticeLine} from './notice-line.js';
 
 export {pickPastedMedia, hasMediaItems, uploadAll, runSubmit, runThreadSubmit} from './reply-submit.js';
 export {defaultLanguages} from './reply-post.js';
@@ -38,21 +41,8 @@ const MICROS_PER_MS = 1000;
 /** 送信ボタンの読み上げを「{件数} 件の返信を送信」にする件数の下限 */
 const THREAD_LABEL_MIN_POSTS = 2;
 
-/** 動きを減らす設定の問い合わせ */
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
-
-/**
- * 動きを減らす設定か。読めなければ偽。
- * @returns {boolean}
- */
-function prefersReducedMotion() {
-	try {
-		const view = document.defaultView;
-		return !!view && typeof view.matchMedia === 'function' && view.matchMedia(REDUCED_MOTION_QUERY).matches === true;
-	} catch (error) {
-		return false;
-	}
-}
+/** 入れ物の末尾の 1 行が空の投稿の問い合わせであることを表す印 */
+const SKIP_PROMPT = 'skipEmpty';
 
 /**
  * 入力欄が使う口。返信欄 (lightbox-replies.js) が入力欄ごとに作って渡す。
@@ -60,7 +50,8 @@ function prefersReducedMotion() {
  * @property {import('./post-actions.js').PostActions} actions 呼び出し層 (createReply / createReplyThread)
  * @property {import('./reply-sheets.js').SheetHost|null} sheets 重ねる画面の持ち主
  * @property {(blob: Blob) => Promise<{ok: boolean, blob: Object|null, reason: string|null}>} uploadBlob
- * @property {typeof import('./image-prepare.js').prepareImage} prepareImage
+ * @property {typeof import('./image-prepare.js').prepareImage} prepareImage 4 番目に {preview: false} を渡すと
+ *   プレビューの object URL を作らない (送るだけのサムネイル)
  * @property {() => Object|null} getSelfProfile 自分のプロフィール (アバターと連なりの宛先のハンドルに使う)
  * @property {() => string|null} getSessionDid ログイン中の DID
  * @property {(generation: number) => boolean} isCurrent 応答を使ってよい世代か
@@ -75,9 +66,10 @@ function prefersReducedMotion() {
  * @property {string[]|null} parentLangs 返信先の record.langs (言語の提案に使う)
  * @property {() => Promise<string[]>} loadLanguages 覚えている投稿言語
  * @property {(codes: string[]) => void} saveLanguages 選んだ投稿言語を覚える
- * @property {(url: string, timeoutMs: number) => Promise<{status: number, json: any}|null>} fetchJson
- *   JSON を引く (リンクカード・GIF の検索)。失敗は null
- * @property {(url: string, timeoutMs: number) => Promise<Blob|null>} fetchBlob サムネイルを引く。失敗は null
+ * @property {(url: string, timeoutMs: number, signal?: AbortSignal) => Promise<{status: number, json: any}|null>} fetchJson
+ *   JSON を引く (リンクカード・GIF の検索)。失敗・打ち切りは null。リンクカードは差し替え・取り消しで打ち切る signal を渡す
+ * @property {(url: string, timeoutMs: number, signal?: AbortSignal) => Promise<Blob|null>} fetchBlob
+ *   サムネイルを引く。失敗・打ち切りは null。リンクカードのサムネイルは signal を渡す
  * @property {(uri: string) => Promise<Object|null>} fetchPost 引用する投稿を引く (getPosts の応答)
  * @property {(uri: string) => string|null} safeHref リンクにしてよい URL か
  * @property {(iso: string) => string} formatDate 引用元の日時の表示
@@ -156,10 +148,6 @@ export class ReplyComposer {
 		this.suggestDismissed = false;
 		/** @type {string|null} 出している言語の提案 */
 		this.suggestCode = null;
-		/** @type {HTMLElement|null} 入れ物の末尾の 1 行 (返信の作成の失敗の知らせ・空の投稿の問い合わせ) */
-		this.noticeEl = null;
-		/** @type {HTMLElement|null} 出している空の投稿の問い合わせ (noticeEl と同じ要素) */
-		this.skipPromptEl = null;
 		/** この入力欄が送信中か */
 		this.busy = false;
 		this.destroyed = false;
@@ -179,6 +167,22 @@ export class ReplyComposer {
 	 */
 	get active() {
 		return this.posts[this.activeIndex] || null;
+	}
+
+	/**
+	 * 入れ物の末尾の 1 行 (返信の作成の失敗の知らせ・空の投稿の問い合わせ)。無ければ null。
+	 * @returns {HTMLElement|null}
+	 */
+	get noticeEl() {
+		return this.notice ? this.notice.element : null;
+	}
+
+	/**
+	 * 出している空の投稿の問い合わせ (noticeEl と同じ要素)。出していなければ null。
+	 * @returns {HTMLElement|null}
+	 */
+	get skipPromptEl() {
+		return this.notice && this.notice.meta === SKIP_PROMPT ? this.notice.element : null;
 	}
 
 	/**
@@ -210,6 +214,7 @@ export class ReplyComposer {
 		Object.assign(this, {
 			el, suggestEl: suggest, suggestText, addButton, languageButton, languageText, remaining, submitButton: submit
 		});
+		this.notice = new NoticeLine(el, {className: c.error, separator: t.noticeSeparator});
 
 		const post = this.createPost(placeholder);
 		this.posts = [post];
@@ -423,15 +428,17 @@ export class ReplyComposer {
 		const c = this.config.classes;
 		const summaries = [];
 		const checks = [];
+		let check = null;
 		for (const one of this.posts) {
 			one.sync();
 			const summary = one.summary();
+			const result = one.check();
+			if (one === post) check = result;
 			summaries.push(summary);
-			checks.push({empty: isEmptyPost(summary), ok: one.check().ok});
+			checks.push({empty: isEmptyPost(summary), ok: result.ok});
 		}
 		this.renderPosts();
 		this.placeAddButton(canAddPost(summaries, this.activeIndex, this.compose.thread.maxPosts));
-		const check = post.check();
 		this.remaining.textContent = `${this.config.text.remaining} ${check.remaining}`;
 		this.remaining.classList.toggle(c.warn, check.remaining <= this.config.warnRemaining);
 		this.submitButton.disabled = !canSubmitThread(checks) || this.busy || this.deps.isPosting();
@@ -566,7 +573,7 @@ export class ReplyComposer {
 		const generation = this.deps.getGeneration();
 		const focused = this.focusState();
 		const languages = this.languages.slice();
-		const images = post.uploadImages();
+		const images = post.prepareSend();
 		/** @type {{record: Object, embedView: (did: string) => Object|null}|null} 組んだ record と投稿直後の描画 */
 		let built = null;
 		this.deps.setPosting(true);
@@ -625,7 +632,7 @@ export class ReplyComposer {
 		let localRefs = null;
 		const progress = createThreadProgress((current, total) => this.showProgress(current, total));
 		const steps = posts.map((post, index) => ({
-			images: post.uploadImages(),
+			images: post.prepareSend(),
 			buildRecord: async (blobs) => {
 				const built = await post.buildRecord(blobs, languages, reply,
 					(done, total) => progress.thumbnail(index, done, total));
@@ -911,20 +918,12 @@ export class ReplyComposer {
 	 * @returns {void}
 	 */
 	showNotice(messages) {
-		try {
-			if (this.noticeEl) this.noticeEl.remove();
-			this.noticeEl = null;
-			this.skipPromptEl = null;
-			if (!Array.isArray(messages) || messages.length === 0 || this.destroyed) return;
-			const notice = createElement(this.el.ownerDocument, 'p', this.config.classes.error,
-				messages.join(this.compose.text.noticeSeparator));
-			notice.setAttribute('role', 'alert');
-			this.el.append(notice);
-			this.noticeEl = notice;
-			this.reveal(notice);
-		} catch (error) {
-			console.error('[XViewer] 入力欄の知らせを出せませんでした', error);
+		if (this.destroyed) {
+			this.notice.clear();
+			return;
 		}
+		const notice = this.notice.show(messages);
+		if (notice) this.reveal(notice);
 	}
 
 	/**
@@ -935,7 +934,7 @@ export class ReplyComposer {
 	showSkipPrompt() {
 		const cc = this.compose.classes;
 		const t = this.compose.text;
-		this.showNotice([]);
+		this.notice.clear();
 		if (this.destroyed) return;
 		try {
 			const doc = this.el.ownerDocument;
@@ -962,9 +961,7 @@ export class ReplyComposer {
 				this.focus();
 			});
 			prompt.append(text, keep, send);
-			this.el.append(prompt);
-			this.noticeEl = prompt;
-			this.skipPromptEl = prompt;
+			this.notice.showElement(prompt, SKIP_PROMPT);
 			this.reveal(prompt);
 			send.focus({preventScroll: true});
 		} catch (error) {
@@ -983,7 +980,7 @@ export class ReplyComposer {
 	reveal(element) {
 		if (!element || this.destroyed || this.posts.length < 2 || typeof element.scrollIntoView !== 'function') return;
 		try {
-			element.scrollIntoView({block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth'});
+			element.scrollIntoView({block: 'nearest', behavior: scrollBehavior(this.el.ownerDocument.defaultView)});
 		} catch (error) {
 			console.error('[XViewer] 入力欄の中を送れませんでした', error);
 		}
@@ -994,7 +991,7 @@ export class ReplyComposer {
 	 * @returns {void}
 	 */
 	hideSkipPrompt() {
-		if (this.skipPromptEl) this.showNotice([]);
+		this.notice.clearIf((meta) => meta === SKIP_PROMPT);
 	}
 
 	/**

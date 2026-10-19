@@ -14,8 +14,8 @@ import {LightboxPanel} from './lightbox-panel.js';
 import {LightboxGuard} from './lightbox-guard.js';
 
 /**
- * 起動の 1 手順。[名前, 起動する関数] の組。
- * @typedef {readonly [string, () => void]} StartupStep
+ * 起動の 1 手順。[名前, 起動する関数] の組。関数は Promise を返してもよい (設定の読み込みなど)。
+ * @typedef {readonly [string, () => (void|Promise<void>)]} StartupStep
  */
 
 /**
@@ -36,15 +36,17 @@ export const STARTUP_ORDER = Object.freeze(STARTUP_STEPS.map(([name]) => name));
 /**
  * 手順を順に呼ぶ。1 つが投げても残りは起動する。
  * (旧方式ではファイルごとに別のスクリプトとして動いていたため、1 つの失敗が他を止めなかった)
+ * 手順が返す Promise は待たずに次へ進み (呼ぶ順だけを保つ)、拒否されたらその場で記録する。
  * @param {ReadonlyArray<StartupStep>} steps 起動の手順
  * @returns {void}
  */
 export function start(steps) {
 	for (const [name, run] of steps) {
+		const report = (error) => console.error('[XViewer] 起動に失敗しました', name, error);
 		try {
-			run();
+			Promise.resolve(run()).catch(report);
 		} catch (error) {
-			console.error('[XViewer] 起動に失敗しました', name, error);
+			report(error);
 		}
 	}
 }

@@ -4,13 +4,17 @@
  *
  * **メディアグリッド由来かどうかを知らない。** 開いているライトボックスの
  * activeLightbox.metricsContext.postUri を橋渡し (get-lightbox) で読み、
- * getPosts で投稿を引くだけ。グリッド側は openLightbox に
+ * 投稿を引くだけ。グリッド側は openLightbox に
  * 本体と同じ metricsContext を添えるため、経路が 1 本で済む。
- * **取得はまず橋渡し経由の認証付き getPosts を試し、失敗したときだけ
- * 公開 API に落ちる** (viewer は認証付きでしか返らないため)。
  *
- * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) /
- *       bridge-client.js (callBridge) / icons.js (createIcon) /
+ * **取得は getPostThread の 1 回で、投稿と返信の一覧 (1 段目) を一緒に読む**
+ * (本体の投稿画面も 1 回で投稿と返信を読む)。返信欄にはその応答をそのまま渡す。
+ * まず橋渡し経由の認証付きを試し、失敗したときだけ公開 API に落ちる
+ * (viewer は認証付きでしか返らないため)。スレッドとして読めない投稿 (ブロックなど) は
+ * getPosts に落ちる。**取得した投稿は開いている間しか覚えない。**
+ *
+ * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / at-uri.js /
+ *       bridge-client.js (callBridge) / icons.js (createIcon) / routes.js /
  *       page.js (subscribeLightboxVisibility, isLightboxVisible,
  *       findVisibleLightboxDialog) /
  *       post-actions.js (PostActions, readViewerState, toggleActionState,
@@ -19,14 +23,19 @@
 import {EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
 import {createIcon} from '../common/icons.js';
+import {parsePostAtUri} from '../common/at-uri.js';
+import {buildUrl, fetchOkJson} from '../common/http.js';
+import {loadSyncSettings, watchSyncSettings} from '../common/sync-settings.js';
 import {callBridge} from './bridge-client.js';
+import {postRoute, profileRoute, hashtagRoute, openLightboxPayload} from './routes.js';
 import {subscribeLightboxVisibility, isLightboxVisible, findVisibleLightboxDialog} from './page.js';
 import {installPanelFocusGuard} from './panel-focus-guard.js';
 import {installPanelDropGuard} from './panel-drop-guard.js';
 import {LightboxReplies} from './lightbox-replies.js';
+import {threadPostView} from './reply-text.js';
 import {SheetHost} from './reply-sheets.js';
 import {
-	PostActions, readViewerState, toggleActionState, mergeActionKind, isActionApplied
+	PostActions, readViewerState, toggleActionState, mergeActionKind, isActionApplied, toCount, parseRecordUri
 } from './post-actions.js';
 
 /**
@@ -42,12 +51,12 @@ import {
  * @typedef {Object} PanelPost
  * @property {string} postUri AT URI
  * @property {string} cid 投稿の CID。いいね・リポスト・ブックマークに要る
- * @property {Object} raw getPosts が返す `post` オブジェクトそのもの。
+ * @property {Object} raw 取得した PostView (getPostThread の thread.post / getPosts の posts[0]) そのもの。
  *   **本体の投稿作成モーダル (openComposer) に渡すためだけの生データで、
  *   整形しない。** `quote` は完全な PostView を要求し、整形した部分
  *   オブジェクトを渡すと本体の React ツリーがアンマウントされる
  *   (2026-09-09 実機で確認)
- * @property {Object|null} viewer getPosts の viewer をそのまま。
+ * @property {Object|null} viewer PostView の viewer をそのまま。
  *   **未認証の取得では付かない。** 解釈は post-actions.js の readViewerState() が行う
  * @property {string} handle 作者のハンドル
  * @property {string} displayName 表示名 (無ければハンドル)
@@ -59,8 +68,14 @@ import {
  * @property {{reply: number, repost: number, like: number, quote: number}} counts
  */
 
-/** AT URI から投稿の did と rkey を取り出す正規表現 */
-const PANEL_POST_URI_PATTERN = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$/;
+/**
+ * パネルが開いた後に読み込む投稿の手がかり。返信の画像から開き直すとき、
+ * 返信欄が手元に持つ投稿 (と、返信の一覧が揃っていればその応答) を渡し、引き直しを省く。
+ * @typedef {Object} PanelSeed
+ * @property {string} postUri
+ * @property {Object} view PostView
+ * @property {import('./lightbox-replies.js').ThreadResult|null} thread 返信の一覧まで揃っていれば
+ */
 
 /**
  * 投稿の AT URI を分解する。投稿以外のコレクションは弾く。
@@ -68,19 +83,7 @@ const PANEL_POST_URI_PATTERN = /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)$
  * @returns {{did: string, rkey: string}|null} 形が違えば null
  */
 export function parsePostUri(uri) {
-	try {
-		if (typeof uri !== 'string') {
-			return null;
-		}
-		const matched = PANEL_POST_URI_PATTERN.exec(uri);
-		if (!matched) {
-			return null;
-		}
-		return {did: matched[1], rkey: matched[2]};
-	} catch (error) {
-		console.error('[XViewer] 投稿 URI の解析に失敗しました', error);
-		return null;
-	}
+	return parsePostAtUri(uri);
 }
 
 /**
@@ -186,26 +189,24 @@ export function applyFacets(text, facets, config) {
 }
 
 /**
- * 数値を反応数として取り込む。欠けていれば 0。
- * @param {*} value
- * @returns {number}
- */
-function toPanelCount(value) {
-	return typeof value === 'number' && Number.isFinite(value) && value >= 0
-		? value
-		: 0;
-}
-
-/**
  * getPosts のレスポンスをパネルに描ける形にする。
  * @param {Object|null} json getPosts のレスポンス
  * @param {Object} config EXT_CONFIG.lightboxPanel
  * @returns {PanelPost|null} 読めなければ null
  */
 export function parsePostForPanel(json, config) {
+	return parsePostView(json && Array.isArray(json.posts) ? json.posts[0] : null, config);
+}
+
+/**
+ * PostView 1 件をパネルに描ける形にする。
+ * @param {Object|null} post PostView (getPosts の posts[0]・getPostThread の thread.post)
+ * @param {Object} config EXT_CONFIG.lightboxPanel
+ * @returns {PanelPost|null} 読めなければ null
+ */
+export function parsePostView(post, config) {
 	try {
-		const post = json && Array.isArray(json.posts) ? json.posts[0] : null;
-		if (!post) {
+		if (!post || typeof post !== 'object') {
 			return null;
 		}
 		const parsed = parsePostUri(post.uri);
@@ -234,10 +235,10 @@ export function parsePostForPanel(json, config) {
 			createdAt: typeof record.createdAt === 'string' ? record.createdAt : '',
 			rkey: parsed.rkey,
 			counts: {
-				reply: toPanelCount(post.replyCount),
-				repost: toPanelCount(post.repostCount),
-				like: toPanelCount(post.likeCount),
-				quote: toPanelCount(post.quoteCount)
+				reply: toCount(post.replyCount),
+				repost: toCount(post.repostCount),
+				like: toCount(post.likeCount),
+				quote: toCount(post.quoteCount)
 			}
 		};
 	} catch (error) {
@@ -277,7 +278,7 @@ export function formatPostDate(iso, config) {
  * @returns {string}
  */
 export function formatCount(value, config) {
-	const count = toPanelCount(value);
+	const count = toCount(value);
 	try {
 		return new Intl.NumberFormat(config.locale).format(count);
 	} catch (error) {
@@ -402,6 +403,23 @@ export function revertActionState(state, kind, previous) {
 }
 
 /**
+ * 反応を書いた (消した) アカウントの DID。いいね・リポストはレコードの URI の持ち主
+ * (覚えていた DID が古くて書き直したときも、実際に書いた先を指す)、ブックマークは押した時点の DID。
+ * @param {'like'|'repost'|'bookmark'} kind
+ * @param {ActionState} previous 押す前
+ * @param {ActionState} next 押した後 (成功なら作ったレコードの URI を持つ)
+ * @param {string|null} pressedDid 押した時点のログイン中の DID
+ * @returns {string|null}
+ */
+export function actionOwnerDid(kind, previous, next, pressedDid) {
+	const recordUri = kind === 'like'
+		? (next.likeUri || previous.likeUri)
+		: (kind === 'repost' ? (next.repostUri || previous.repostUri) : null);
+	const parsed = recordUri ? parseRecordUri(recordUri) : null;
+	return parsed ? parsed.did : pressedDid;
+}
+
+/**
  * 飛行中の操作を覚えるキーを作る。
  *
  * **投稿と種別の両方で弾く。** 種別だけをキーにすると、応答を待つ間に
@@ -430,7 +448,7 @@ export function buildPendingKey(postUri, kind, config) {
  * Bluesky 自身が right: 0px をインラインで書いているため、空文字に戻すと
  * その指定ごと消えて固定親の幅が shrink-to-fit で 0 に潰れる
  * (2026-09-09 実機で確認した Critical)。セレクタで引き直さない
- * (閉じた後は引けない)。要素が既に消えていれば何もしない (設計文書 8 節)
+ * (閉じた後は引けない)。要素が既に消えていれば何もしない
  */
 export class LightboxPanel {
 	/**
@@ -455,8 +473,30 @@ export class LightboxPanel {
 		 * 0 に潰れる。撤去時はここへ戻す
 		 */
 		this.shrunkPreviousRight = '';
-		/** @type {Map<string, PanelPost>} postUri をキーにした取得済みの投稿 */
-		this.cache = new Map();
+		/**
+		 * 次に開くライトボックスで使う投稿の手がかり (返信の画像から開き直すとき)。
+		 * 開いたときに postUri が合えば使い、合わなくても捨てる
+		 * @type {PanelSeed|null}
+		 */
+		this.seed = null;
+		/**
+		 * 自分の反応の結果。キーは buildPendingKey() と同じ「投稿 + 種別」。
+		 * 取得した投稿は開いている間しか覚えないため、反応の直後に開き直したときに
+		 * AppView の反映の遅れで未反応に戻って見えないよう、actionShadowMs のあいだ引き直した投稿に重ねる
+		 * @type {Map<string, {kind: 'like'|'repost'|'bookmark', state: ActionState, did: string, at: number}>}
+		 */
+		this.shadows = new Map();
+		/** @type {Promise<void>|null} 飛行中の open()。開く処理を二重に走らせない */
+		this.opening = null;
+		/**
+		 * 書きかけがあるときに 1 回目の押下で止めた移動先と時刻。同じ先をもう一度押すと通す
+		 * @type {{key: string, at: number}|null}
+		 */
+		this.leaveArmed = null;
+		/** @type {HTMLElement|null} 投稿の部分 (本文・操作行)。返信欄はこの外に置き、描き直しで消さない */
+		this.postEl = null;
+		/** @type {HTMLElement|null} 返信欄の置き場 */
+		this.repliesSlot = null;
 		/**
 		 * 取得の世代。応答待ちの間にライトボックスが閉じたり別の投稿に
 		 * 変わったりしたら、その応答は丸ごと捨てる (MediaFetcher.generation と同じ考え方)
@@ -464,7 +504,7 @@ export class LightboxPanel {
 		this.generation = 0;
 		/**
 		 * 投稿操作の呼び出し層。**取得を認証付きにするためにも使う**
-		 * (viewer は認証付きの getPosts でしか返らない)
+		 * (viewer は認証付きの取得でしか返らない)
 		 */
 		this.actions = new PostActions(EXT_CONFIG.postActions);
 		/** @type {ActionState|null} 描画中の投稿の反応状態 */
@@ -541,60 +581,48 @@ export class LightboxPanel {
 	 */
 	async init() {
 		const config = this.config;
-		try {
-			const stored = await chrome.storage.sync.get([
-				config.storageKey,
-				config.collapsedStorageKey,
-				EXT_CONFIG.postActions.storageKey,
-				EXT_CONFIG.lightboxReplies.storageKey,
-				EXT_CONFIG.mediaGrid.unblur.storageKey
-			]);
-			this.enabled = stored[config.storageKey] ?? config.defaultEnabled;
-			this.collapsed = stored[config.collapsedStorageKey] ?? config.defaultCollapsed;
-			this.actionsEnabled = stored[EXT_CONFIG.postActions.storageKey]
-				?? EXT_CONFIG.postActions.defaultEnabled;
-			this.repliesEnabled = stored[EXT_CONFIG.lightboxReplies.storageKey]
-				?? EXT_CONFIG.lightboxReplies.defaultEnabled;
-			this.replies.setUnblur(stored[EXT_CONFIG.mediaGrid.unblur.storageKey]
-				?? EXT_CONFIG.mediaGrid.unblur.defaultEnabled);
-		} catch (error) {
-			console.error('[XViewer] パネルの設定の読み込みに失敗しました', error);
-		}
-		try {
-			chrome.storage.onChanged.addListener((changes, area) => {
-				if (area !== 'sync') {
-					return;
+		const keys = {
+			enabled: config.storageKey,
+			actions: EXT_CONFIG.postActions.storageKey,
+			replies: EXT_CONFIG.lightboxReplies.storageKey,
+			unblur: EXT_CONFIG.mediaGrid.unblur.storageKey
+		};
+		const defaults = {
+			[keys.enabled]: config.defaultEnabled,
+			[config.collapsedStorageKey]: config.defaultCollapsed,
+			[keys.actions]: EXT_CONFIG.postActions.defaultEnabled,
+			[keys.replies]: EXT_CONFIG.lightboxReplies.defaultEnabled,
+			[keys.unblur]: EXT_CONFIG.mediaGrid.unblur.defaultEnabled
+		};
+		const stored = await loadSyncSettings(defaults, 'パネル');
+		this.enabled = stored[keys.enabled];
+		this.collapsed = stored[config.collapsedStorageKey];
+		this.actionsEnabled = stored[keys.actions];
+		this.repliesEnabled = stored[keys.replies];
+		this.replies.setUnblur(stored[keys.unblur]);
+		// 畳んだ状態はパネル自身が書き込むだけで、外からの変更は追わない
+		delete defaults[config.collapsedStorageKey];
+		watchSyncSettings(defaults, (changed) => {
+			if (keys.unblur in changed) {
+				this.replies.setUnblur(changed[keys.unblur]);
+			}
+			if (keys.actions in changed || keys.replies in changed) {
+				if (keys.actions in changed) {
+					this.actionsEnabled = changed[keys.actions];
 				}
-				const unblurKey = EXT_CONFIG.mediaGrid.unblur.storageKey;
-				if (changes[unblurKey]) {
-					this.replies.setUnblur(changes[unblurKey].newValue
-						?? EXT_CONFIG.mediaGrid.unblur.defaultEnabled);
+				if (keys.replies in changed) {
+					this.repliesEnabled = changed[keys.replies];
 				}
-				const repliesKey = EXT_CONFIG.lightboxReplies.storageKey;
-				if (changes[EXT_CONFIG.postActions.storageKey] || changes[repliesKey]) {
-					if (changes[EXT_CONFIG.postActions.storageKey]) {
-						this.actionsEnabled = changes[EXT_CONFIG.postActions.storageKey].newValue
-							?? EXT_CONFIG.postActions.defaultEnabled;
-					}
-					if (changes[repliesKey]) {
-						this.repliesEnabled = changes[repliesKey].newValue
-							?? EXT_CONFIG.lightboxReplies.defaultEnabled;
-					}
-					// 描画済みのパネルにその場で反映する (リロードを求めない)
-					if (this.post) {
-						this.renderPost(this.post);
-					}
+				// 描画済みのパネルにその場で反映する (リロードを求めない)。
+				// 返信欄は同じ投稿なら作り直さず、書き込めるかだけを合わせる (書きかけを消さない)
+				if (this.post) {
+					this.renderPost(this.post);
 				}
-				if (!changes[config.storageKey]) {
-					return;
-				}
-				this.setEnabled(
-					changes[config.storageKey].newValue ?? config.defaultEnabled
-				);
-			});
-		} catch (error) {
-			console.error('[XViewer] パネルの設定の購読に失敗しました', error);
-		}
+			}
+			if (keys.enabled in changed) {
+				this.setEnabled(changed[keys.enabled]);
+			}
+		}, 'パネル');
 		try {
 			subscribeLightboxVisibility((visible) => {
 				if (visible) {
@@ -633,7 +661,27 @@ export class LightboxPanel {
 	 * パネルを出す。開いているのが画像ライトボックスでなければ何もしない。
 	 * @returns {Promise<void>}
 	 */
-	async open() {
+	open() {
+		// 開く処理の途中 (橋渡しの往復待ち) にもう一度呼ばれても、同じ世代のうちは二重に組まない
+		if (this.opening && this.opening.generation === this.generation) {
+			return this.opening.promise;
+		}
+		const generation = this.generation;
+		const promise = this.openOnce(generation).finally(() => {
+			if (this.opening && this.opening.promise === promise) {
+				this.opening = null;
+			}
+		});
+		this.opening = {generation, promise};
+		return promise;
+	}
+
+	/**
+	 * パネルを 1 回組む。open() からだけ呼ぶ。
+	 * @param {number} generation 呼んだ時点の世代
+	 * @returns {Promise<void>}
+	 */
+	async openOnce(generation) {
 		try {
 			if (this.panelEl) {
 				return;
@@ -644,10 +692,12 @@ export class LightboxPanel {
 			)) {
 				return;
 			}
-			const generation = this.generation;
-			const result = await callBridge(
-				EXT_CONFIG.mediaGrid.bridge.actions.getLightbox, {}
-			);
+			// 互いに依存しない 2 つの往復は並べて待つ。
+			// 本体のアカウント切り替えはリロードを伴わないため、開くたびに DID を問い合わせ直す
+			const [result, session] = await Promise.all([
+				callBridge(EXT_CONFIG.mediaGrid.bridge.actions.getLightbox, {}),
+				this.actions.refreshSessionDid()
+			]);
 			if (generation !== this.generation) {
 				return;
 			}
@@ -663,40 +713,68 @@ export class LightboxPanel {
 			if (!isLightboxVisible()) {
 				return;
 			}
-			// 本体のアカウント切り替えはリロードを伴わない。覚えている投稿の
-			// viewer (いいね済みか等) は人ごとに違うため、DID が変わっていたら捨てる
-			const session = await this.actions.refreshSessionDid();
-			if (generation !== this.generation) {
-				return;
-			}
 			if (session.changed) {
-				this.cache.clear();
+				// viewer (いいね済みか等) は人ごとに違う。前の人の手がかり・反応の結果は使わない
+				this.seed = null;
+				this.shadows.clear();
 			}
 
 			const postUri = result.postUri;
 			this.mountPanel();
 			this.applyShrink();
 
-			const cached = this.cache.get(postUri);
-			if (cached) {
-				this.renderPost(cached);
-				return;
+			const seed = this.takeSeed(postUri);
+			let loaded = seed ? {post: parsePostView(seed.view, this.config), thread: seed.thread} : null;
+			if (!loaded || !loaded.post) {
+				this.renderStatus(this.config.text.loading);
+				ExtDebug.log('パネルの取得を開始', {postUri});
+				loaded = await this.loadPost(postUri);
 			}
-			this.renderStatus(this.config.text.loading);
-			ExtDebug.log('パネルの取得を開始', {postUri});
-			const post = await this.fetchPost(postUri);
 			if (generation !== this.generation || !this.panelEl) {
 				return;
 			}
-			if (!post) {
+			if (!loaded || !loaded.post) {
 				this.renderStatus(this.config.text.error);
 				return;
 			}
-			this.remember(postUri, post);
-			this.renderPost(post);
-			ExtDebug.log('パネルの取得が終了', {postUri, 本文の長さ: post.text.length});
+			this.applyShadows(loaded.post);
+			this.renderPost(loaded.post, loaded.thread);
+			ExtDebug.log('パネルの取得が終了', {
+				postUri, 本文の長さ: loaded.post.text.length, 返信も読んだ: !!loaded.thread, 手がかり: !!seed
+			});
 		} catch (error) {
 			console.error('[XViewer] パネルの表示に失敗しました', error);
+		}
+	}
+
+	/**
+	 * 手がかりを取り出して消す。postUri が違えば使わない。
+	 * @param {string} postUri
+	 * @returns {PanelSeed|null}
+	 */
+	takeSeed(postUri) {
+		const seed = this.seed;
+		this.seed = null;
+		return seed && seed.postUri === postUri && seed.view ? seed : null;
+	}
+
+	/**
+	 * 自分の反応の結果のうち、まだ新しいものを引き直した投稿に重ねる。古いものは捨てる。
+	 * @param {PanelPost} post
+	 * @returns {void}
+	 */
+	applyShadows(post) {
+		const now = Date.now();
+		for (const [key, shadow] of Array.from(this.shadows)) {
+			if (now - shadow.at > this.config.actionShadowMs) {
+				this.shadows.delete(key);
+				continue;
+			}
+			// 別のアカウントで付けた反応は重ねない (viewer は人ごとに違う)
+			if (shadow.did === this.actions.sessionDid
+				&& key === buildPendingKey(post.postUri, shadow.kind, EXT_CONFIG.postActions)) {
+				syncPostViewer(post, shadow.kind, shadow.state);
+			}
 		}
 	}
 
@@ -713,6 +791,7 @@ export class LightboxPanel {
 		this.releaseShrink();
 		this.post = null;
 		this.state = null;
+		this.leaveArmed = null;
 		// **this.pending は消さない。** 飛行中の createRecord の印まで消すと、
 		// 同じ画像をすぐ開き直したときにボタンが押せる状態に戻り、2 本目の
 		// レコードができて片方が取り消せなくなる (2.6.6 で塞いだ Critical)。
@@ -722,65 +801,49 @@ export class LightboxPanel {
 	}
 
 	/**
-	 * 取得済みの投稿を覚える。上限を超えたら古いものから捨てる。
+	 * 投稿を引く。**getPostThread の 1 回で投稿と返信の 1 段目を一緒に読む**
+	 * (返信欄が OFF なら depth 0 で投稿だけ)。認証付きを先に試し、だめなら公開 API。
+	 * スレッドとして読めない (ブロック・形の違う応答) ときだけ getPosts に落ちる。
+	 * 見つからないと分かった投稿は getPosts で引き直さない (同じ答えになるため)
 	 * @param {string} postUri
-	 * @param {PanelPost} post
-	 * @returns {void}
+	 * @returns {Promise<{post: PanelPost, thread: import('./lightbox-replies.js').ThreadResult|null}|null>}
+	 *   読めなければ null。thread は返信の一覧まで読めたときだけ
 	 */
-	remember(postUri, post) {
-		this.cache.set(postUri, post);
-		while (this.cache.size > this.config.cacheLimit) {
-			const oldest = this.cache.keys().next();
-			if (oldest.done) {
-				break;
+	async loadPost(postUri) {
+		const depth = this.repliesEnabled ? EXT_CONFIG.lightboxReplies.depth.root : 0;
+		const thread = await this.replies.fetchThread(postUri, depth);
+		const post = parsePostView(threadPostView(thread.json), this.config);
+		if (post && thread.fromPublic) {
+			// 認証付きのスレッドが一時的に読めなかった。viewer (操作行に要る) だけは認証付きの getPosts で取り直す
+			const authed = parsePostForPanel(await this.actions.fetchPost(postUri), this.config);
+			if (authed && authed.viewer) {
+				return {post: authed, thread: depth > 0 ? thread : null};
 			}
-			this.cache.delete(oldest.value);
 		}
+		if (post) {
+			return {post, thread: depth > 0 ? thread : null};
+		}
+		if (thread.notFound) {
+			return null;
+		}
+		const fallback = await this.fetchPost(postUri);
+		return fallback ? {post: fallback, thread: null} : null;
 	}
 
 	/**
-	 * 投稿を 1 件引く。
-	 *
-	 * **まず橋渡し経由の認証付き getPosts を試す。** viewer (いいね済みか等) は
-	 * 認証付きでしか返らないため。橋渡しが使えない・未ログインのときは
-	 * 公開 API に落ちる。その場合 viewer が無く、操作ボタンは出ない
+	 * getPosts で投稿を 1 件引く。認証付きを先に試し、だめなら公開 API
+	 * (viewer が無いので操作ボタンは出ない)。
 	 * @param {string} postUri
 	 * @returns {Promise<PanelPost|null>} 読めなければ null
 	 */
 	async fetchPost(postUri) {
-		const authed = await this.actions.fetchPost(postUri);
+		const authed = parsePostForPanel(await this.actions.fetchPost(postUri), this.config);
 		if (authed) {
-			const post = parsePostForPanel(authed, this.config);
-			if (post) {
-				return post;
-			}
+			return authed;
 		}
-		return this.fetchPostPublic(postUri);
-	}
-
-	/**
-	 * 公開 API から投稿を 1 件引く。**未認証のため viewer は付かない。**
-	 * @param {string} postUri
-	 * @returns {Promise<PanelPost|null>} 読めなければ null
-	 */
-	async fetchPostPublic(postUri) {
 		const api = this.config.api;
-		const url = `${api.origin}${api.postsPath}?uris=${encodeURIComponent(postUri)}`;
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), api.timeoutMs);
-		try {
-			const response = await fetch(url, {signal: controller.signal});
-			if (!response.ok) {
-				console.error('[XViewer] 投稿の取得に失敗しました', response.status);
-				return null;
-			}
-			return parsePostForPanel(await response.json(), this.config);
-		} catch (error) {
-			console.error('[XViewer] 投稿の取得に失敗しました', error);
-			return null;
-		} finally {
-			clearTimeout(timer);
-		}
+		const json = await fetchOkJson(buildUrl(api.origin, api.postsPath, {uris: postUri}), api.timeoutMs);
+		return parsePostForPanel(json, this.config);
 	}
 
 	/**
@@ -927,6 +990,8 @@ export class LightboxPanel {
 			this.panelEl = null;
 			this.toggleEl = null;
 			this.bodyEl = null;
+			this.postEl = null;
+			this.repliesSlot = null;
 		}
 	}
 
@@ -990,6 +1055,8 @@ export class LightboxPanel {
 			return;
 		}
 		this.bodyEl.textContent = '';
+		this.postEl = null;
+		this.repliesSlot = null;
 		const status = document.createElement('p');
 		status.className = this.config.statusClass;
 		status.textContent = message;
@@ -997,31 +1064,54 @@ export class LightboxPanel {
 	}
 
 	/**
-	 * 投稿をパネルに描く。
-	 * @param {PanelPost} post
+	 * 本文の入れ物の中に、投稿の部分と返信欄の置き場を用意する (無ければ作る)。
+	 * 2 つとも display: contents で、本文の入れ物の並び (gap) はそのまま効く
 	 * @returns {void}
 	 */
-	renderPost(post) {
+	ensureBodyParts() {
+		if (this.postEl && this.postEl.parentNode === this.bodyEl
+			&& this.repliesSlot && this.repliesSlot.parentNode === this.bodyEl) {
+			return;
+		}
+		this.bodyEl.textContent = '';
+		this.postEl = document.createElement('div');
+		this.postEl.className = this.config.postPartClass;
+		this.repliesSlot = document.createElement('div');
+		this.repliesSlot.className = this.config.postPartClass;
+		this.bodyEl.appendChild(this.postEl);
+		this.bodyEl.appendChild(this.repliesSlot);
+	}
+
+	/**
+	 * 投稿をパネルに描く。**返信欄は同じ投稿なら作り直さない** (設定の切り替えや、
+	 * 操作の失敗の後の引き直しで描き直しても、返信の書きかけと動画のアップロードを消さない)。
+	 * @param {PanelPost} post
+	 * @param {import('./lightbox-replies.js').ThreadResult|null} [thread] 一緒に読んだ返信の一覧
+	 * @returns {void}
+	 */
+	renderPost(post, thread = null) {
 		try {
 			if (!this.bodyEl) {
 				return;
 			}
-			// bodyEl をまるごと作り直すため、メニューが宙に浮く前に片付ける
+			// 投稿の部分をまるごと作り直すため、メニューが宙に浮く前に片付ける
 			// (chrome.storage.onChanged からの再描画は mountPanel() を経由せず
 			// ここへ直接来るため、renderActions() の片付けだけでは足りない)
 			this.closeRepostMenu();
 			const config = this.config;
 			this.post = post;
 			this.state = readViewerState(post.viewer, post.counts);
-			this.bodyEl.textContent = '';
-			this.bodyEl.appendChild(this.buildAuthor(post));
+			this.ensureBodyParts();
+			const part = this.postEl;
+			part.textContent = '';
+			part.appendChild(this.buildAuthor(post));
 
 			const text = document.createElement('p');
 			text.className = config.textClass;
 			for (const segment of post.segments) {
 				text.appendChild(this.buildSegment(segment));
 			}
-			this.bodyEl.appendChild(text);
+			part.appendChild(text);
 
 			const formatted = formatPostDate(post.createdAt, config);
 			if (formatted) {
@@ -1029,20 +1119,22 @@ export class LightboxPanel {
 				date.className = config.dateClass;
 				date.setAttribute('datetime', post.createdAt);
 				date.textContent = formatted;
-				this.bodyEl.appendChild(date);
+				part.appendChild(date);
 			}
 
-			this.bodyEl.appendChild(this.shouldShowActions(post)
+			part.appendChild(this.shouldShowActions(post)
 				? this.buildActions()
 				: this.buildCounts(post));
-			this.bodyEl.appendChild(this.buildOpenPost(post));
+			part.appendChild(this.buildOpenPost(post));
 			if (this.repliesEnabled) {
-				this.replies.mount(this.bodyEl, post, {canWrite: this.shouldShowActions(post)});
+				this.replies.mount(this.repliesSlot, post, {canWrite: this.shouldShowActions(post), thread});
 			} else {
 				this.replies.destroy();
 			}
 		} catch (error) {
 			console.error('[XViewer] パネルの描画に失敗しました', error);
+			// 本文の入れ物ごと消すため、外れた入力欄 (動画のアップロードを含む) も後始末する
+			this.replies.destroy();
 			this.renderStatus(this.config.text.error);
 		}
 	}
@@ -1086,7 +1178,6 @@ export class LightboxPanel {
 	 */
 	buildSegment(segment) {
 		const config = this.config;
-		const routes = EXT_CONFIG.mediaGrid.bridge.routes;
 		if (segment.kind === 'link') {
 			const href = toSafeLinkHref(segment.value, config);
 			// 許可した scheme でなければ押せる要素にしない。本文は文字列として残す
@@ -1106,10 +1197,10 @@ export class LightboxPanel {
 			button.type = 'button';
 			button.className = config.linkClass;
 			button.textContent = segment.text;
-			const params = segment.kind === 'mention'
-				? {route: routes.profile, params: {name: segment.value}}
-				: {route: routes.hashtag, params: {tag: segment.value}};
-			button.addEventListener('click', () => this.leaveTo(params));
+			const target = segment.kind === 'mention'
+				? profileRoute(segment.value)
+				: hashtagRoute(segment.value);
+			button.addEventListener('click', () => this.leaveTo(target));
 			return button;
 		}
 		return document.createTextNode(segment.text);
@@ -1301,6 +1392,8 @@ export class LightboxPanel {
 				return;
 			}
 			previous = this.state;
+			// 押した時点のアカウント。応答を待つ間に本体でアカウントを切り替えたら、結果を今の人の画面へ写さない
+			const did = this.actions.sessionDid;
 			const next = toggleActionState(previous, kind);
 			this.pending.add(key);
 			this.state = next;
@@ -1316,17 +1409,19 @@ export class LightboxPanel {
 				if (kind === 'repost' && next.reposted) {
 					next.repostUri = result.recordUri;
 				}
-				// 覚えている投稿にも反映する。**この種別のフィールドだけを書く**
+				// 掴んでいる投稿に反映する。**この種別のフィールドだけを書く**
 				// (別種の操作が同時に飛行中の場合がある。全フィールドを書くと
-				// 互いの結果を消し合う)。post はこの呼び出しがローカルに掴んでいる
-				// キャッシュ内のオブジェクトなので、応答待ちの間に閉じられていても
-				// 書き戻して構わない
+				// 互いの結果を消し合う)。開き直した後の投稿にも重ねられるよう、結果を控える
 				syncPostViewer(post, kind, next);
+				const actor = actionOwnerDid(kind, previous, next, did);
+				if (actor !== null && actor === this.actions.sessionDid) {
+					this.shadows.set(key, {kind, state: next, did: actor, at: Date.now()});
+				}
 			} else {
 				// **失敗しても「押す前の状態」を覚え込まない。** サーバ側では
 				// 成功していることがあり、覚えたままにすると recordUri を永久に失い、
-				// 次の押下で 2 本目のレコードができる
-				this.cache.delete(post.postUri);
+				// 次の押下で 2 本目のレコードができる。控えた結果も捨ててサーバの真実に任せる
+				this.shadows.delete(key);
 				if (!this.hasOtherPending(post.postUri, key)) {
 					// 印を残したまま、**認証付きの取得だけ**で引き直す (公開 API に
 					// 落ちると viewer 無しの投稿を覚え込み、開き直しても操作行が
@@ -1343,28 +1438,33 @@ export class LightboxPanel {
 					if (refreshed && this.hasOtherPending(post.postUri, key)) {
 						refreshed = null;
 					}
-					if (refreshed) {
-						this.remember(post.postUri, refreshed);
-					}
 				}
 			}
 			this.pending.delete(key);
 
 			// 応答を待つ間に別の投稿へ移った・閉じたままなら、画面への反映は捨てる
-			// (書き戻しは上で完了しているので、次に開いたときは正しい状態から描かれる)
-			if (this.post !== post) {
+			// (成功の結果は控えたので、次に開いたときは引き直した投稿に重ねて描かれる)。
+			// **比べるのは投稿の URI。** 閉じて同じ投稿を開き直すと this.post は引き直した別の
+			// オブジェクトになり、参照で比べると成功を描けず、押せる状態に戻って 2 本目が飛ぶ
+			if (!this.post || !this.state || this.post.postUri !== post.postUri
+				|| actionOwnerDid(kind, previous, next, did) !== this.actions.sessionDid) {
 				return;
 			}
 			// ここから先は同じ投稿を表示中 (閉じて同じ投稿を開き直した場合を含む。
-			// その場合 this.state は書き戻し前の post.viewer から作り直されているが、
+			// その場合 this.state は書き戻し前の viewer から作り直されているが、
 			// 値で写すため結果は同じ)
 			if (result.ok) {
+				if (this.post !== post) {
+					syncPostViewer(this.post, kind, next);
+				}
 				this.state = mergeActionKind(this.state, kind, next);
 				this.renderActions();
 				return;
 			}
 			if (refreshed) {
-				// サーバの真実で描き直す。意図した状態になっていれば、実は成功していた
+				// サーバの真実で描き直す。意図した状態になっていれば、実は成功していた。
+				// 少し前に成功した別の種別の結果は、AppView の反映が遅れていても残す (この種別の控えは上で捨てた)
+				this.applyShadows(refreshed);
 				this.renderPost(refreshed);
 				if (!isActionApplied(this.state, kind, next)) {
 					this.showActionError();
@@ -1383,7 +1483,7 @@ export class LightboxPanel {
 			// 成功経路と同じ破棄ガード。**別の投稿を開いた後に例外が来ると、
 			// previous (前の投稿の URI) を今の投稿の状態へ書き込んでしまい、
 			// 次の押下で別の投稿のいいねを消す**経路になる
-			if (!post || this.post !== post) {
+			if (!post || !this.post || this.post.postUri !== post.postUri) {
 				return;
 			}
 			// 通信していないのに見た目だけ変わったままにしない。その種別だけを
@@ -1636,23 +1736,26 @@ export class LightboxPanel {
 
 	/**
 	 * 操作の失敗を 1 行で伝える。**alert は使わない**
-	 * (ライトボックスの操作が止まるため)。次の操作が成功したら消える
+	 * (ライトボックスの操作が止まるため)。次の操作が成功したら消える。
+	 * 返信欄より上 (投稿の部分の末尾) に出し、長い一覧の下に隠れないようにする
+	 * @param {string} [message] 省けば「操作できませんでした」
 	 * @returns {void}
 	 */
-	showActionError() {
+	showActionError(message) {
 		try {
-			if (!this.bodyEl) {
+			const container = this.postEl || this.bodyEl;
+			if (!container) {
 				return;
 			}
 			const config = EXT_CONFIG.postActions;
-			let line = this.bodyEl.querySelector(`.${config.errorClass}`);
+			let line = container.querySelector(`.${config.errorClass}`);
 			if (!line) {
 				line = document.createElement('p');
 				line.className = config.errorClass;
 				line.setAttribute('role', 'alert');
-				this.bodyEl.appendChild(line);
+				container.appendChild(line);
 			}
-			line.textContent = config.text.failed;
+			line.textContent = message || config.text.failed;
 		} catch (error) {
 			console.error('[XViewer] 失敗の表示に失敗しました', error);
 		}
@@ -1665,7 +1768,6 @@ export class LightboxPanel {
 	 */
 	buildOpenPost(post) {
 		const config = this.config;
-		const routes = EXT_CONFIG.mediaGrid.bridge.routes;
 		const button = document.createElement('button');
 		button.type = 'button';
 		button.className = config.openPostClass;
@@ -1673,21 +1775,44 @@ export class LightboxPanel {
 		const label = document.createElement('span');
 		label.textContent = config.text.openPost;
 		button.appendChild(label);
-		button.addEventListener('click', () => this.leaveTo({
-			route: routes.post,
-			params: {name: post.handle, rkey: post.rkey}
-		}));
+		button.addEventListener('click', () => this.leaveTo(postRoute(post.handle, post.rkey)));
 		return button;
+	}
+
+	/**
+	 * 書きかけの返信があるとき、移動の 1 回目の押下を止めて聞き返す。
+	 * leaveConfirmMs のうちに同じ先をもう一度押したら通す。
+	 * @param {string} key 移動先を表す文字列
+	 * @returns {boolean} 移動してよいなら true
+	 */
+	confirmLeave(key) {
+		const draft = this.repliesEnabled && this.replies.readKeyState().hasDraft;
+		if (!draft) {
+			this.leaveArmed = null;
+			return true;
+		}
+		const armed = this.leaveArmed;
+		if (armed && armed.key === key && Date.now() - armed.at < this.config.leaveConfirmMs) {
+			this.leaveArmed = null;
+			return true;
+		}
+		this.leaveArmed = {key, at: Date.now()};
+		this.showActionError(this.config.text.leaveDraft);
+		return false;
 	}
 
 	/**
 	 * ライトボックスを閉じてから SPA 遷移する。
 	 * 閉じるのに失敗しても遷移は試みる (本体が遷移で畳むため)。
-	 * @param {{route: string, params: Object}} target
+	 * 書きかけの返信があれば、1 回目の押下では移らずに聞き返す (閉じると書きかけが消えるため)
+	 * @param {import('./routes.js').RouteTarget} target
 	 * @returns {Promise<void>}
 	 */
 	async leaveTo(target) {
 		const actions = EXT_CONFIG.mediaGrid.bridge.actions;
+		if (!this.confirmLeave(JSON.stringify(target))) {
+			return;
+		}
 		try {
 			await callBridge(actions.closeLightbox, {});
 			await callBridge(actions.navigate, target);
@@ -1714,27 +1839,24 @@ export class LightboxPanel {
 	 */
 	async openReplyMedia(request) {
 		const bridge = EXT_CONFIG.mediaGrid.bridge;
+		if (!this.confirmLeave(`media:${request.postUri}:${request.index}`)) {
+			return;
+		}
 		try {
 			const closed = this.waitForClose(EXT_CONFIG.lightboxReplies.media.closeWaitMs);
 			await callBridge(bridge.actions.closeLightbox, {});
 			await closed;
-			const result = await callBridge(bridge.actions.openLightbox, {
-				images: request.images,
-				index: request.index,
-				metricsContext: {
-					postUri: request.postUri,
-					postAuthorDid: request.authorDid || undefined,
-					layout: bridge.lightboxLayout
-				}
-			});
+			// 返信の投稿 (と、揃っていれば返信の一覧) は手元にある。開き直した後に引き直さない
+			this.seed = request.seed && request.seed.view
+				? {postUri: request.postUri, view: request.seed.view, thread: request.seed.thread || null}
+				: null;
+			const result = await callBridge(bridge.actions.openLightbox, openLightboxPayload(request));
 			if (result && result.ok) {
 				return;
 			}
+			this.seed = null;
 			ExtDebug.log('返信の画像を開けなかった', {理由: result && result.reason});
-			await callBridge(bridge.actions.navigate, {
-				route: bridge.routes.post,
-				params: {name: request.handle, rkey: request.rkey}
-			});
+			await callBridge(bridge.actions.navigate, postRoute(request.handle, request.rkey));
 		} catch (error) {
 			console.error('[XViewer] 返信の画像を開けませんでした', error);
 		}

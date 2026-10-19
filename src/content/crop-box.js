@@ -17,14 +17,26 @@ const CORNER_DIRECTIONS = {
 	se: {sx: 1, sy: 1}
 };
 
+/** 比が枠に当てはまるとみなす、比から求めた高さと実際の高さの差の上限 (画素。丸めの分) */
+const RATIO_TOLERANCE_PX = 1;
+
 /**
  * 画像の大きさが使えるか (幅・高さが有限の正数)。
  * @param {ImageSize} image
  * @returns {boolean}
  */
-function isValidImage(image) {
+export function isValidImage(image) {
 	return !!image && Number.isFinite(image.width) && Number.isFinite(image.height)
 		&& image.width > 0 && image.height > 0;
+}
+
+/**
+ * 切り抜きの画面に出せる画像か (幅・高さが 1 画素以上。端数を切り捨てても 0 にならない)。
+ * @param {ImageSize|undefined} image
+ * @returns {boolean}
+ */
+export function isUsableImage(image) {
+	return isValidImage(image) && image.width >= 1 && image.height >= 1;
 }
 
 /**
@@ -32,8 +44,45 @@ function isValidImage(image) {
  * @param {CropRect} box
  * @returns {boolean}
  */
-function isValidBox(box) {
+export function isValidBox(box) {
 	return !!box && [box.x, box.y, box.width, box.height].every(Number.isFinite);
+}
+
+/**
+ * 枠が画像の中に収まる、大きさのある枠か。
+ * @param {CropRect|null} box
+ * @param {ImageSize} image
+ * @returns {boolean}
+ */
+export function isBoxInImage(box, image) {
+	return isValidBox(box) && box.x >= 0 && box.y >= 0 && box.width > 0 && box.height > 0
+		&& box.x + box.width <= image.width && box.y + box.height <= image.height;
+}
+
+/**
+ * 枠に当てはまる比を選ぶ。比から求めた高さと実際の高さの差が丸めの分 (1 画素) 以内のもののうち、
+ * いちばん差の小さいものを返す。当てはまる比が無ければ比を持たない選択肢 (自由)、それも無ければ先頭。
+ * 開き直したときに、前に選んだ比で枠を動かし続けられるようにする。
+ * @template {{ratio: number|null}} T
+ * @param {CropRect} box
+ * @param {readonly T[]} aspects 選択肢
+ * @returns {T|undefined}
+ */
+export function matchAspect(box, aspects) {
+	const list = Array.isArray(aspects) ? aspects : [];
+	const free = list.find((aspect) => !hasRatio(aspect.ratio)) || list[0];
+	if (!isValidBox(box) || !(box.width > 0) || !(box.height > 0)) return free;
+	let best = null;
+	let bestDiff = Infinity;
+	for (const aspect of list) {
+		if (!hasRatio(aspect.ratio)) continue;
+		const diff = Math.abs(box.width / aspect.ratio - box.height);
+		if (diff <= RATIO_TOLERANCE_PX && diff < bestDiff) {
+			best = aspect;
+			bestDiff = diff;
+		}
+	}
+	return best || free;
 }
 
 /**

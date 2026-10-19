@@ -766,6 +766,10 @@ test('ReplyComposer: ALT の画面を閉じたとき、描き直したマスの 
 		const attachment = composer.active.attachments[0];
 		const before = attachment.cell.altButton;
 		click(before);
+		// 足しただけの描き直しではマスを作り直さないため、外から子を外して作り直させる
+		composer.active.renderAttachments();
+		assert.strictEqual(attachment.cell.altButton, before, '足していないのにマスを作り直した');
+		composer.active.attachmentsEl.textContent = '';
 		composer.active.renderAttachments();
 		const after = attachment.cell.altButton;
 		assert.ok(after !== before, '描き直してもボタンが同じ');
@@ -942,7 +946,9 @@ test('ReplyComposer: カードを出した後に画像を足すとカードを�
 		await composer.submit();
 		const embed = calls.created[0].embed;
 		assert.strictEqual(embed.$type, 'app.bsky.embed.images');
-		assert.deepStrictEqual(calls.fetchBlob, []);
+		// サムネイルはカードが取れたときの 1 回だけ取り、画像があるときは送らない (送ったのは画像 1 枚だけ)
+		assert.deepStrictEqual(calls.fetchBlob, ['https://cardyb.bsky.app/v1/image?url=x']);
+		assert.strictEqual(calls.uploads, 1);
 	} finally {
 		restore();
 	}
@@ -1287,7 +1293,9 @@ test('ReplyComposer: 動画があるあいだリンクカードを送らない',
 		await composer.submit();
 		const embed = calls.created[0].embed;
 		assert.strictEqual(embed.$type, 'app.bsky.embed.video');
-		assert.deepStrictEqual(calls.fetchBlob, []);
+		// サムネイルはカードが取れたときの 1 回だけで、動画があるときは送らない
+		assert.deepStrictEqual(calls.fetchBlob, ['https://cardyb.bsky.app/v1/image?url=x']);
+		assert.strictEqual(calls.uploads, 0);
 	} finally {
 		restore();
 	}
@@ -2243,6 +2251,104 @@ test('スレッド: 投稿が 2 件以上ある入れ物を外すと、各投稿
 		assert.strictEqual(calls.videoJobs.length, 2);
 		composer.destroy();
 		assert.deepStrictEqual(calls.videoCancels.slice().sort(), calls.videoJobs.map((job) => job.id).sort());
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画と受け付けない形式のファイルを一緒に落とすと、動画は付き、形式の知らせだけを出す', async () => {
+	const made = makeComposer({});
+	const {composer, calls, restore} = made;
+	const text = COMPOSE.text;
+	try {
+		await composer.active.addFiles([videoFile(), {name: 'a.bmp', type: 'image/bmp'}, {name: 'b.txt', type: 'text/plain'}]);
+		await flush();
+		assert.strictEqual(calls.videoUploads.length, 1, '動画が付かない');
+		assert.strictEqual(composer.active.video.isActive(), true);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.unsupportedImage);
+		assert.ok(!composer.active.noticeEl.textContent.includes(text.videoExclusive));
+	} finally {
+		restore();
+	}
+	// 受け付けられる画像が混じっていれば、今までどおり動画を断って画像を付ける
+	const mixed = makeComposer({});
+	try {
+		await mixed.composer.active.addFiles([videoFile(), {name: 'a.png', type: 'image/png'}]);
+		await flush();
+		assert.strictEqual(mixed.calls.videoUploads.length, 0);
+		assert.strictEqual(mixed.composer.active.attachments.length, 1);
+		assert.strictEqual(mixed.composer.active.noticeEl.textContent, COMPOSE.text.videoExclusive);
+	} finally {
+		mixed.restore();
+	}
+});
+
+test('ReplyComposer: 画像を足すときは描いてあるマスを作り直さず、外すときは作り直す', async () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		const first = composer.active.attachments[0].cell.li;
+		await composer.active.addFiles([{name: 'b.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.attachments[0].cell.li, first, '1 枚目のマスを作り直した');
+		assert.strictEqual(composer.active.attachmentsEl.children.length, 2);
+		composer.active.removeAttachment(composer.active.attachments[0]);
+		assert.strictEqual(composer.active.attachmentsEl.children.length, 1);
+		const remaining = composer.active.attachments[0];
+		assert.strictEqual(composer.active.attachmentsEl.children[0], remaining.cell.li);
+		assert.strictEqual(remaining.cell.img.alt.includes('1'), true, '外した後に番号を振り直していない');
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 打鍵では打った投稿の本文の欄だけを測り直し、同じ本文の解析は使い回す', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目', '3 件目']);
+		const fits = composer.posts.map(() => 0);
+		composer.posts.forEach((post, index) => {
+			post.fitHeight = () => {
+				fits[index] += 1;
+				post.heightDirty = false;
+			};
+			post.heightDirty = false;
+		});
+		typeInto(composer.posts[1], '2 件目を直す');
+		assert.deepStrictEqual(fits, [0, 1, 0]);
+		composer.sync();
+		assert.deepStrictEqual(fits, [0, 1, 0], '本文が変わらないのに測り直した');
+		const analysis = composer.posts[1].analyze();
+		composer.sync();
+		assert.strictEqual(composer.posts[1].analyze(), analysis, '同じ本文を解析し直した');
+		typeInto(composer.posts[1], '2 件目を直した');
+		assert.notStrictEqual(composer.posts[1].analyze(), analysis);
+	} finally {
+		restore();
+	}
+});
+
+test('ReplyComposer: 動画の進み具合だけの変化では動画のプレビューしか描き直さない', async () => {
+	const made = makeComposer({});
+	const {composer, calls, restore} = made;
+	try {
+		await composer.active.addFiles([videoFile()]);
+		await flush();
+		let syncs = 0;
+		const sync = composer.sync.bind(composer);
+		composer.sync = () => {
+			syncs += 1;
+			sync();
+		};
+		const job = calls.videoJobs[0];
+		job.onProgress({phase: 'upload', progress: 0.3});
+		job.onProgress({phase: 'upload', progress: 0.6});
+		assert.strictEqual(syncs, 0, '進み具合で送信ボタンの判定をやり直した');
+		const status = composer.active.videoEl.querySelector(`.${COMPOSE.classes.videoStatus}`);
+		assert.ok(status.textContent.includes('60'));
+		job.finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
+		await flush();
+		assert.ok(syncs > 0, '送れるようになったのに知らせない');
+		assert.strictEqual(composer.submitButton.disabled, false);
 	} finally {
 		restore();
 	}

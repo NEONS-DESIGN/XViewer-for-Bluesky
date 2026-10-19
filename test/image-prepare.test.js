@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 
-import { fitDimensions, compressToLimit, resolveSourceRect } from '../src/content/image-prepare.js';
+import { fitDimensions, compressToLimit, resolveSourceRect, createCanvasEncoder } from '../src/content/image-prepare.js';
 import { EXT_CONFIG } from '../src/common/config.js';
 
 const RULES = EXT_CONFIG.lightboxReplies.compose.image;
@@ -125,4 +125,58 @@ test('resolveSourceRect: 切り抜きを画像の内側に収めて整数にす�
 test('resolveSourceRect: 切り抜きが画像の外なら null', () => {
 	assert.strictEqual(resolveSourceRect({ width: 100, height: 100 }, { x: 100, y: 0, width: 10, height: 10 }), null);
 	assert.strictEqual(resolveSourceRect({ width: 100, height: 100 }, { x: -50, y: 0, width: 40, height: 10 }), null);
+});
+
+/**
+ * 描いた回数と書き出しの品質を記録する偽の canvas を作る関数。
+ * @returns {{create: () => Object, log: {canvases: number, draws: Array<number[]>, qualities: number[]}}}
+ */
+function fakeCanvasFactory() {
+	const log = {canvases: 0, draws: [], qualities: []};
+	const create = () => {
+		log.canvases += 1;
+		const canvas = {
+			width: 0,
+			height: 0,
+			getContext: () => ({
+				fillRect: () => {},
+				drawImage: (...args) => log.draws.push([canvas.width, canvas.height, args.length]),
+			}),
+			toBlob: (done, type, quality) => {
+				log.qualities.push(quality);
+				done({size: Math.round(canvas.width * canvas.height * quality), type});
+			},
+		};
+		return canvas;
+	};
+	return {create, log};
+}
+
+test('createCanvasEncoder: 同じ寸法のあいだは canvas 1 枚に 1 回だけ描き、品質だけを変えて書き出す', async () => {
+	const {create, log} = fakeCanvasFactory();
+	const encoder = createCanvasEncoder({}, {x: 0, y: 0, width: 100, height: 100}, create);
+	await encoder.encode(100, 100, 1);
+	await encoder.encode(100, 100, 0.5);
+	await encoder.encode(100, 100, 0.25);
+	assert.strictEqual(log.canvases, 1);
+	assert.strictEqual(log.draws.length, 1);
+	assert.deepStrictEqual(log.qualities, [1, 0.5, 0.25]);
+	// 寸法が変わったら描き直す
+	await encoder.encode(80, 80, 1);
+	assert.strictEqual(log.draws.length, 2);
+	assert.deepStrictEqual(log.draws[1].slice(0, 2), [80, 80]);
+	encoder.release();
+});
+
+test('createCanvasEncoder: compressToLimit の二分探索でも、描くのは縮める段階ごとに 1 回', async () => {
+	const {create, log} = fakeCanvasFactory();
+	// 最低品質でも 1 段目に収まらず、縮めた 2 段目で収まる規則
+	const rules = {maxDimension: 4000, maxBytes: 1000000, minQuality: 0.2, scaleStep: 0.5, maxScaleRetries: 2, qualitySteps: 4};
+	const encoder = createCanvasEncoder({}, {x: 0, y: 0, width: 3000, height: 3000}, create);
+	const result = await compressToLimit(encoder.encode, {width: 3000, height: 3000}, rules);
+	encoder.release();
+	assert.ok(result && result.blob.size <= rules.maxBytes);
+	assert.strictEqual(log.qualities.length, 2 * (1 + rules.qualitySteps), '2 段とも二分探索していない');
+	assert.deepStrictEqual(log.draws.map((draw) => draw.slice(0, 2)), [[3000, 3000], [1500, 1500]], '同じ寸法で描き直した');
+	assert.strictEqual(log.canvases, 1);
 });

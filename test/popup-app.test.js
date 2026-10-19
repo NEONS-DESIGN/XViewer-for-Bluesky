@@ -47,7 +47,7 @@ async function run(storage, {noRoot = false} = {}) {
 		storage,
 		renderPopup: (args) => {
 			renders.push(args);
-			return {dispose: () => renders.at(-1) && (renders.at(-1).disposed = true), currentTab: () => 'settings'};
+			return {dispose: () => renders.at(-1) && (renders.at(-1).disposed = true)};
 		},
 		report: (...args) => reports.push(args)
 	});

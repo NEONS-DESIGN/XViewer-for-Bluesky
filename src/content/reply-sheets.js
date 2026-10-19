@@ -12,7 +12,7 @@
  *       crop-sheet.js (openCropSheet)・language-sheet.js (openLanguageSheet ほか) を再び公開する
  */
 import {countGraphemes} from './reply-text.js';
-import {createElement, createButton, createOption, formatText, safeCall, browserLocale} from './sheet-dom.js';
+import {createElement, createButton, createAlert, createOption, formatText, safeCall, browserLocale} from './sheet-dom.js';
 
 export {formatText} from './sheet-dom.js';
 export {openCropSheet} from './crop-sheet.js';
@@ -29,11 +29,6 @@ export {
  * @property {(body: HTMLElement, done: () => void) => (void|(() => void))} build 中身を組む
  * @property {() => void} [onDone] 「完了」で閉じたとき
  * @property {() => void} [onCancel] 「キャンセル」・Escape・別の画面を開いたことで閉じたとき
- * @property {() => void} [restoreFocus] 閉じるときに開いたボタンがもうパネルに無ければ呼び、
- *   代わりの要素へフォーカスを移す (onDone で一覧を描き直した場合など)。
- *   無いか、呼んでもパネルの中へ移らなければ、パネルの最初の操作要素へ移す
- * @property {boolean} [wide] 本文の左右の余白を無くす (画面の幅いっぱいに見せたい中身のとき)
- * @property {boolean} [closeOnly] 「キャンセル」「完了」の代わりに「閉じる」だけを出す
  * @property {PopoverSize} [popover] パネルを覆わず、開いたボタンに付く吹き出しにする (絵文字・GIF)。
  *   見出しとボタンの行を持たず、外を押す・外へフォーカスが移る・同じボタンをもう一度押すと閉じる
  */
@@ -111,7 +106,9 @@ export function popoverScrollDelta(anchor, bounds, size, room, keep) {
  * @typedef {Object} SheetOptions
  * @property {Node|null} [owner] 画面の持ち主 (入力欄の外枠)。開いたボタンが描き直されて
  *   入れ替わっても、持ち主を外すときに画面を閉じられるようにする
- * @property {() => void} [restoreFocus] SheetSpec の restoreFocus の代わりに使う戻し先
+ * @property {() => void} [restoreFocus] 閉じるときに開いたボタンがもうパネルに無ければ呼び、
+ *   代わりの要素へフォーカスを移す (onDone で一覧を描き直した場合など)。
+ *   無いか、呼んでもパネルの中へ移らなければ、パネルの最初の操作要素へ移す
  */
 
 /** 見出しの id とラジオの組の名前を重ならないようにする連番 */
@@ -134,7 +131,10 @@ export class SheetHost {
 		this.onKeyDown = this.onKeyDown.bind(this);
 		this.onPanelFocusIn = this.onPanelFocusIn.bind(this);
 		this.onOutsidePointerDown = this.onOutsidePointerDown.bind(this);
-		this.reposition = this.reposition.bind(this);
+		this.onPanelScroll = this.onPanelScroll.bind(this);
+		this.scheduleReposition = this.scheduleReposition.bind(this);
+		/** 置き直しを待っている requestAnimationFrame の番号 (無ければ null) */
+		this.repositionFrame = null;
 		this.panelEl.addEventListener('focusin', this.onPanelFocusIn, true);
 	}
 
@@ -157,7 +157,7 @@ export class SheetHost {
 			const {layer, body, doneButton, cancelButton} = this.buildLayer(spec);
 			const restoreFocus = options && typeof options.restoreFocus === 'function'
 				? options.restoreFocus
-				: spec.restoreFocus;
+				: undefined;
 			const entry = {
 				spec, layer, doneButton, opener: opener || null,
 				owner: (options && options.owner) || null, restoreFocus, cleanup: null
@@ -195,7 +195,6 @@ export class SheetHost {
 		const {classes, text, sheetRoles} = this.config;
 		const doc = this.doc;
 		const layer = createElement(doc, 'div', classes.sheet);
-		if (spec.wide) layer.classList.add(classes.wide);
 		layer.dataset.role = sheetRoles.layer;
 		layer.setAttribute('role', 'dialog');
 		layer.setAttribute('tabindex', '-1');
@@ -218,15 +217,11 @@ export class SheetHost {
 
 		const body = createElement(doc, 'div', classes.body);
 		const foot = createElement(doc, 'div', classes.foot);
-		const cancelButton = createButton(doc, classes.button, spec.closeOnly ? text.sheetClose : text.sheetCancel);
+		const cancelButton = createButton(doc, classes.button, text.sheetCancel);
 		cancelButton.dataset.role = sheetRoles.cancel;
-		foot.append(cancelButton);
-		let doneButton = null;
-		if (!spec.closeOnly) {
-			doneButton = createButton(doc, `${classes.button} ${classes.primary}`, text.sheetDone);
-			doneButton.dataset.role = sheetRoles.done;
-			foot.append(doneButton);
-		}
+		const doneButton = createButton(doc, `${classes.button} ${classes.primary}`, text.sheetDone);
+		doneButton.dataset.role = sheetRoles.done;
+		foot.append(cancelButton, doneButton);
 		layer.append(this.buildSentinel(false), header, body, foot, this.buildSentinel(true));
 		return {layer, body, doneButton, cancelButton};
 	}
@@ -314,15 +309,15 @@ export class SheetHost {
 	/**
 	 * 吹き出しを置き、開いているあいだの監視 (外の押下・パネルや入力欄の送り・窓の大きさ) を始める。
 	 * 外の押下は本体のどこでも拾えるよう html 要素の capture で、送りの scroll は泡立たないため
-	 * パネルの capture で受ける。
+	 * パネルの capture で受ける。送りと窓の大きさの変化は 1 フレームに 1 回にまとめて置き直す。
 	 * @returns {void}
 	 */
 	startPopover() {
 		this.placeCurrentPopover(true);
 		this.doc.documentElement.addEventListener('pointerdown', this.onOutsidePointerDown, true);
-		this.panelEl.addEventListener('scroll', this.reposition, true);
+		this.panelEl.addEventListener('scroll', this.onPanelScroll, true);
 		const win = this.doc.defaultView;
-		if (win && typeof win.addEventListener === 'function') win.addEventListener('resize', this.reposition);
+		if (win && typeof win.addEventListener === 'function') win.addEventListener('resize', this.scheduleReposition);
 	}
 
 	/**
@@ -331,9 +326,66 @@ export class SheetHost {
 	 */
 	stopPopover() {
 		this.doc.documentElement.removeEventListener('pointerdown', this.onOutsidePointerDown, true);
-		this.panelEl.removeEventListener('scroll', this.reposition, true);
+		this.panelEl.removeEventListener('scroll', this.onPanelScroll, true);
 		const win = this.doc.defaultView;
-		if (win && typeof win.removeEventListener === 'function') win.removeEventListener('resize', this.reposition);
+		if (win && typeof win.removeEventListener === 'function') win.removeEventListener('resize', this.scheduleReposition);
+		this.cancelReposition();
+	}
+
+	/**
+	 * パネルの中の送り。吹き出しの中 (GIF の格子など) の送りでは開いたボタンは動かないので置き直さない。
+	 * @param {Event} event
+	 * @returns {void}
+	 */
+	onPanelScroll(event) {
+		const entry = this.current;
+		if (!entry) return;
+		try {
+			const target = event.target;
+			if (target && target.nodeType === 1 && entry.layer.contains(target)) return;
+		} catch (error) {
+			// 送った先を調べられなくても、置き直しは続ける
+		}
+		this.scheduleReposition();
+	}
+
+	/**
+	 * 次のフレームで吹き出しを置き直す。待っているあいだに重ねて呼ばれても 1 回にまとめる。
+	 * requestAnimationFrame が無い環境ではすぐ置き直す。
+	 * @returns {void}
+	 */
+	scheduleReposition() {
+		if (this.repositionFrame !== null) return;
+		const win = this.doc.defaultView;
+		if (!win || typeof win.requestAnimationFrame !== 'function') {
+			this.reposition();
+			return;
+		}
+		try {
+			this.repositionFrame = win.requestAnimationFrame(() => {
+				this.repositionFrame = null;
+				this.reposition();
+			});
+		} catch (error) {
+			this.repositionFrame = null;
+			this.reposition();
+		}
+	}
+
+	/**
+	 * 待っている置き直しを取り消す。
+	 * @returns {void}
+	 */
+	cancelReposition() {
+		const frame = this.repositionFrame;
+		if (frame === null) return;
+		this.repositionFrame = null;
+		const win = this.doc.defaultView;
+		try {
+			if (win && typeof win.cancelAnimationFrame === 'function') win.cancelAnimationFrame(frame);
+		} catch (error) {
+			// 取り消せなくても、閉じた後の置き直しは placeCurrentPopover が何もしない
+		}
 	}
 
 	/**
@@ -463,7 +515,7 @@ export class SheetHost {
 	}
 
 	/**
-	 * 閉じる画面のフォーカスの戻し先へ移す。開いたボタン → restoreFocus (開くときの options か spec) →
+	 * 閉じる画面のフォーカスの戻し先へ移す。開いたボタン → restoreFocus (開くときの options) →
 	 * パネルの (画面の外の) 最初の操作要素の順に試し、body へ落とさない。
 	 * @param {{spec: SheetSpec, layer: HTMLElement, opener: HTMLElement|null, restoreFocus: (Function|undefined)}} entry 閉じる画面
 	 * @returns {void}
@@ -557,6 +609,53 @@ export function altState(text, max) {
 }
 
 /**
+ * ALT の上限 (書記素) を決める。渡された値が正の整数ならそれ、そうでなければ既定の上限。
+ * GIF のように送る先の上限が短いものは呼び出し側が渡す。
+ * @param {*} given 渡された上限
+ * @param {number} fallback 既定の上限 (compose.maxAltGraphemes)
+ * @returns {number}
+ */
+export function resolveMaxAlt(given, fallback) {
+	return Number.isInteger(given) && given > 0 ? given : fallback;
+}
+
+/**
+ * ALT テキストの欄 (枠・入力欄・残りの数) を組む。書記素で残りを数え、上限を超えたら「完了」を押せなくする。
+ * Ctrl+Enter (Mac は Command+Enter) は、上限を超えていなければ「完了」と同じ扱いにする。
+ * @param {SheetHost} host 重ねる画面の持ち主
+ * @param {Document} doc 対象の文書
+ * @param {{value?: string, max: number, placeholder?: string, done: () => void}} input
+ *   今の ALT・上限・入力欄の placeholder・「完了」と同じ扱いにする処理
+ * @returns {{frame: HTMLElement, field: HTMLTextAreaElement, remaining: HTMLElement, sync: () => void}}
+ *   frame と remaining を本文へ足し、組み終えたら sync を呼ぶ
+ */
+export function buildAltField(host, doc, input) {
+	const {classes, text} = host.config;
+	const frame = createElement(doc, 'div', classes.altFrame);
+	const field = createElement(doc, 'textarea', classes.altInput);
+	field.setAttribute('aria-label', text.altLabel);
+	if (input.placeholder) field.setAttribute('placeholder', input.placeholder);
+	field.value = input.value || '';
+	frame.append(field);
+	const remaining = createElement(doc, 'p', classes.altRemaining);
+	remaining.setAttribute('aria-live', 'polite');
+	const sync = () => {
+		const state = altState(field.value, input.max);
+		remaining.textContent = formatText(text.altRemaining, {count: state.remaining});
+		remaining.classList.toggle(classes.warn, state.over);
+		host.setDoneDisabled(state.over);
+	};
+	field.addEventListener('input', sync);
+	field.addEventListener('keydown', (event) => {
+		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
+			event.preventDefault();
+			if (!altState(field.value, input.max).over) input.done();
+		}
+	});
+	return {frame, field, remaining, sync};
+}
+
+/**
  * ALT テキストの画面を開く。画像の縮小表示と入力欄を出し、書記素で残りを数える。
  * 上限を超えたら「完了」を押せなくする。Ctrl+Enter でも「完了」と同じ扱いにする。
  * @param {SheetHost} host 重ねる画面の持ち主
@@ -569,10 +668,7 @@ export function altState(text, max) {
  */
 export function openAltSheet(host, input, opener, onSave, options) {
 	const {classes, text} = host.config;
-	// 上限は画像の ALT が既定。GIF のように送る先の上限が短いものは input で差し替える
-	const maxAltGraphemes = Number.isInteger(input?.maxGraphemes) && input.maxGraphemes > 0
-		? input.maxGraphemes
-		: host.config.maxAltGraphemes;
+	const maxAltGraphemes = resolveMaxAlt(input?.maxGraphemes, host.config.maxAltGraphemes);
 	let field = null;
 	host.open({
 		title: text.altTitle,
@@ -584,29 +680,12 @@ export function openAltSheet(host, input, opener, onSave, options) {
 				preview.setAttribute('alt', text.altPreview);
 				body.append(preview);
 			}
-			const frame = createElement(doc, 'div', classes.altFrame);
-			field = createElement(doc, 'textarea', classes.altInput);
-			field.setAttribute('aria-label', text.altLabel);
-			field.setAttribute('placeholder', text.altPlaceholder);
-			field.value = input?.alt || '';
-			frame.append(field);
-			const remaining = createElement(doc, 'p', classes.altRemaining);
-			remaining.setAttribute('aria-live', 'polite');
-			const sync = () => {
-				const state = altState(field.value, maxAltGraphemes);
-				remaining.textContent = formatText(text.altRemaining, {count: state.remaining});
-				remaining.classList.toggle(classes.warn, state.over);
-				host.setDoneDisabled(state.over);
-			};
-			field.addEventListener('input', sync);
-			field.addEventListener('keydown', (event) => {
-				if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
-					event.preventDefault();
-					if (!altState(field.value, maxAltGraphemes).over) done();
-				}
+			const alt = buildAltField(host, doc, {
+				value: input?.alt, max: maxAltGraphemes, placeholder: text.altPlaceholder, done
 			});
-			body.append(frame, remaining);
-			sync();
+			field = alt.field;
+			body.append(alt.frame, alt.remaining);
+			alt.sync();
 		},
 		onDone: () => safeCall(onSave, (field?.value || '').trim())
 	}, opener, options);
@@ -717,28 +796,32 @@ export function pickEmojiTheme(doc, emoji) {
 }
 
 /**
- * 絵文字のページの通知を受ける処理を作る。選んだら onPick、閉じる通知で画面を閉じ、
- * 失敗の通知なら iframe を隠して 1 行を出す。
+ * 絵文字のページの通知を受ける処理を作る。準備ができたら読み込み中の 1 行を外し、選んだら onPick、
+ * 閉じる通知で画面を閉じ、失敗の通知なら iframe と読み込み中の 1 行を隠して失敗の 1 行を出す。
  * @param {SheetHost} host 重ねる画面の持ち主
  * @param {HTMLIFrameElement} frame 絵文字のページの iframe
- * @param {HTMLElement} error 失敗の 1 行
+ * @param {{error: HTMLElement, loading: HTMLElement}} lines 失敗の 1 行と読み込み中の 1 行
  * @param {string} origin 拡張機能のページの origin
  * @param {(native: string) => void} onPick 選んだ絵文字
  * @returns {(event: MessageEvent) => void}
  */
-function createEmojiListener(host, frame, error, origin, onPick) {
+function createEmojiListener(host, frame, lines, origin, onPick) {
 	const emoji = host.config.emoji;
+	const {error, loading} = lines;
 	return (event) => {
 		try {
 			if (!isEmojiMessage(event, frame.contentWindow, origin, emoji)) return;
 			const data = event.data;
-			if (data.type === emoji.selectType && typeof data.native === 'string' && data.native) {
+			if (data.type === emoji.readyType) {
+				loading.hidden = true;
+			} else if (data.type === emoji.selectType && typeof data.native === 'string' && data.native) {
 				safeCall(onPick, data.native);
 				// 絵文字が入って入力欄が伸びると開いたボタンが下がるため、吹き出しを付け直す
 				host.reposition();
 			} else if (data.type === emoji.closeType) {
 				if (data.error) {
 					frame.hidden = true;
+					loading.hidden = true;
 					error.hidden = false;
 				} else {
 					host.cancel(true);
@@ -752,7 +835,8 @@ function createEmojiListener(host, frame, error, origin, onPick) {
 
 /**
  * 絵文字の画面を開く。開いたボタンに付く吹き出しに拡張機能のページを iframe で出し、選んだ絵文字を
- * onPick へ渡す (吹き出しは開いたままにする)。ページが閉じる通知を出したら閉じ、失敗を知らせたら 1 行出す。
+ * onPick へ渡す (吹き出しは開いたままにする)。ページが準備できたと知らせるまでは読み込み中の 1 行を重ねる。
+ * ページが閉じる通知を出したら閉じ、失敗を知らせたら 1 行出す。
  * @param {SheetHost} host 重ねる画面の持ち主
  * @param {HTMLElement} opener 開いたボタン
  * @param {(native: string) => void} onPick 選んだ絵文字 (文字そのもの)
@@ -767,9 +851,7 @@ export function openEmojiSheet(host, opener, onPick, options) {
 		build: (body) => {
 			const doc = body.ownerDocument;
 			const win = doc.defaultView;
-			const error = createElement(doc, 'p', classes.error, text.emojiFailed);
-			error.setAttribute('role', 'alert');
-			error.hidden = true;
+			const error = createAlert(doc, classes.error, text.emojiFailed);
 			body.append(error);
 			let page = '';
 			let origin = '';
@@ -784,10 +866,12 @@ export function openEmojiSheet(host, opener, onPick, options) {
 			}
 			const frame = createElement(doc, 'iframe', classes.emojiFrame);
 			frame.setAttribute('title', text.emojiFrame);
-			const onMessage = createEmojiListener(host, frame, error, origin, onPick);
+			const loading = createElement(doc, 'p', classes.emojiLoading, text.emojiLoading);
+			loading.setAttribute('role', 'status');
+			const onMessage = createEmojiListener(host, frame, {error, loading}, origin, onPick);
 			win.addEventListener('message', onMessage);
 			frame.setAttribute('src', page);
-			body.append(frame);
+			body.append(frame, loading);
 			return () => win.removeEventListener('message', onMessage);
 		}
 	}, opener, options);

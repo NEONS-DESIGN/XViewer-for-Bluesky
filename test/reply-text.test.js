@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
 	countGraphemes, detectRichText, buildFacets, resolveReplyRef, buildReplyRecord,
 	primaryLanguage, parseThreadReplies, flattenThreadBranch, sortNewestFirst,
-	formatReplyDate, canSubmitReply, insertVisible, fitTextareaHeight, mediaAspectRatio
+	formatReplyDate, insertVisible, fitTextareaHeight, mediaAspectRatio, threadPostView, threadFromNode
 } from '../src/content/reply-text.js';
 
 /** fixture を読む。 */
@@ -190,13 +190,22 @@ test('formatReplyDate: YYYY-MM-DD HH:mm の形にし、読めない値は空文�
 	assert.strictEqual(formatReplyDate(''), '');
 });
 
-test('canSubmitReply: 空・300 書記素超・3000 バイト超は送れない', () => {
-	assert.deepStrictEqual(canSubmitReply('  ', LIMITS), {ok: false, remaining: 298});
-	assert.deepStrictEqual(canSubmitReply('a'.repeat(300), LIMITS), {ok: true, remaining: 0});
-	assert.deepStrictEqual(canSubmitReply('a'.repeat(301), LIMITS), {ok: false, remaining: -1});
-	const heavy = '👨‍👩‍👧‍👦'.repeat(121);
-	assert.ok(bytes(heavy) > 3000);
-	assert.strictEqual(canSubmitReply(heavy, LIMITS).ok, false);
+test('threadPostView: 中身のある起点だけ PostView を返す', () => {
+	const post = {uri: 'at://did:plc:a/app.bsky.feed.post/1'};
+	assert.strictEqual(threadPostView({thread: {$type: 'app.bsky.feed.defs#threadViewPost', post}}), post);
+	assert.strictEqual(threadPostView({thread: {$type: 'app.bsky.feed.defs#blockedPost', uri: post.uri}}), null);
+	assert.strictEqual(threadPostView(null), null);
+});
+
+test('threadFromNode: 直接の返信が揃っているノードだけを応答の形にする', () => {
+	const type = 'app.bsky.feed.defs#threadViewPost';
+	const withReplies = {$type: type, post: {replyCount: 2}, replies: []};
+	assert.deepStrictEqual(threadFromNode(withReplies), {thread: withReplies});
+	// 返信 0 件なら replies が無くても揃っている
+	assert.deepStrictEqual(threadFromNode({$type: type, post: {replyCount: 0}}).thread.replies, []);
+	// 深さの上限に届いたノード (replies を持たず、返信がある) は引き直させる
+	assert.strictEqual(threadFromNode({$type: type, post: {replyCount: 3}}), null);
+	assert.strictEqual(threadFromNode({$type: 'app.bsky.feed.defs#notFoundPost'}), null);
 });
 
 test('insertVisible: 投稿した返信を表示範囲の末尾に入れ、「もっと見る」の奥に隠さない', () => {

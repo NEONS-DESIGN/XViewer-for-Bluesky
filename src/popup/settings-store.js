@@ -22,7 +22,7 @@ import {ALL_FIELDS} from './sections.js';
  * @property {boolean} failed 読み込みに失敗して既定値で埋めたか
  */
 
-/** ポップアップが扱う保存キー (6 項目 + 配色)。初期化で消すのはこれだけ */
+/** ポップアップが扱う保存キー (設定の各項目 + 配色)。初期化で消すのはこれだけ */
 export const MANAGED_KEYS = Object.freeze([
 	...ALL_FIELDS.map((field) => field.key),
 	EXT_CONFIG.popup.themeStorageKey

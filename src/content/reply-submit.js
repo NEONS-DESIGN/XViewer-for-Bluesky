@@ -3,6 +3,7 @@
  * 画像の順次アップロード、送信の手順 (世代が変わったとき・失敗したときに何を呼ぶか)。
  * 入力欄 (reply-composer.js) が使い、そこから再び公開する。
  */
+import {THREAD_UNCONFIRMED_REASON} from './post-actions.js';
 
 /**
  * 送信の手順の段。runSubmit が順に呼ぶ。
@@ -33,8 +34,8 @@
 const UPLOAD_EXCEPTION = 'upload-exception';
 /** 返信の作成が例外で止まったときの理由 */
 const POST_EXCEPTION = 'post-exception';
-/** 連なりの送信が通ったか確かめられなかった (届いたかもしれない) ときの理由 */
-export const THREAD_UNCONFIRMED = 'thread-unconfirmed';
+/** 連なりの送信が通ったか確かめられなかった (届いたかもしれない) ときの理由。送る側 (post-actions.js) と同じ値 */
+export const THREAD_UNCONFIRMED = THREAD_UNCONFIRMED_REASON;
 /** 取り込む候補にするファイルの MIME タイプの接頭辞 (画像と動画) */
 const MEDIA_TYPE_PREFIXES = ['image/', 'video/'];
 /** DataTransferItem のファイルの種類 */
@@ -125,77 +126,103 @@ export async function uploadAll(images, upload, onProgress) {
 }
 
 /**
+ * 送る投稿 1 件分の段 (uploadBuildSend が使う)。
+ * @typedef {Object} FlowPost
+ * @property {Array<{blob: Blob}>} images 送る画像 (並びのまま)
+ * @property {(blobs: Object[]) => Promise<Object>} buildRecord BlobRef から record を作る
+ * @property {(reason: string) => void} onUploadFailed この投稿の画像を送れなかったときに呼ぶ
+ */
+
+/**
+ * 1 件の送信と連なりの送信が共有する流れ。
+ * 投稿ごとに順にアップロード → 世代の確認 → 投稿ごとに record を組み立てて世代の確認 → 送信 → 世代の確認。
+ * 世代が変わっていたら以後の何も呼ばずに stale で抜ける。アップロードの失敗はその投稿の onUploadFailed だけを呼ぶ。
+ * 組み立てか送信が投げたときは exception を返す (送信の結果の扱いは呼び出し側が決める)
+ * @param {{posts: FlowPost[], upload: SubmitSteps['upload'], onProgress: (current: number, total: number) => void,
+ *   isCurrent: () => boolean, send: (records: Object[]) => Promise<any>, errorMessage: string}} flow
+ *   onProgress には全投稿を通した画像の番号 (1 始まり) と総数を渡す
+ * @returns {Promise<{status: 'stale'|'upload-failed'|'exception'}
+ *   |{status: 'sent', sent: any, records: Object[], blobsByPost: Object[][]}>}
+ */
+async function uploadBuildSend(flow) {
+	const {posts, isCurrent} = flow;
+	const total = posts.reduce((sum, post) => sum + (Array.isArray(post.images) ? post.images.length : 0), 0);
+	const blobsByPost = [];
+	let offset = 0;
+	for (const post of posts) {
+		const base = offset;
+		const uploaded = await uploadAll(post.images, flow.upload, (current) => flow.onProgress(base + current, total));
+		if (!isCurrent()) return {status: 'stale'};
+		if (!uploaded.ok) {
+			post.onUploadFailed(uploaded.reason);
+			return {status: 'upload-failed'};
+		}
+		blobsByPost.push(uploaded.blobs);
+		offset += uploaded.blobs.length;
+	}
+	const records = [];
+	let sent = null;
+	try {
+		for (let i = 0; i < posts.length; i++) {
+			records.push(await posts[i].buildRecord(blobsByPost[i]));
+			if (!isCurrent()) return {status: 'stale'};
+		}
+		sent = await flow.send(records);
+	} catch (error) {
+		console.error(flow.errorMessage, error);
+		return {status: isCurrent() ? 'exception' : 'stale'};
+	}
+	if (!isCurrent()) return {status: 'stale'};
+	return {status: 'sent', sent, records, blobsByPost};
+}
+
+/**
  * 返信を送る手順。アップロード → 世代の確認 → record の組み立て → 作成 → 世代の確認、の順。
  * 世代が変わっていたら何も呼ばずに抜ける。失敗したら onFailed だけを呼び、何も消さない。
  * @param {SubmitSteps} steps 段
  * @returns {Promise<'posted'|'stale'|'upload-failed'|'post-failed'>}
  */
 export async function runSubmit(steps) {
-	const uploaded = await uploadAll(steps.images, steps.upload, steps.onProgress);
-	if (!steps.isCurrent()) return 'stale';
-	if (!uploaded.ok) {
-		steps.onFailed('upload', uploaded.reason);
-		return 'upload-failed';
-	}
-	let record = null;
-	let result = null;
-	try {
-		record = await steps.buildRecord(uploaded.blobs);
-		if (!steps.isCurrent()) return 'stale';
-		result = await steps.createReply(record);
-	} catch (error) {
-		console.error('[XViewer] 返信の投稿に失敗しました', error);
-		if (!steps.isCurrent()) return 'stale';
-		steps.onFailed('post', POST_EXCEPTION);
-		return 'post-failed';
-	}
-	if (!steps.isCurrent()) return 'stale';
+	const flow = await uploadBuildSend({
+		posts: [{
+			images: steps.images,
+			buildRecord: steps.buildRecord,
+			onUploadFailed: (reason) => steps.onFailed('upload', reason)
+		}],
+		upload: steps.upload,
+		onProgress: steps.onProgress,
+		isCurrent: steps.isCurrent,
+		send: (records) => steps.createReply(records[0]),
+		errorMessage: '[XViewer] 返信の投稿に失敗しました'
+	});
+	if (flow.status === 'stale' || flow.status === 'upload-failed') return flow.status;
+	const result = flow.status === 'sent' ? flow.sent : null;
 	if (!result || !result.ok) {
 		steps.onFailed('post', (result && result.reason) || POST_EXCEPTION);
 		return 'post-failed';
 	}
-	steps.onPosted(result, record, uploaded.blobs);
+	steps.onPosted(result, flow.records[0], flow.blobsByPost[0]);
 	return 'posted';
 }
 
 /**
  * 2 件以上の返信を連なりとして送る手順。投稿ごとに順にアップロードし (進み具合は全投稿を通した番号)、
  * 1 件でも失敗したらその投稿だけに知らせて止める。世代が変わったら以後の何も呼ばずに抜ける。
+ * 届いたか確かめられなかった (THREAD_UNCONFIRMED) ときは unconfirmed で知らせ、送り直させない
  * @param {ThreadSubmitSteps} steps 段
  * @returns {Promise<'posted'|'stale'|'upload-failed'|'post-failed'|'unconfirmed'>}
  */
 export async function runThreadSubmit(steps) {
-	const posts = steps.posts;
-	const total = posts.reduce((sum, post) => sum + post.images.length, 0);
-	const blobsByPost = [];
-	let offset = 0;
-	for (const post of posts) {
-		const base = offset;
-		const uploaded = await uploadAll(post.images, steps.upload, (current) => steps.onProgress(base + current, total));
-		if (!steps.isCurrent()) return 'stale';
-		if (!uploaded.ok) {
-			post.onUploadFailed(uploaded.reason);
-			return 'upload-failed';
-		}
-		blobsByPost.push(uploaded.blobs);
-		offset += post.images.length;
-	}
-	let records = null;
-	let sent = null;
-	try {
-		records = [];
-		for (let i = 0; i < posts.length; i++) {
-			records.push(await posts[i].buildRecord(blobsByPost[i]));
-			if (!steps.isCurrent()) return 'stale';
-		}
-		sent = await steps.send(records);
-	} catch (error) {
-		console.error('[XViewer] 返信の連なりの投稿に失敗しました', error);
-		if (!steps.isCurrent()) return 'stale';
-		steps.onFailed('post', POST_EXCEPTION);
-		return 'post-failed';
-	}
-	if (!steps.isCurrent()) return 'stale';
+	const flow = await uploadBuildSend({
+		posts: steps.posts,
+		upload: steps.upload,
+		onProgress: steps.onProgress,
+		isCurrent: steps.isCurrent,
+		send: steps.send,
+		errorMessage: '[XViewer] 返信の連なりの投稿に失敗しました'
+	});
+	if (flow.status === 'stale' || flow.status === 'upload-failed') return flow.status;
+	const sent = flow.status === 'sent' ? flow.sent : null;
 	if (!sent || !sent.ok) {
 		const reason = (sent && sent.reason) || POST_EXCEPTION;
 		if (reason === THREAD_UNCONFIRMED) {
@@ -205,7 +232,7 @@ export async function runThreadSubmit(steps) {
 		steps.onFailed('post', reason);
 		return 'post-failed';
 	}
-	const sentRecords = Array.isArray(sent.writes) ? sent.writes.map((write) => write.value) : records;
-	steps.onPosted(sent.results, sentRecords, blobsByPost);
+	const sentRecords = Array.isArray(sent.writes) ? sent.writes.map((write) => write.value) : flow.records;
+	steps.onPosted(sent.results, sentRecords, flow.blobsByPost);
 	return 'posted';
 }

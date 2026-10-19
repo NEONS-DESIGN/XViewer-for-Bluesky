@@ -1,22 +1,22 @@
 /**
  * 返信の入力欄のうち投稿 1 件分。本文・添付 (画像 10 枚まで、GIF 1 つ、または動画 1 本)・ALT・切り抜き・
  * リンクカード・引用・コンテンツの警告・絵文字・貼り付けとドロップ・知らせの 1 行・ツールバー (画像・GIF・絵文字)・投稿を消す「×」を持つ。
- * 送るときは、送る blob の並び (uploadImages) と record の中身 (buildRecord) を入れ物へ渡す。
+ * 送るときは、送る blob の並び (prepareSend) と record の中身 (buildRecord) を入れ物へ渡す。
  *
  * **入れ物 (reply-composer.js) を import しない。** 中身が変わった・アクティブになった・送れと言われたは
  * 入れ物から渡された hooks で知らせ、投稿言語と送信中かどうかも hooks から読む。
  *
  * 依存: icons.js / reply-text.js / reply-embed.js / reply-sheets.js / reply-attachments.js / reply-submit.js /
  *       sheet-dom.js / reply-extras.js / reply-links.js / gif-sheet.js / klipy.js / bridge-protocol.js /
- *       reply-video.js / video-sheet.js / video-rules.js / reply-thread.js
+ *       reply-video.js / video-sheet.js / video-rules.js / reply-thread.js / notice-line.js / object-url.js
  */
 import {createIcon} from '../common/icons.js';
 import {
 	detectRichText, buildFacets, buildReplyRecord, primaryLanguage, fitTextareaHeight, countGraphemes
 } from './reply-text.js';
 import {
-	buildSelfLabels, acceptImages, canSubmitComposer, normalizeLanguages, buildPostEmbed, hasLabelableMedia,
-	buildOwnPostEmbedView
+	buildSelfLabels, acceptImages, normalizeLanguages, buildPostEmbed, hasLabelableMedia,
+	buildOwnPostEmbedView, measureText, evaluateSubmit, checkMediaRequest
 } from './reply-embed.js';
 import {openAltSheet, openCropSheet, openLabelSheet, openEmojiSheet} from './reply-sheets.js';
 import {renderAttachments, updateAttachmentCell, createIconButton} from './reply-attachments.js';
@@ -31,6 +31,8 @@ import {ComposerVideo, readCaptionFile} from './reply-video.js';
 import {openVideoSheet} from './video-sheet.js';
 import {isVideoFile} from './video-rules.js';
 import {isEmptyPost} from './reply-thread.js';
+import {NoticeLine} from './notice-line.js';
+import {revokeObjectUrl} from './object-url.js';
 
 /** GIF の検索の応答で中身を使ってよい HTTP の状態 */
 const GIF_OK_STATUS = 200;
@@ -62,7 +64,34 @@ const GIF_ALT_MAX_GRAPHEMES = BRIDGE_PROTOCOL.postRecord.external.maxDescription
  */
 
 /**
- * 送るときに控える中身。uploadImages で控え、buildRecord がこれから record を組む
+ * 1 行に出す知らせ 1 つと、その原因 (排他の知らせでなければ null)。
+ * @typedef {Object} NoticeEntry
+ * @property {string} text
+ * @property {ExclusiveCause|null} cause
+ */
+
+/**
+ * いま付いているメディアの要約。排他・送信できる条件・書きかけ・ラベル・送る中身の判定はすべてここから求める。
+ * @typedef {Object} MediaState
+ * @property {number} imageCount 画像の枚数 (取り込み中を含む)
+ * @property {boolean} hasVideo 動画があるか (読み取り中・アップロード中を含む)
+ * @property {boolean} hasGif GIF があるか
+ * @property {number} mediaCount メディアの数 (画像の枚数 + 動画)。GIF・カードとの排他に使う
+ * @property {boolean} preparing 送る前の準備が終わっていないか
+ * @property {boolean} hasCard 送るリンクカードがあるか
+ * @property {number} contentCount 送信できる条件に渡す添付の数 (メディア + GIF + 送るカード + 取得できた引用)
+ */
+
+/**
+ * 本文の解析の控え。本文が同じあいだは使い回す。
+ * @typedef {Object} TextAnalysis
+ * @property {string} value 解析した本文
+ * @property {string[]} links 本文のリンクの URL (短くする前)
+ * @property {import('./reply-embed.js').TextMeasure} measure 送るときの本文 (リンクを短い形にしたもの) の大きさ
+ */
+
+/**
+ * 送るときに控える中身。prepareSend で控え、buildRecord がこれから record を組む
  * (送っている最中に入力欄が外されても、送り始めた時点の中身で組む)。
  * @typedef {Object} SendingSnapshot
  * @property {string} value 本文
@@ -84,6 +113,18 @@ export function defaultLanguages(locale, compose) {
 }
 
 /**
+ * 知らせの並び全体の原因。どれもが同じ原因の排他の知らせならその原因、1 つでも違えば null
+ * (原因のメディアを外したときに消してよいのは、すべてがそのメディアのための知らせのときだけ)。
+ * @param {NoticeEntry[]} entries
+ * @returns {ExclusiveCause|null}
+ */
+export function noticeCause(entries) {
+	if (!Array.isArray(entries) || entries.length === 0) return null;
+	const first = entries[0].cause;
+	return first && entries.every((entry) => entry.cause === first) ? first : null;
+}
+
+/**
  * 投稿 1 件分。
  */
 export class ComposerPost {
@@ -99,6 +140,8 @@ export class ComposerPost {
 		this.deps = deps;
 		this.hooks = hooks;
 		this.locale = browserLocale(this.compose.emoji.query.localeJa);
+		/** プレビューの ALT ボタン (GIF と動画で同じ部品) を探すセレクタ */
+		this.altSelector = `.${config.cards.classes.gifAlt}`;
 		/** @type {import('./reply-attachments.js').Attachment[]} */
 		this.attachments = [];
 		/** 取り込みで縮小している最中の枚数 (枚数の上限に数え、送信ボタンを止める) */
@@ -107,13 +150,6 @@ export class ComposerPost {
 		this.recropping = 0;
 		/** 自己ラベルの選択 */
 		this.labels = {adult: null, graphic: false};
-		/**
-		 * 出ている 1 行がメディアの排他の知らせなら、その原因 (それが無くなったら消す)。他の知らせは null
-		 * @type {ExclusiveCause|null}
-		 */
-		this.noticeExclusive = null;
-		/** @type {HTMLElement|null} 投稿の末尾の 1 行 (取り込み・排他・アップロードの失敗の知らせ) */
-		this.noticeEl = null;
 		/** setBusy で止めているか (入れ物の送信中とあわせて busy になる) */
 		this.locked = false;
 		this.destroyed = false;
@@ -125,10 +161,16 @@ export class ComposerPost {
 		this.sending = null;
 		/** 「×」が聞き返し (「本当に削除？」) の状態か */
 		this.removeConfirming = false;
+		/** 本文の欄の高さを測り直す要があるか (本文が変わった・DOM に入る前に測れなかった) */
+		this.heightDirty = true;
+		/** @type {TextAnalysis|null} 本文の解析の控え */
+		this.analysis = null;
+		/** @type {string|null} 最後に反映した動画の状態 (付けているか・送れないか・段階) */
+		this.videoSignature = null;
 		/** GIF・リンクカード・引用の状態 */
-		this.extras = this.createExtras();
+		this.extras = new ComposerExtras(config, deps, () => this.onExtrasChange());
 		/** 動画 1 本の状態 (組み立ての中で参照するため、build より前に作る) */
-		this.video = this.createVideo();
+		this.video = new ComposerVideo(config, deps, () => this.onVideoChange());
 		this.build(placeholder);
 	}
 
@@ -146,37 +188,11 @@ export class ComposerPost {
 	}
 
 	/**
-	 * GIF・リンクカード・引用の状態を作る。口は呼ぶたびに this.deps から引く (差し替えに追随する)。
-	 * @returns {ComposerExtras}
+	 * 出している知らせの 1 行 (無ければ null)。
+	 * @returns {HTMLElement|null}
 	 */
-	createExtras() {
-		const deps = () => this.deps;
-		return new ComposerExtras(this.config, {
-			fetchJson: (url, timeoutMs) => deps().fetchJson(url, timeoutMs),
-			fetchBlob: (url, timeoutMs) => deps().fetchBlob(url, timeoutMs),
-			resolveHandle: (handle) => deps().resolveHandle(handle),
-			fetchPost: (uri) => deps().fetchPost(uri),
-			prepareImage: (blob, crop, rules) => deps().prepareImage(blob, crop, rules),
-			uploadBlob: (blob) => deps().uploadBlob(blob),
-			safeHref: (uri) => deps().safeHref(uri),
-			formatDate: (iso) => deps().formatDate(iso),
-			blurText: (labels) => (typeof deps().blurText === 'function' ? deps().blurText(labels) : null),
-			onChange: () => this.onExtrasChange()
-		});
-	}
-
-	/**
-	 * 動画 1 本の状態を作る。口は呼ぶたびに this.deps から引く (差し替えに追随する)。
-	 * @returns {ComposerVideo}
-	 */
-	createVideo() {
-		const deps = () => this.deps;
-		return new ComposerVideo(this.config, {
-			uploadVideo: (blob, onProgress) => deps().uploadVideo(blob, onProgress),
-			cancelVideoUpload: (id) => deps().cancelVideoUpload(id),
-			readMeta: (file) => deps().readVideoMeta(file),
-			onChange: () => this.onVideoChange()
-		});
+	get noticeEl() {
+		return this.notice ? this.notice.element : null;
 	}
 
 	/**
@@ -237,6 +253,8 @@ export class ComposerPost {
 			el, avatar, textarea, removeButton, attachmentsEl: attachments, videoEl: videoPreview, embedEl: embedPreview,
 			labelsButton, toolbarEl: toolbar, fileInput, imageTool, gifTool, emojiTool
 		});
+		/** 投稿の末尾の 1 行 (取り込み・排他・アップロードの失敗の知らせ)。印は排他の知らせの原因 */
+		this.notice = new NoticeLine(el, {className: c.error, separator: t.noticeSeparator});
 		this.bindEvents();
 		this.renderLabels();
 		this.sync();
@@ -250,6 +268,7 @@ export class ComposerPost {
 		this.textarea.addEventListener('input', () => {
 			const pasted = this.pastedPending;
 			this.pastedPending = false;
+			this.heightDirty = true;
 			this.notifyTextChange(pasted);
 			// 高さは changed() の中の fitHeight が当てる。インラインの値を比べるだけで、レイアウトを読み直さない
 			const before = this.textHeight();
@@ -272,13 +291,10 @@ export class ComposerPost {
 		this.el.addEventListener('drop', (event) => this.onDrop(event));
 		this.imageTool.addEventListener('click', () => {
 			if (this.busy) return;
-			if (this.extras.gif) {
-				this.showNotice([this.compose.text.gifExclusive], 'gif');
-				return;
-			}
-			// 動画は 1 本までで画像とも並べないため、選ぶ画面を開いても取り込めるものが無い
-			if (this.video.isActive()) {
-				this.showNotice([this.compose.text.videoExclusive], 'video');
+			// 動画は 1 本までで画像とも並べないため、GIF か動画があると選ぶ画面を開いても取り込めるものが無い
+			const check = checkMediaRequest('images', this.mediaState());
+			if (!check.ok) {
+				this.showNotice([this.compose.text[check.noticeKey]], check.cause);
 				return;
 			}
 			this.fileInput.click();
@@ -458,13 +474,33 @@ export class ComposerPost {
 	}
 
 	/**
+	 * いま付いているメディアの要約。
+	 * @returns {MediaState}
+	 */
+	mediaState() {
+		const imageCount = this.attachments.length + this.importing;
+		const hasVideo = this.video.isActive();
+		const mediaCount = imageCount + (hasVideo ? 1 : 0);
+		return {
+			imageCount,
+			hasVideo,
+			hasGif: this.extras.gif !== null,
+			mediaCount,
+			preparing: this.importing > 0 || this.recropping > 0 || this.video.isPending(),
+			hasCard: Boolean(this.extras.sendableCard(mediaCount)),
+			contentCount: this.extras.contentCount(mediaCount)
+		};
+	}
+
+	/**
 	 * 書きかけがあるか (本文・添付・GIF・動画が 1 つでもある)。
 	 * @returns {boolean}
 	 */
 	hasDraft() {
 		if (this.destroyed) return false;
-		return this.textarea.value.trim() !== '' || this.attachments.length > 0 || this.isPreparing()
-			|| this.extras.gif !== null || this.video.isActive();
+		const media = this.mediaState();
+		return this.textarea.value.trim() !== '' || media.imageCount > 0 || media.preparing
+			|| media.hasGif || media.hasVideo;
 	}
 
 	/**
@@ -472,22 +508,33 @@ export class ComposerPost {
 	 * @returns {import('./reply-thread.js').PostSummary}
 	 */
 	summary() {
-		return {
-			text: this.textarea.value,
-			contentCount: this.extras.contentCount(this.mediaCount()),
-			preparing: this.isPreparing()
-		};
+		const media = this.mediaState();
+		return {text: this.textarea.value, contentCount: media.contentCount, preparing: media.preparing};
+	}
+
+	/**
+	 * 本文の解析 (リンクの一覧と、リンクを短い形にした本文の大きさ)。本文が前回と同じなら控えを返す。
+	 * @returns {TextAnalysis}
+	 */
+	analyze() {
+		const value = this.textarea.value;
+		if (this.analysis && this.analysis.value === value) return this.analysis;
+		const detected = detectRichText(value);
+		const counted = shortenLinks(value, buildFacets(detected, new Map()), this.compose.links).text;
+		this.analysis = {value, links: detected.links.map((link) => link.uri), measure: measureText(counted)};
+		return this.analysis;
 	}
 
 	/**
 	 * この投稿を送れるか (文字数とメディアの数。準備中なら送れない) と残りの文字数。
+	 * 残りの文字数と送信できる条件は、送るときの本文 (リンクを短い形にしたもの) で数える。
 	 * @returns {{ok: boolean, remaining: number}}
 	 */
 	check() {
+		const media = this.mediaState();
 		// contentCount はメディアの数を含んだ合計 (GIF・送るカード・取得できた引用を足したもの)
-		const result = canSubmitComposer(this.countedText(this.textarea.value),
-			this.extras.contentCount(this.mediaCount()), this.config.limits);
-		return {ok: result.ok && !this.isPreparing(), remaining: result.remaining};
+		const result = evaluateSubmit(this.analyze().measure, media.contentCount, this.config.limits);
+		return {ok: result.ok && !media.preparing, remaining: result.remaining};
 	}
 
 	/**
@@ -503,30 +550,18 @@ export class ComposerPost {
 	 * @returns {number}
 	 */
 	mediaCount() {
-		return this.imageCount() + (this.video.isActive() ? 1 : 0);
+		return this.mediaState().mediaCount;
 	}
 
 	/**
 	 * コンテンツの警告を付けられるか (画像・GIF・動画・送るカードのどれかがある)。引用だけでは付けない。
+	 * @param {MediaState} [media] 求め済みの要約
 	 * @returns {boolean}
 	 */
-	isLabelable() {
+	isLabelable(media = this.mediaState()) {
 		return hasLabelableMedia({
-			imageCount: this.imageCount(),
-			hasGif: this.extras.gif !== null,
-			hasCard: Boolean(this.extras.sendableCard(this.mediaCount())),
-			hasVideo: this.video.isActive()
+			imageCount: media.imageCount, hasGif: media.hasGif, hasCard: media.hasCard, hasVideo: media.hasVideo
 		});
-	}
-
-	/**
-	 * 送るときの本文 (リンクを短い形にしたもの)。残りの文字数と送信できる条件はこれで数える。
-	 * @param {string} value 入力欄の本文
-	 * @returns {string}
-	 */
-	countedText(value) {
-		const facets = buildFacets(detectRichText(value), new Map());
-		return shortenLinks(value, facets, this.compose.links).text;
 	}
 
 	/**
@@ -537,9 +572,8 @@ export class ComposerPost {
 	notifyTextChange(pasted) {
 		if (this.destroyed) return;
 		try {
-			const value = this.textarea.value;
-			const links = detectRichText(value).links.map((link) => link.uri);
-			this.extras.onTextChange(value, links, pasted === true);
+			const analysis = this.analyze();
+			this.extras.onTextChange(analysis.value, analysis.links.slice(), pasted === true);
 		} catch (error) {
 			console.error('[XViewer] 本文のリンクを読めませんでした', error);
 		}
@@ -558,13 +592,20 @@ export class ComposerPost {
 	}
 
 	/**
-	 * 動画の状態が変わった。動画のプレビュー・カードの出し入れ・ラベル・送信ボタンを合わせる。
+	 * 動画の状態が変わった。動画のプレビューを描き直し、付けた・外した・送れるようになったなど
+	 * 他に関わる変化のときだけ、カードの出し入れ・ラベル・送信ボタンも合わせる
+	 * (アップロードの進み具合・ALT・字幕だけの変化では動画のプレビューしか変わらない)。
 	 * @returns {void}
 	 */
 	onVideoChange() {
 		if (this.destroyed) return;
-		if (!this.video.isActive()) this.clearExclusiveNotice('video');
+		const active = this.video.isActive();
+		const signature = JSON.stringify([active, this.video.isPending(), active ? this.video.state.phase : null]);
+		const same = signature === this.videoSignature;
+		this.videoSignature = signature;
 		this.renderVideo();
+		if (same) return;
+		if (!active) this.clearExclusiveNotice('video');
 		this.renderExtras();
 		this.renderLabels();
 		this.changed();
@@ -610,16 +651,19 @@ export class ComposerPost {
 	 * @returns {boolean}
 	 */
 	isPreparing() {
-		return this.importing > 0 || this.recropping > 0 || this.video.isPending();
+		return this.mediaState().preparing;
 	}
 
 	/**
 	 * GIF ボタンと本文の欄の高さを今の状態に合わせる。残りの文字数と送信ボタンは入れ物が持つ。
+	 * 本文の欄の高さは、本文が変わった (または DOM に入る前に測れなかった) ときだけ測り直す
+	 * (高さを外して scrollHeight を読むたびに強制レイアウトが起きるため)。
 	 * @returns {void}
 	 */
 	sync() {
-		this.gifTool.disabled = this.busy || this.mediaCount() > 0 || this.isPreparing();
-		this.fitHeight();
+		const media = this.mediaState();
+		this.gifTool.disabled = this.busy || media.preparing || !checkMediaRequest('gif', media).ok;
+		if (this.heightDirty) this.fitHeight();
 	}
 
 	/**
@@ -633,12 +677,13 @@ export class ComposerPost {
 
 	/**
 	 * 本文の欄の高さを中身に合わせる。DOM に入る前は scrollHeight が 0 で、
-	 * そのまま当てると欄が潰れる (2026-10-18 実機で確認)。入れた後に呼び直す。
+	 * そのまま当てると欄が潰れる (2026-10-18 実機で確認)。入るまでは測り直しの印を残す。
 	 * @returns {void}
 	 */
 	fitHeight() {
 		const textarea = this.textarea;
 		if (!textarea.isConnected) return;
+		this.heightDirty = false;
 		try {
 			const style = window.getComputedStyle(textarea);
 			const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
@@ -674,7 +719,8 @@ export class ComposerPost {
 	}
 
 	/**
-	 * 添付のプレビューを描き直す。画像の有無でカードの出し入れが変わるため、extras のプレビューも描き直す。
+	 * 添付のプレビューを今の並びに合わせる (足しただけなら末尾のマスだけを作る)。
+	 * 画像の有無でカードの出し入れが変わるため、extras のプレビューも描き直す。
 	 * @returns {void}
 	 */
 	renderAttachments() {
@@ -688,8 +734,28 @@ export class ComposerPost {
 	}
 
 	/**
+	 * 知らせを 1 つ足す (同じ文は重ねない)。
+	 * @param {NoticeEntry[]} entries
+	 * @param {string} text
+	 * @param {ExclusiveCause|null} cause
+	 * @returns {void}
+	 */
+	pushNotice(entries, text, cause) {
+		if (!entries.some((entry) => entry.text === text)) entries.push({text, cause: cause || null});
+	}
+
+	/**
+	 * 知らせの並びを 1 行で出す。どれもが同じ原因の排他の知らせなら、その原因を覚える。
+	 * @param {NoticeEntry[]} entries
+	 * @returns {void}
+	 */
+	showEntries(entries) {
+		this.showNotice(entries.map((entry) => entry.text), noticeCause(entries));
+	}
+
+	/**
 	 * 選んだ・貼り付けた・落としたファイルを取り込む。受け取れないものは 1 行で知らせる。
-	 * 動画と画像に分け、メディアは 1 種類だけにする。動画は GIF・画像 (取り込み中と同じ回の画像を含む) が
+	 * 動画と画像に分け、メディアは 1 種類だけにする。動画は GIF・画像 (取り込み中と、同じ回で受け付けられる画像を含む) が
 	 * あれば取り込まず、1 本まで。画像は動画か GIF があれば取り込まない。
 	 * 受け付けない形式の動画 (.mkv など) は画像として扱わず、動画の形式の知らせを出す。
 	 * @param {File[]|FileList} files
@@ -706,37 +772,36 @@ export class ComposerPost {
 		const videos = list.filter((file) => isVideoFile(file, videoTypes));
 		const unsupportedVideos = list.filter(isOtherVideo);
 		const images = list.filter((file) => !isVideoFile(file, videoTypes) && !isOtherVideo(file));
-		const notices = unsupportedVideos.length > 0 ? [t.videoUnsupported] : [];
-		/** @type {ExclusiveCause|null} 動画を断った原因 (排他の知らせだけのとき、それが無くなったら消す) */
-		let cause = null;
+		/** @type {NoticeEntry[]} */
+		const entries = [];
+		if (unsupportedVideos.length > 0) this.pushNotice(entries, t.videoUnsupported, null);
+		const media = this.mediaState();
 		if (videos.length > 0) {
-			if (this.extras.gif || this.imageCount() > 0 || images.length > 0) {
-				notices.push(t.videoExclusive);
-				cause = this.extras.gif ? 'gif' : 'images';
-			} else if (videos.length > 1 || this.video.isActive()) {
-				notices.push(t.tooManyVideos);
-			} else {
-				await this.addVideo(videos[0], notices);
+			// 画像と一緒に落とされても、受け付けない形式の画像 (bmp・txt など) は数えない
+			const acceptable = acceptImages(media.imageCount, images, this.compose.acceptImageTypes,
+				this.compose.maxImages).accepted.length;
+			const check = checkMediaRequest('video', {
+				imageCount: media.imageCount + acceptable, hasVideo: media.hasVideo, hasGif: media.hasGif,
+				videoCount: videos.length
+			});
+			if (check.ok) {
+				if (images.length > 0) this.pushNotice(entries, t.unsupportedImage, null);
+				await this.addVideo(videos[0], entries.map((entry) => entry.text));
 				return;
 			}
+			this.pushNotice(entries, t[check.noticeKey], check.cause);
 		}
 		if (images.length === 0) {
-			this.showNotice(notices, notices.length === 1 ? cause : null);
+			this.showEntries(entries);
 			return;
 		}
-		if (this.video.isActive()) {
-			if (notices.indexOf(t.videoExclusive) === -1) notices.push(t.videoExclusive);
-			this.showNotice(notices, notices.length === 1 ? 'video' : null);
+		const imageCheck = checkMediaRequest('images', media);
+		if (!imageCheck.ok) {
+			this.pushNotice(entries, t[imageCheck.noticeKey], imageCheck.cause);
+			this.showEntries(entries);
 			return;
 		}
-		if (this.extras.gif) {
-			// GIF があるとき出す排他の行はどれも GIF が原因 (動画も GIF のために断っている)。
-			// 形式の知らせが混じるときは、GIF を外しても消さない
-			const gifCause = notices.indexOf(t.videoUnsupported) === -1 ? 'gif' : null;
-			this.showNotice(notices.concat(t.gifExclusive), gifCause);
-			return;
-		}
-		await this.addImages(images, notices, cause);
+		await this.addImages(images, entries);
 	}
 
 	/**
@@ -761,17 +826,17 @@ export class ComposerPost {
 	/**
 	 * 画像を 1 枚ずつ縮小して預かる。縮小の最中は送信ボタンだけを止める。
 	 * @param {File[]} list 画像の候補 (受け付けない形式を含んでよい)
-	 * @param {string[]} notices 先に出す知らせ
-	 * @param {ExclusiveCause|null} cause notices が排他の知らせのとき、その原因
+	 * @param {NoticeEntry[]} entries 先に出す知らせ
 	 * @returns {Promise<void>}
 	 */
-	async addImages(list, notices, cause) {
+	async addImages(list, entries) {
 		const t = this.compose.text;
 		const result = acceptImages(this.attachments.length + this.importing, list,
 			this.compose.acceptImageTypes, this.compose.maxImages);
-		if (result.tooMany > 0) notices.push(t.tooManyImages);
-		if (result.unsupported > 0) notices.push(t.unsupportedImage);
-		this.showNotice(notices, notices.length === 1 ? cause : null);
+		if (result.tooMany > 0) this.pushNotice(entries, t.tooManyImages, null);
+		if (result.unsupported > 0) this.pushNotice(entries, t.unsupportedImage, null);
+		this.showEntries(entries);
+		const notices = entries.map((entry) => entry.text);
 		this.importing += result.accepted.length;
 		if (result.accepted.length > 0) {
 			// 取り込み中から画像として扱う (カードを隠し、ラベルを出す)
@@ -816,11 +881,7 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	revoke(prepared) {
-		try {
-			if (prepared && prepared.previewUrl) URL.revokeObjectURL(prepared.previewUrl);
-		} catch (error) {
-			console.error('[XViewer] 画像の URL を破棄できませんでした', error);
-		}
+		if (prepared) revokeObjectUrl(prepared.previewUrl);
 	}
 
 	/**
@@ -858,18 +919,32 @@ export class ComposerPost {
 	}
 
 	/**
+	 * この投稿の重ねる画面を開く。重ねる画面の持ち主が無い・送信中なら開かない。
+	 * @param {(sheets: import('./reply-sheets.js').SheetHost, options: import('./reply-sheets.js').SheetOptions) => void} open
+	 *   画面を開く処理
+	 * @param {() => (HTMLElement|null|undefined)} [focusTarget] 閉じた後の戻し先 (sheetOptions と同じ)
+	 * @returns {boolean} 開いたか
+	 */
+	openOwnedSheet(open, focusTarget) {
+		const sheets = this.deps.sheets;
+		if (!sheets || this.busy) return false;
+		open(sheets, this.sheetOptions(focusTarget));
+		return true;
+	}
+
+	/**
 	 * ALT テキストの画面を開く。
 	 * @param {import('./reply-attachments.js').Attachment} attachment
 	 * @param {HTMLButtonElement} button
 	 * @returns {void}
 	 */
 	openAlt(attachment, button) {
-		if (!this.deps.sheets || this.busy) return;
-		openAltSheet(this.deps.sheets, {previewUrl: attachment.prepared.previewUrl, alt: attachment.alt}, button,
+		this.openOwnedSheet((sheets, options) => openAltSheet(sheets,
+			{previewUrl: attachment.prepared.previewUrl, alt: attachment.alt}, button,
 			(alt) => {
 				attachment.alt = alt;
 				updateAttachmentCell(attachment, this.attachments.indexOf(attachment), this.compose);
-			}, this.sheetOptions(() => attachment.cell && attachment.cell.altButton));
+			}, options), () => attachment.cell && attachment.cell.altButton);
 	}
 
 	/**
@@ -879,11 +954,11 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	openCrop(attachment, button) {
-		if (!this.deps.sheets || this.busy) return;
 		const prepared = attachment.prepared;
-		openCropSheet(this.deps.sheets, {source: prepared.source, image: prepared.natural, crop: prepared.crop},
-			button, (crop) => this.recrop(attachment, crop),
-			this.sheetOptions(() => attachment.cell && attachment.cell.cropButton));
+		this.openOwnedSheet((sheets, options) => openCropSheet(sheets,
+			{source: prepared.source, image: prepared.natural, crop: prepared.crop},
+			button, (crop) => this.recrop(attachment, crop), options),
+		() => attachment.cell && attachment.cell.cropButton);
 	}
 
 	/**
@@ -916,12 +991,13 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	openLabels() {
-		if (!this.deps.sheets || this.busy || !this.isLabelable()) return;
-		openLabelSheet(this.deps.sheets, {...this.labels}, this.labelsButton, (selection) => {
-			this.labels = {adult: selection.adult || null, graphic: selection.graphic === true};
-			this.renderLabels();
-			this.changed();
-		}, this.sheetOptions(() => this.labelsButton));
+		if (!this.isLabelable()) return;
+		this.openOwnedSheet((sheets, options) => openLabelSheet(sheets, {...this.labels}, this.labelsButton,
+			(selection) => {
+				this.labels = {adult: selection.adult || null, graphic: selection.graphic === true};
+				this.renderLabels();
+				this.changed();
+			}, options), () => this.labelsButton);
 	}
 
 	/**
@@ -929,45 +1005,43 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	openEmoji() {
-		if (!this.deps.sheets || this.busy) return;
-		openEmojiSheet(this.deps.sheets, this.emojiTool, (native) => this.insertText(native),
-			this.sheetOptions(() => this.emojiTool));
+		this.openOwnedSheet((sheets, options) => openEmojiSheet(sheets, this.emojiTool,
+			(native) => this.insertText(native), options), () => this.emojiTool);
 	}
 
 	/**
-	 * GIF の画面を開く。画像 (取り込み中を含む) か動画がある・送信中なら開かない。
+	 * GIF の画面を開く。画像 (取り込み中を含む) か動画がある・準備中・送信中なら開かない。
 	 * @returns {void}
 	 */
 	openGif() {
-		if (!this.deps.sheets || this.busy || this.mediaCount() > 0 || this.isPreparing()) return;
-		openGifSheet(this.deps.sheets, {
-			fetchJson: (url) => this.fetchGifJson(url),
+		const media = this.mediaState();
+		if (media.preparing || !checkMediaRequest('gif', media).ok) return;
+		this.openOwnedSheet((sheets, options) => openGifSheet(sheets, {
+			fetchJson: (url, signal) => this.fetchGifJson(url, signal),
 			locale: typeof this.deps.gifLocale === 'string' && this.deps.gifLocale ? this.deps.gifLocale : null,
 			rule: this.compose.gif
 		}, this.gifTool, (item) => {
 			if (this.destroyed) return;
 			// 画面を開いているあいだに画像か動画が落とされていたら付けない
-			if (this.video.isActive()) {
-				this.showNotice([this.compose.text.videoExclusive], 'video');
-				return;
-			}
-			if (this.imageCount() > 0) {
-				this.showNotice([this.compose.text.gifExclusive], 'images');
+			const check = checkMediaRequest('gif', this.mediaState());
+			if (!check.ok) {
+				this.showNotice([this.compose.text[check.noticeKey]], check.cause);
 				return;
 			}
 			this.showNotice([]);
 			this.extras.setGif(item);
-		}, this.sheetOptions(() => this.gifTool));
+		}, options), () => this.gifTool);
 	}
 
 	/**
 	 * GIF の検索を 1 回引く。状態が 200 のときだけ中身を返し、それ以外・失敗は null。
 	 * @param {string} url
+	 * @param {AbortSignal} [signal] 吹き出しを閉じた・検索語を変えたときに打ち切る
 	 * @returns {Promise<any|null>}
 	 */
-	async fetchGifJson(url) {
+	async fetchGifJson(url, signal) {
 		try {
-			const response = await this.deps.fetchJson(url, this.compose.gif.timeoutMs);
+			const response = await this.deps.fetchJson(url, this.compose.gif.timeoutMs, signal);
 			return response && response.status === GIF_OK_STATUS ? response.json : null;
 		} catch (error) {
 			console.error('[XViewer] GIF を検索できませんでした', error);
@@ -983,13 +1057,11 @@ export class ComposerPost {
 	 */
 	openGifAlt(button) {
 		const gif = this.extras.gif;
-		if (!this.deps.sheets || this.busy || !gif) return;
-		const altSelector = `.${this.config.cards.classes.gifAlt}`;
-		openAltSheet(this.deps.sheets, {
+		if (!gif) return;
+		this.openOwnedSheet((sheets, options) => openAltSheet(sheets, {
 			previewUrl: gif.item.previewUrl, alt: gif.alt || gif.item.title, maxGraphemes: GIF_ALT_MAX_GRAPHEMES
-		}, button,
-			(alt) => this.extras.setGifAlt(String(alt || '').trim()),
-			this.sheetOptions(() => this.embedEl.querySelector(altSelector) || this.gifTool));
+		}, button, (alt) => this.extras.setGifAlt(String(alt || '').trim()), options),
+		() => this.embedEl.querySelector(this.altSelector) || this.gifTool);
 	}
 
 	/**
@@ -999,9 +1071,8 @@ export class ComposerPost {
 	 */
 	openVideoAlt(button) {
 		const state = this.video.state;
-		if (!this.deps.sheets || this.busy || !state) return;
-		const altSelector = `.${this.config.cards.classes.gifAlt}`;
-		openVideoSheet(this.deps.sheets, {
+		if (!state) return;
+		this.openOwnedSheet((sheets, options) => openVideoSheet(sheets, {
 			previewUrl: state.url,
 			alt: state.alt,
 			caption: state.caption,
@@ -1015,7 +1086,7 @@ export class ComposerPost {
 			if (this.destroyed || this.video.state !== state) return;
 			this.video.setAlt(value.alt);
 			this.video.setCaption(value.caption);
-		}, this.sheetOptions(() => this.videoEl.querySelector(altSelector) || this.imageTool));
+		}, options), () => this.videoEl.querySelector(this.altSelector) || this.imageTool);
 	}
 
 	/**
@@ -1046,6 +1117,7 @@ export class ComposerPost {
 		} catch (error) {
 			textarea.value += value;
 		}
+		this.heightDirty = true;
 		this.notifyTextChange(false);
 		this.changed();
 	}
@@ -1115,23 +1187,23 @@ export class ComposerPost {
 	 * @returns {SendingSnapshot}
 	 */
 	snapshot() {
-		const hasVideo = this.video.isActive();
+		const media = this.mediaState();
 		return {
 			value: this.textarea.value,
 			attachments: this.attachments.slice(),
-			labels: this.isLabelable() ? buildSelfLabels(this.labels) : null,
-			mediaCount: this.mediaCount(),
-			hasVideo,
-			caption: hasVideo && this.video.state.caption ? this.video.state.caption : null
+			labels: this.isLabelable(media) ? buildSelfLabels(this.labels) : null,
+			mediaCount: media.mediaCount,
+			hasVideo: media.hasVideo,
+			caption: media.hasVideo && this.video.state.caption ? this.video.state.caption : null
 		};
 	}
 
 	/**
-	 * 送る blob の並びを返し、送る中身を控える (buildRecord はこの控えから組む)。
+	 * 送る準備をする。送る中身を控え (buildRecord はこの控えから組む)、先に送る blob の並びを返す。
 	 * 動画と画像は同時に付かないため、動画があるときは字幕 (あれば) だけで、ほかは縮めた画像。
 	 * @returns {Array<{blob: Blob}>}
 	 */
-	uploadImages() {
+	prepareSend() {
 		const sending = this.snapshot();
 		this.sending = sending;
 		if (sending.hasVideo) return sending.caption ? [{blob: sending.caption.blob}] : [];
@@ -1141,7 +1213,7 @@ export class ComposerPost {
 	/**
 	 * 送った blob から返信の record を組む。GIF・カードのサムネイルを送り、メンションを DID に引く。
 	 * 本文のリンクは短い形にして送る (facet の uri は元のまま)。送る本文の末尾の空白は除く。
-	 * @param {Object[]} blobs uploadImages の並びの順に送れた BlobRef (動画なら blobs[0] が字幕)
+	 * @param {Object[]} blobs prepareSend の並びの順に送れた BlobRef (動画なら blobs[0] が字幕)
 	 * @param {string[]} languages 投稿言語
 	 * @param {Object} reply record の reply ({root, parent})
 	 * @param {(done: number, total: number) => void} [onProgress] サムネイルを送るあいだの進み具合
@@ -1209,6 +1281,7 @@ export class ComposerPost {
 	 */
 	resetAfterPost() {
 		this.textarea.value = '';
+		this.heightDirty = true;
 		this.pastedPending = false;
 		this.sending = null;
 		for (const attachment of this.attachments) this.revoke(attachment.prepared);
@@ -1254,7 +1327,7 @@ export class ComposerPost {
 		} catch (error) {
 			console.error('[XViewer] 入力欄の送信中の表示に失敗しました', error);
 		}
-		// 動画のプレビューのボタン (ALT・×・再試行) は送信中かどうかで描き分ける
+		// 動画のプレビューのボタン (ALT・×・再試行) は送信中かどうかで押せる / 押せないを書き換える
 		if (this.video.isActive()) this.renderVideo();
 	}
 
@@ -1266,20 +1339,11 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	showNotice(messages, exclusive = null) {
-		try {
-			if (this.noticeEl) this.noticeEl.remove();
-			this.noticeEl = null;
-			this.noticeExclusive = null;
-			if (!Array.isArray(messages) || messages.length === 0 || this.destroyed) return;
-			const notice = createElement(this.el.ownerDocument, 'p', this.config.classes.error,
-				messages.join(this.compose.text.noticeSeparator));
-			notice.setAttribute('role', 'alert');
-			this.el.append(notice);
-			this.noticeEl = notice;
-			this.noticeExclusive = exclusive || null;
-		} catch (error) {
-			console.error('[XViewer] 入力欄の知らせを出せませんでした', error);
+		if (this.destroyed) {
+			this.notice.clear();
+			return;
 		}
+		this.notice.show(messages, exclusive || null);
 	}
 
 	/**
@@ -1288,8 +1352,7 @@ export class ComposerPost {
 	 * @returns {void}
 	 */
 	clearExclusiveNotice(cause) {
-		if (!this.noticeEl || !this.noticeExclusive) return;
-		if (cause === null || this.noticeExclusive === cause) this.showNotice([]);
+		this.notice.clearIf((meta) => meta !== null && (cause === null || meta === cause));
 	}
 
 	/**

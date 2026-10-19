@@ -10,6 +10,12 @@ const LINK_FEATURE_TYPE = 'app.bsky.richtext.facet#link';
 /** URL の続きになる文字。直後にあれば、その出現は別の長い URL の一部とみなす */
 const URL_CONTINUATION = /[A-Za-z0-9\/?#&=%@~+_-]/;
 
+/** 本文を UTF-8 のバイト列にする変換器 */
+const utf8Encoder = new TextEncoder();
+
+/** バイト列を本文に戻す変換器。先頭の U+FEFF を BOM として捨てると、以後の facet がすべて 3 バイトずれる */
+const utf8Decoder = new TextDecoder('utf-8', {ignoreBOM: true});
+
 /**
  * @typedef {Object} ShortenRule
  * @property {number} maxRestChars ホストより後ろがこの長さを超えたら切る
@@ -82,10 +88,7 @@ export function shortenLinks(text, facets, rule) {
 		}
 		const overlapsReplaced = (facet) => [...replaced].some((r) => r !== facet
 			&& facet.index.byteStart < r.index.byteEnd && facet.index.byteEnd > r.index.byteStart);
-		const encoder = new TextEncoder();
-		// 先頭の U+FEFF を BOM として捨てると、以後の facet がすべて 3 バイトずれる
-		const decoder = new TextDecoder('utf-8', {ignoreBOM: true});
-		const source = encoder.encode(text);
+		const source = utf8Encoder.encode(text);
 		const chunks = [];
 		const result = [];
 		let cursor = 0;
@@ -94,7 +97,7 @@ export function shortenLinks(text, facets, rule) {
 			const {byteStart, byteEnd} = facet.index;
 			const link = facet.features.find((f) => f.$type === LINK_FEATURE_TYPE);
 			if (replaced.has(facet)) {
-				const replacement = encoder.encode(toShortUrl(link.uri, rule));
+				const replacement = utf8Encoder.encode(toShortUrl(link.uri, rule));
 				chunks.push(source.slice(cursor, byteStart), replacement);
 				cursor = byteEnd;
 				result.push({
@@ -117,7 +120,7 @@ export function shortenLinks(text, facets, rule) {
 			joined.set(chunk, offset);
 			offset += chunk.length;
 		}
-		return {text: decoder.decode(joined), facets: result};
+		return {text: utf8Decoder.decode(joined), facets: result};
 	} catch (_e) {
 		return {text, facets};
 	}
@@ -236,13 +239,48 @@ export function pickSuggestion(input) {
 }
 
 /**
- * 本文から消えた URL を外す。
- * @param {string[]} dismissed
- * @param {string[]} links 今の本文の link の URL
+ * 提案しない URL の理由。dismissed は × で外した (カードにも引用にも出さない)、failedCard / failedQuote は
+ * 取得できなかった (その種類だけ取り直さない)。
+ * @typedef {'dismissed'|'failedCard'|'failedQuote'} SuppressKind
+ */
+
+/**
+ * URL を提案しない理由を足す。
+ * @param {Map<string, Set<SuppressKind>>} suppressed
+ * @param {string} url
+ * @param {SuppressKind} kind
+ * @returns {void}
+ */
+export function suppressUrl(suppressed, url, kind) {
+	const kinds = suppressed.get(url);
+	if (kinds) kinds.add(kind);
+	else suppressed.set(url, new Set([kind]));
+}
+
+/**
+ * 理由のどれかで提案しない URL の一覧。
+ * @param {Map<string, Set<SuppressKind>>} suppressed
+ * @param {SuppressKind[]} kinds
  * @returns {string[]}
  */
-export function pruneDismissed(dismissed, links) {
-	return dismissed.filter((uri) => links.includes(uri));
+export function suppressedUrls(suppressed, kinds) {
+	const result = [];
+	for (const [url, reasons] of suppressed) {
+		if (kinds.some((kind) => reasons.has(kind))) result.push(url);
+	}
+	return result;
+}
+
+/**
+ * 本文から消えた URL の理由を忘れる (もう一度書けば提案する)。
+ * @param {Map<string, Set<SuppressKind>>} suppressed
+ * @param {string[]} links 今の本文の link の URL
+ * @returns {void}
+ */
+export function pruneSuppressed(suppressed, links) {
+	for (const url of Array.from(suppressed.keys())) {
+		if (!links.includes(url)) suppressed.delete(url);
+	}
 }
 
 /**

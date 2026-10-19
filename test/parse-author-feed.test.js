@@ -30,9 +30,10 @@ test('images#view の複数画像投稿は 1 件にまとめる', () => {
 	// タイルに出るのは先頭画像の情報
 	assert.strictEqual(entry.type, 'image');
 	assert.strictEqual(entry.thumbUrl, 'https://cdn.test/thumb/1');
-	assert.strictEqual(entry.fullsizeUrl, 'https://cdn.test/full/1');
 	assert.strictEqual(entry.alt, '一枚目');
-	assert.deepStrictEqual(entry.dimensions, {width: 1000, height: 500});
+	// 原寸と寸法はライトボックスに渡す siblings だけが持つ
+	assert.strictEqual(entry.fullsizeUrl, undefined);
+	assert.strictEqual(entry.dimensions, undefined);
 	assert.strictEqual(entry.postId, 'aaa111');
 	assert.strictEqual(entry.postHref, '/profile/alice.test/post/aaa111');
 	assert.strictEqual(entry.authorHandle, 'alice.test');
@@ -64,7 +65,7 @@ test('gallery#view の複数画像投稿も 1 件にまとめ、サムネイル�
 	assert.strictEqual(result.entries.length, 1);
 	const entry = result.entries[0];
 	assert.strictEqual(entry.thumbUrl, 'https://cdn.test/thumb/g1');
-	assert.strictEqual(entry.fullsizeUrl, 'https://cdn.test/full/g1');
+	assert.strictEqual(entry.siblings[0].uri, 'https://cdn.test/full/g1');
 	assert.strictEqual(entry.mediaCount, 3);
 	assert.strictEqual(entry.siblings.length, 3);
 	assert.strictEqual(entry.key, 'bbb222');
@@ -85,13 +86,13 @@ test('既定では recordWithMedia の中の動画も除外する', () => {
 	assert.strictEqual(result.entries.length, 0);
 });
 
-test('excludeVideos: false なら video#view は type=video、fullsizeUrl は null', () => {
+test('excludeVideos: false なら video#view は type=video、原寸は無くサムネイルを開く', () => {
 	const result = parseAuthorFeed(load('feed-video'), configWithVideos);
 	assert.strictEqual(result.entries.length, 1);
 	const entry = result.entries[0];
 	assert.strictEqual(entry.type, 'video');
 	assert.strictEqual(entry.thumbUrl, 'https://video.test/thumb/v1');
-	assert.strictEqual(entry.fullsizeUrl, null);
+	assert.strictEqual(entry.siblings[0].uri, 'https://video.test/thumb/v1');
 });
 
 test('recordWithMedia#view は media を再帰的に処理する', () => {

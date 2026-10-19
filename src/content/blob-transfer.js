@@ -5,10 +5,38 @@
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
-import {callBridge} from './bridge-client.js';
+import {callBridge, BRIDGE_TIMEOUT_REASON} from './bridge-client.js';
 
-/** callBridge が待ちを打ち切ったときの reason */
-const TIMEOUT_REASON = 'timeout';
+/**
+ * Blob を MAIN ワールドの預かり箱へ postMessage で預ける。宛先は自分のページの origin だけ。
+ * @param {string} id 要求に載せる id
+ * @param {Blob} blob 預ける Blob
+ * @returns {void}
+ */
+function depositBlob(id, blob) {
+	window.postMessage(
+		{type: BRIDGE_PROTOCOL.blobMessageType, id, blob},
+		window.location.origin
+	);
+}
+
+/**
+ * 橋渡しの返事を、アップロードの結果の形に整える。
+ * @param {*} result callBridge の結果
+ * @returns {{ok: boolean, blob: Object|null, reason: string|null, message: string|null}}
+ *   成功は blob が BlobRef、失敗は reason (無ければ upload-failed)。message はサーバが返した文言
+ */
+function toUploadResult(result) {
+	if (result && result.ok === true && result.blob) {
+		return {ok: true, blob: result.blob, reason: null, message: null};
+	}
+	return {
+		ok: false,
+		blob: null,
+		reason: (result && result.reason) || BRIDGE_PROTOCOL.reasons.uploadFailed,
+		message: (result && typeof result.message === 'string') ? result.message : null
+	};
+}
 
 /**
  * Blob を預けて upload-blob を呼び、PDS が返した BlobRef を受け取る。
@@ -19,20 +47,15 @@ const TIMEOUT_REASON = 'timeout';
 export async function uploadBlob(blob) {
 	try {
 		const id = crypto.randomUUID();
-		window.postMessage(
-			{type: BRIDGE_PROTOCOL.blobMessageType, id, blob},
-			window.location.origin
-		);
+		depositBlob(id, blob);
 		const bridge = EXT_CONFIG.mediaGrid.bridge;
 		const result = await callBridge(
 			bridge.actions.uploadBlob,
 			{blobId: id},
 			{timeoutMs: bridge.uploadTimeoutMs}
 		);
-		if (result && result.ok === true && result.blob) {
-			return {ok: true, blob: result.blob, reason: null};
-		}
-		return {ok: false, blob: null, reason: (result && result.reason) || BRIDGE_PROTOCOL.reasons.uploadFailed};
+		const {ok, blob: ref, reason} = toUploadResult(result);
+		return {ok, blob: ref, reason};
 	} catch (error) {
 		return {ok: false, blob: null, reason: BRIDGE_PROTOCOL.reasons.uploadFailed};
 	}
@@ -49,29 +72,19 @@ export async function uploadBlob(blob) {
 export function uploadVideo(blob, onProgress) {
 	const id = crypto.randomUUID();
 	const bridge = EXT_CONFIG.mediaGrid.bridge;
-	const failed = (reason, message = null) => ({ok: false, blob: null, reason, message});
 	const done = (async () => {
 		try {
-			window.postMessage(
-				{type: BRIDGE_PROTOCOL.blobMessageType, id, blob},
-				window.location.origin
-			);
+			depositBlob(id, blob);
 			const result = await callBridge(
 				bridge.actions.uploadVideo,
 				{blobId: id},
 				{idleTimeoutMs: bridge.videoIdleTimeoutMs, onProgress}
 			);
-			if (result && result.ok === true && result.blob) {
-				return {ok: true, blob: result.blob, reason: null, message: null};
-			}
 			// 待ちを打ち切ったときは MAIN ワールドの送信も止めさせる (結果は待たない)
-			if (result && result.reason === TIMEOUT_REASON) cancelVideoUpload(id);
-			return failed(
-				(result && result.reason) || BRIDGE_PROTOCOL.reasons.uploadFailed,
-				(result && typeof result.message === 'string') ? result.message : null
-			);
+			if (result && result.reason === BRIDGE_TIMEOUT_REASON) cancelVideoUpload(id);
+			return toUploadResult(result);
 		} catch (error) {
-			return failed(BRIDGE_PROTOCOL.reasons.uploadFailed);
+			return toUploadResult(null);
 		}
 	})();
 	return {id, done};

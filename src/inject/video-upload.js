@@ -89,6 +89,27 @@ const BLOB_TYPE = 'blob';
 /** onProgress の phase */
 const PHASE = Object.freeze({upload: 'upload', processing: 'processing'});
 
+/** upload の進み具合を知らせる最小の増え幅 (0〜1)。部品の送信の進みのたびに知らせない */
+const UPLOAD_PROGRESS_STEP = 0.01;
+
+/** upload の進み具合の最大値 */
+const UPLOAD_PROGRESS_DONE = 1;
+
+/**
+ * 直近に getSession から引いた PDS の DID。キーはログイン中の DID で、
+ * アカウントを切り替えると DID が変わって外れる。失敗したアップロードの後は捨てる
+ * @type {{did: string, aud: string} | null}
+ */
+let pdsAudCache = null;
+
+/**
+ * 覚えている PDS の DID を捨てる。(テストと、失敗したアップロードの後)
+ * @returns {void}
+ */
+export function forgetPdsAud() {
+	pdsAudCache = null;
+}
+
 /**
  * @typedef {Object} PartPlan
  * @property {number} partNumber 1 始まりの部品の番号
@@ -118,6 +139,8 @@ const PHASE = Object.freeze({upload: 'upload', processing: 'processing'});
  * @typedef {Object} VideoUploadDeps
  * @property {(aud: string, lxm: string, exp?: number) => Promise<string>} getServiceAuth 失敗は throw
  * @property {() => Promise<any>} getSession com.atproto.server.getSession の応答
+ * @property {() => (string | null)} [sessionDid] getSession と同じクライアントのログイン中の DID。
+ *   あれば PDS の DID をこれをキーに覚え、同じアカウントの 2 本目からは getSession を省く
  * @property {(method: 'GET' | 'POST', nsid: string, opts: {token?: string, params?: Object, body?: Object})
  *   => Promise<{status: number, json: any}>} requestJson 動画サービスへの XRPC。通信の失敗は throw
  * @property {(args: {jobId: string, partNumber: number, chunk: Blob, token: string,
@@ -141,6 +164,7 @@ const PHASE = Object.freeze({upload: 'upload', processing: 'processing'});
  * @property {boolean} jobOpen 部品の送信から完了までの間 (諦めたら abortUpload を送る)
  * @property {boolean} abortSent abortUpload を送ったか
  * @property {Map<number, number>} sentBytes 部品ごとの送れたバイト数
+ * @property {number} sentTotal sentBytes の合計 (差分で持ち回す)
  * @property {number} uploadProgress 最後に知らせた upload の進み具合
  * @property {{phase: 'upload' | 'processing', progress: number | null}} lastProgress 最後に知らせた進み具合
  * @property {number} lastProgressAt 最後に進み具合を知らせた時刻 (ミリ秒)
@@ -288,6 +312,7 @@ export function runVideoUpload(blob, deps, signal) {
 		jobOpen: false,
 		abortSent: false,
 		sentBytes: new Map(),
+		sentTotal: 0,
 		uploadProgress: -1,
 		lastProgress: {phase: PHASE.upload, progress: 0},
 		lastProgressAt: 0
@@ -347,7 +372,7 @@ function startHeartbeat(ctx) {
 async function runFlow(ctx) {
 	throwIfAborted(ctx);
 	await checkUploadLimits(ctx);
-	const aud = pdsAudFromSession(await ctx.deps.getSession());
+	const aud = await resolvePdsAud(ctx);
 	throwIfAborted(ctx);
 	if (aud === null) throw new UploadStop(BRIDGE_PROTOCOL.reasons.uploadFailed);
 	ctx.aud = aud;
@@ -359,6 +384,26 @@ async function runFlow(ctx) {
 	const finished = await finishJob(ctx, parts);
 	ctx.jobOpen = false;
 	return waitForProcessing(ctx, finished);
+}
+
+/**
+ * uploadBlob のトークンの aud にする PDS の DID を返す。同じアカウントで覚えていればそれを使い、
+ * 無ければ getSession の DID 文書から引いて覚える (応答の did がログイン中の DID と同じときだけ)。
+ * @param {UploadContext} ctx
+ * @returns {Promise<string | null>} 引けなければ null
+ */
+async function resolvePdsAud(ctx) {
+	let did = null;
+	try {
+		did = typeof ctx.deps.sessionDid === 'function' ? nonEmptyString(ctx.deps.sessionDid()) : null;
+	} catch {
+		did = null;
+	}
+	if (did !== null && pdsAudCache !== null && pdsAudCache.did === did) return pdsAudCache.aud;
+	const session = await ctx.deps.getSession();
+	const aud = pdsAudFromSession(session);
+	if (aud !== null && did !== null && session?.did === did) pdsAudCache = {did, aud};
+	return aud;
 }
 
 /**
@@ -521,7 +566,7 @@ async function finishJob(ctx, parts) {
 		if (state === UPLOAD_STATE.created) {
 			const missing = missingParts(parts, json.receivedParts);
 			if (missing.length > 0) {
-				for (const part of missing) ctx.sentBytes.delete(part.partNumber);
+				for (const part of missing) setPartBytes(ctx, part, 0);
 				await sendParts(ctx, missing);
 			} else {
 				await waitFor(ctx, backoffMs(attempt));
@@ -609,6 +654,8 @@ function settleFailure(ctx, error) {
 		return canceledResult();
 	}
 	if (ctx.jobOpen) sendAbortUpload(ctx);
+	// 覚えていた PDS の DID が古い (移行した) せいで失敗したかもしれないため、次は引き直す
+	forgetPdsAud();
 	if (error instanceof UploadStop) return failure(error.reason, error.serverMessage);
 	return failure(BRIDGE_PROTOCOL.reasons.uploadFailed);
 }
@@ -675,22 +722,34 @@ async function tryRequest(ctx, method, nsid, opts) {
  * @param {number} sent
  */
 function reportPartBytes(ctx, part, sent) {
-	const bytes = Number.isFinite(sent) ? Math.min(Math.max(sent, 0), part.size) : 0;
-	ctx.sentBytes.set(part.partNumber, bytes);
+	setPartBytes(ctx, part, sent);
 	const total = ctx.blob.size;
 	if (!(total > 0)) return;
-	let sum = 0;
-	for (const value of ctx.sentBytes.values()) sum += value;
-	emitUploadProgress(ctx, Math.min(sum / total, 1));
+	emitUploadProgress(ctx, Math.min(ctx.sentTotal / total, UPLOAD_PROGRESS_DONE));
 }
 
 /**
- * upload の進み具合を、前に知らせた値より増えたときだけ知らせる。(送り直しで戻って見えないように)
+ * 部品の送れたバイト数を記録し、合計を差分で直す。(部品の数だけ毎回足し直さない)
+ * @param {UploadContext} ctx
+ * @param {PartPlan} part
+ * @param {number} sent
+ */
+function setPartBytes(ctx, part, sent) {
+	const bytes = Number.isFinite(sent) ? Math.min(Math.max(sent, 0), part.size) : 0;
+	ctx.sentTotal += bytes - (ctx.sentBytes.get(part.partNumber) ?? 0);
+	ctx.sentBytes.set(part.partNumber, bytes);
+}
+
+/**
+ * upload の進み具合を、前に知らせた値より UPLOAD_PROGRESS_STEP 以上増えたときだけ知らせる。
+ * 最初の値と 100% は増え幅によらず知らせる。(減ったときは知らせない。送り直しで戻って見えないように)
  * @param {UploadContext} ctx
  * @param {number} progress 0〜1
  */
 function emitUploadProgress(ctx, progress) {
 	if (progress <= ctx.uploadProgress) return;
+	const first = ctx.uploadProgress < 0;
+	if (!first && progress < UPLOAD_PROGRESS_DONE && progress - ctx.uploadProgress < UPLOAD_PROGRESS_STEP) return;
 	ctx.uploadProgress = progress;
 	emitProgress(ctx, {phase: PHASE.upload, progress});
 }

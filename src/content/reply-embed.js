@@ -5,7 +5,7 @@
  * 値 (上限など) は引数で受け取る。
  */
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
-import {countGraphemes, primaryLanguage} from './reply-text.js';
+import {countGraphemes, primaryLanguage, utf8Length} from './reply-text.js';
 
 /**
  * アップロード済みの画像 1 枚。
@@ -28,9 +28,6 @@ import {countGraphemes, primaryLanguage} from './reply-text.js';
 
 /** 橋渡しと共有する record の規則 */
 const RECORD_RULES = BRIDGE_PROTOCOL.postRecord;
-
-/** 投稿の本文の上限のうちバイトの数え方に使う変換器 */
-const utf8Encoder = new TextEncoder();
 
 /** embed view の $type は record 側の $type に #view を足した形 */
 const VIEW_SUFFIX = '#view';
@@ -164,6 +161,38 @@ export function acceptImages(currentCount, files, accept, max) {
 }
 
 /**
+ * 本文の大きさ。送信できるかの判定に使う (同じ本文を何度も数えないよう、呼び出し側が控えてよい)。
+ * @typedef {Object} TextMeasure
+ * @property {number} graphemes 書記素の数
+ * @property {number} bytes UTF-8 のバイト数
+ * @property {boolean} blank trim すると空か
+ */
+
+/**
+ * 本文の大きさを数える。
+ * @param {string} text
+ * @returns {TextMeasure}
+ */
+export function measureText(text) {
+	const value = typeof text === 'string' ? text : '';
+	return {graphemes: countGraphemes(value), bytes: utf8Length(value), blank: value.trim() === ''};
+}
+
+/**
+ * 数えた本文の大きさから、送信できるかと残りの文字数 (書記素) を返す。
+ * 本文 (trim 後) か添付が 1 つ以上あり、本文が上限内であること。
+ * @param {TextMeasure} measure
+ * @param {number} contentCount 画像の枚数 + GIF + 送るカード + 引用
+ * @param {{maxGraphemes: number, maxBytes: number}} limits
+ * @returns {{ok: boolean, remaining: number}}
+ */
+export function evaluateSubmit(measure, contentCount, limits) {
+	const remaining = limits.maxGraphemes - measure.graphemes;
+	const hasContent = !measure.blank || contentCount > 0;
+	return {ok: hasContent && remaining >= 0 && measure.bytes <= limits.maxBytes, remaining};
+}
+
+/**
  * 送信できるかと、残りの文字数 (書記素) を返す。
  * 本文 (trim 後) か添付が 1 つ以上あり、本文が上限内であること。
  * @param {string} text
@@ -172,12 +201,58 @@ export function acceptImages(currentCount, files, accept, max) {
  * @returns {{ok: boolean, remaining: number}}
  */
 export function canSubmitComposer(text, contentCount, limits) {
-	const value = typeof text === 'string' ? text : '';
-	const remaining = limits.maxGraphemes - countGraphemes(value);
-	const hasContent = value.trim() !== '' || contentCount > 0;
-	const ok = hasContent && remaining >= 0
-		&& utf8Encoder.encode(value).length <= limits.maxBytes;
-	return {ok, remaining};
+	return evaluateSubmit(measureText(text), contentCount, limits);
+}
+
+/**
+ * 付けようとしているメディアの種類。
+ * @typedef {'images'|'video'|'gif'} MediaKind
+ */
+
+/**
+ * いま付いているメディア。
+ * @typedef {Object} MediaPresence
+ * @property {number} imageCount 画像の枚数 (取り込み中と、同じ回に受け付けられる画像を含む)
+ * @property {boolean} hasVideo 動画があるか (読み取り中・アップロード中を含む)
+ * @property {boolean} hasGif GIF があるか
+ * @property {number} [videoCount] 同じ回に付けようとしている動画の本数 (動画のときだけ。省けば 1)
+ */
+
+/**
+ * メディアを付けてよいかの判定の結果。
+ * noticeKey は compose.text のキー、cause は断った原因のメディア (それが無くなったら知らせを消す。無ければ null)。
+ * @typedef {{ok: true}|{ok: false, noticeKey: string, cause: ('gif'|'video'|'images'|null)}} MediaCheck
+ */
+
+/**
+ * メディアの排他の規則。画像 (10 枚まで)・GIF 1 つ・動画 1 本のうち 1 種類だけを付けられる。
+ * GIF は画像があっても画面は開けず、動画は 1 本まで。
+ * @param {MediaKind} kind 付けようとしているもの
+ * @param {MediaPresence} presence いま付いているもの
+ * @returns {MediaCheck}
+ */
+export function checkMediaRequest(kind, presence) {
+	const imageCount = presence && presence.imageCount > 0 ? presence.imageCount : 0;
+	const hasVideo = Boolean(presence && presence.hasVideo);
+	const hasGif = Boolean(presence && presence.hasGif);
+	if (kind === 'images') {
+		if (hasGif) return {ok: false, noticeKey: 'gifExclusive', cause: 'gif'};
+		if (hasVideo) return {ok: false, noticeKey: 'videoExclusive', cause: 'video'};
+		return {ok: true};
+	}
+	if (kind === 'video') {
+		if (hasGif) return {ok: false, noticeKey: 'videoExclusive', cause: 'gif'};
+		if (imageCount > 0) return {ok: false, noticeKey: 'videoExclusive', cause: 'images'};
+		const videoCount = presence && Number.isFinite(presence.videoCount) ? presence.videoCount : 1;
+		if (hasVideo || videoCount > 1) return {ok: false, noticeKey: 'tooManyVideos', cause: null};
+		return {ok: true};
+	}
+	if (kind === 'gif') {
+		if (hasVideo) return {ok: false, noticeKey: 'videoExclusive', cause: 'video'};
+		if (imageCount > 0) return {ok: false, noticeKey: 'gifExclusive', cause: 'images'};
+		return {ok: true};
+	}
+	return {ok: false, noticeKey: 'unsupportedImage', cause: null};
 }
 
 /**

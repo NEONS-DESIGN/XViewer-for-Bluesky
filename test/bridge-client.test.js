@@ -75,7 +75,9 @@ test('callBridge: idleTimeoutMs は同じ id の進み具合で延び、届か�
 		assert.deepStrictEqual(received[2], {phase: 'upload', progress: 0.75});
 		const result = await promise;
 		assert.deepStrictEqual(result, {ok: false, reason: 'timeout'});
-		assert.strictEqual(fakes.count(PROGRESS), 0);
+		// 打ち切った後に届いた進み具合は呼び出し側へ渡さない
+		fakes.fire(PROGRESS, {id, phase: 'upload', progress: 1});
+		assert.strictEqual(received.length, 3);
 	} finally {
 		fakes.restore();
 	}
@@ -100,17 +102,20 @@ test('callBridge: 別の id の進み具合と解析できない detail は無�
 	}
 });
 
-test('callBridge: 解決したら結果と進み具合の両方の購読を外す', async () => {
+test('callBridge: 購読は document ごとに 1 本で、解決した要求には以後の応答を渡さない', async () => {
 	const fakes = installFakes();
 	try {
-		const promise = callBridge('x', {}, {idleTimeoutMs: 1000, onProgress: () => {}});
-		const id = fakes.requests[0].id;
+		const first = callBridge('x', {}, {idleTimeoutMs: 1000, onProgress: () => {}});
+		const second = callBridge('y', {});
+		const [a, b] = fakes.requests.map((request) => request.id);
 		assert.strictEqual(fakes.count(RESULT), 1);
 		assert.strictEqual(fakes.count(PROGRESS), 1);
-		fakes.fire(RESULT, {id, ok: true});
-		await promise;
-		assert.strictEqual(fakes.count(RESULT), 0);
-		assert.strictEqual(fakes.count(PROGRESS), 0);
+		fakes.fire(RESULT, {id: b, ok: true, n: 2});
+		fakes.fire(RESULT, {id: a, ok: true, n: 1});
+		assert.deepStrictEqual(await first, {id: a, ok: true, n: 1});
+		assert.deepStrictEqual(await second, {id: b, ok: true, n: 2});
+		fakes.fire(RESULT, {id: a, ok: false});
+		assert.strictEqual(fakes.count(RESULT), 1);
 	} finally {
 		fakes.restore();
 	}

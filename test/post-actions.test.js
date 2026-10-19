@@ -353,7 +353,7 @@ test('PostActions#call: timeoutMs を橋渡しの待ち時間に渡し、省け�
 	try {
 		const started = Date.now();
 		const result = await actions.call('com.atproto.repo.applyWrites', {body: {repo: REPO}, timeoutMs: 5});
-		assert.deepStrictEqual(result, {ok: false, json: null, reason: 'timeout'});
+		assert.deepStrictEqual(result, {ok: false, json: null, reason: 'timeout', status: null});
 		// 既定 (EXT_CONFIG.mediaGrid.bridge.timeoutMs) より十分短い時間で打ち切られた
 		assert.ok(Date.now() - started < EXT_CONFIG.mediaGrid.bridge.timeoutMs / 2, '渡した待ち時間が効いていない');
 		assert.strictEqual(requests.length, 1);

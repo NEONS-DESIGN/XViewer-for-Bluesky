@@ -25,7 +25,9 @@ export const EXT_SHARED = {
 	 */
 	lightboxDialogSelector: '[role="dialog"][aria-modal="true"]',
 	/** タブ要素の data-testid の接頭辞。page-bridge.js と共有する (BRIDGE_PROTOCOL) */
-	tabTestIdPrefix: BRIDGE_PROTOCOL.tabTestIdPrefix
+	tabTestIdPrefix: BRIDGE_PROTOCOL.tabTestIdPrefix,
+	/** Bluesky の Web のホスト。返信の入力欄で、引用にできる投稿の URL のホストと、リンクカードにしないホストに使う */
+	bskyWebHosts: ['bsky.app']
 };
 
 export const EXT_CONFIG = {
@@ -35,7 +37,7 @@ export const EXT_CONFIG = {
 	/**
 	 * Bluesky 本体 (social-app の src/view/screens/Profile.tsx) と同じ順序・条件でタブ列を組む。
 	 * 順序は固定だが、どのタブが存在するかはアカウントによって変わる。
-	 * ここを実測なしに書き換えない (設計文書 2.5)。
+	 * 実測なしに書き換えない (2026-08-16 に本体のソースと実機のタブ数で照合した)。
 	 */
 	profileTabs: [
 		{name: 'labels', when: (c) => c.hasLabeler},
@@ -52,7 +54,6 @@ export const EXT_CONFIG = {
 
 	selectors: {
 		pager: '[data-testid="profilePager"]',
-		tabPrefix: EXT_SHARED.tabTestIdPrefix,
 		tab: `[data-testid^="${EXT_SHARED.tabTestIdPrefix}"]`,
 		/**
 		 * 選択中タブだけが持つ下線バーのセレクタ。
@@ -208,6 +209,7 @@ export const EXT_CONFIG = {
 		blurClass: 'ext-media-blur',
 		blurLabelClass: 'ext-media-blur-label',
 		statusId: 'ext-media-status',
+		loadMoreClass: 'ext-media-load-more',
 		hiddenFeedClass: 'ext-feed-hidden',
 		columns: 3,
 		gapPx: 4,
@@ -257,6 +259,9 @@ export const EXT_CONFIG = {
 			loading: '読み込み中...',
 			end: 'すべて読み込みました',
 			empty: 'メディアが見つかりません',
+			/** 蓄積があるうちに、中身 0 件のページが emptyPageLimit 回続いたとき */
+			stalled: 'この先しばらくメディアが見つかりません',
+			loadMore: 'さらに読み込む',
 			error: '読み込めませんでした',
 			videoBadge: '▶'
 		},
@@ -268,11 +273,20 @@ export const EXT_CONFIG = {
 			limit: 100,
 			cooldownMs: 1000,
 			bootstrapLimit: 3,
+			/**
+			 * 中身 (並べるもの) が 0 件のページがこの回数続いたら、自動では読み進めない。
+			 * 動画だけのアカウントでは動画の除外で毎ページ 0 件になり、フィードの最後まで
+			 * 取得し続けてしまうため。続きは「さらに読み込む」で利用者が求める
+			 */
+			emptyPageLimit: 5,
 			maxConsecutiveErrors: 3,
 			retryAfterMs: 60000,
 			nearEndPx: 600,
 			stopStatuses: [429],
 			timeoutMs: 12000,
+			/** getProfile の応答を覚えておく時間と件数。タブの往復・プロフィールの行き来で引き直さない */
+			profileCacheTtlMs: 300000,
+			profileCacheLimit: 20,
 			embedTypes: {
 				images: 'app.bsky.embed.images#view',
 				gallery: 'app.bsky.embed.gallery#view',
@@ -295,17 +309,13 @@ export const EXT_CONFIG = {
 			 * 本体がフィードの単独画像を開くときと同じ値 (2026-09-09 実測)
 			 */
 			lightboxLayout: 'single',
-			timeoutMs: 15000,
 			/**
-			 * upload-blob の応答を待つ上限。画像 (最大 2MB) を PDS へ送り終えるまで
-			 * 待つため、ほかの操作の timeoutMs より長くとる
+			 * 応答を待つ上限 (既定・upload-blob・返信の連なりの applyWrites)。MAIN ワールドの打ち切りと
+			 * 同じ出どころ (BRIDGE_PROTOCOL.timeouts) から取り、MAIN ワールドのほうが先に諦めるようにする
 			 */
-			uploadTimeoutMs: 60000,
-			/**
-			 * 返信の連なり (applyWrites、最大 10 件) の応答を待つ上限。待ちきれなかったときは書けている
-			 * かもしれないものとして扱うため、ほかの操作の timeoutMs より長くとる
-			 */
-			threadTimeoutMs: 60000,
+			timeoutMs: BRIDGE_PROTOCOL.timeouts.requestMs,
+			uploadTimeoutMs: BRIDGE_PROTOCOL.timeouts.uploadMs,
+			threadTimeoutMs: BRIDGE_PROTOCOL.timeouts.threadMs,
 			/** 動画の進み具合のイベント名。page-bridge.js と共有する (BRIDGE_PROTOCOL) */
 			progressEvent: BRIDGE_PROTOCOL.progressEvent,
 			/**
@@ -321,7 +331,7 @@ export const EXT_CONFIG = {
 	 * 画像を開いたとき、右側に本文・投稿日時・作者・反応数を並べる。
 	 * **メディアグリッド由来かどうかを問わない。** 開いているライトボックスの
 	 * activeLightbox.metricsContext.postUri を橋渡しで読み、公開 API の
-	 * getPosts で投稿を引く (設計文書 3 節)
+	 * getPosts で投稿を引く
 	 */
 	lightboxPanel: {
 		storageKey: 'lightboxPanelEnabled',
@@ -333,6 +343,8 @@ export const EXT_CONFIG = {
 		panelId: 'ext-lightbox-panel',
 		collapsedClass: 'ext-lb-collapsed',
 		bodyClass: 'ext-lb-body',
+		/** 本文の入れ物の中の、投稿の部分と返信欄の置き場 (display: contents) */
+		postPartClass: 'ext-lb-part',
 		headerClass: 'ext-lb-header',
 		toggleClass: 'ext-lb-toggle',
 		authorClass: 'ext-lb-author',
@@ -350,7 +362,7 @@ export const EXT_CONFIG = {
 		/**
 		 * パネルの幅 (px)。本体のダイアログの固定親に right としてそのまま当てる。
 		 * 2026-09-09 の実測で、この 1 プロパティだけで画像が縦横比を保ったまま
-		 * 再レイアウトされることを確認済み (設計文書 2 節)
+		 * 再レイアウトされることを確認済み
 		 */
 		widthPx: 360,
 		/**
@@ -373,10 +385,12 @@ export const EXT_CONFIG = {
 		/** 投稿日時の表記。本体のフィードは相対表記なので、パネルは絶対表記に徹する */
 		dateFormat: {dateStyle: 'long', timeStyle: 'short'},
 		/**
-		 * 取得済みの投稿を保持する上限。超えたら古いものから捨てる。
-		 * ページを離れれば消える (メモリのみ)
+		 * 自分の反応 (いいね・リポスト・ブックマーク) を、引き直した投稿に重ねて描く時間 (ms)。
+		 * 取得した投稿は開いている間しか覚えないため、反応の直後に開き直すと、AppView の反映の
+		 * 遅れ (数秒。2026-10-18 実測) で「未反応」に戻って見え、押すと 2 本目のレコードができる。
+		 * その間だけ手元の結果を正とする
 		 */
-		cacheLimit: 200,
+		actionShadowMs: 60000,
 		/**
 		 * 本文中のリンクとして押せるようにする URL の scheme。
 		 * **facets の uri は投稿者が自由に決められる値**であり、javascript: や
@@ -403,8 +417,11 @@ export const EXT_CONFIG = {
 			replyCount: '返信',
 			repostCount: 'リポスト',
 			likeCount: 'いいね',
-			quoteCount: '引用'
+			quoteCount: '引用',
+			leaveDraft: '書きかけの返信があります。もう一度押すと破棄して移動します'
 		},
+		/** 書きかけがあるときの移動の聞き返しを、もう一度の押下で通す時間 (ms) */
+		leaveConfirmMs: 5000,
 		api: {
 			origin: EXT_SHARED.publicApiOrigin,
 			postsPath: '/xrpc/app.bsky.feed.getPosts',
@@ -444,6 +461,11 @@ export const EXT_CONFIG = {
 		 * 固定の 3 語のため、末尾で区切れば衝突しない
 		 */
 		pendingKeySeparator: ':',
+		/**
+		 * ライトボックスを開いたときの get-session の「未ログイン」の答えを、書き込みの前の
+		 * 問い合わせで使い回す時間 (ms)。開くたびに同じ問い合わせを 2 回しないため
+		 */
+		sessionTrustMs: 5000,
 		actionsClass: 'ext-lb-actions',
 		actionClass: 'ext-lb-action',
 		activeClass: 'ext-lb-action-on',
@@ -497,6 +519,17 @@ export const EXT_CONFIG = {
 		 * 2026-10-18 実測)。開いた返信の下は Bluesky 本体と同じ深さで読む
 		 */
 		depth: {root: 1, branch: 6},
+		/**
+		 * 通信の結果を覚える上限 (件数) と期限 (ms)。成功だけを覚える。
+		 * プロフィールとハンドルの解決はページを離れるまで (期限付き)、引用とリンクカードは
+		 * ライトボックスを閉じたら捨てる (返信欄の destroy で消す)
+		 */
+		remoteCache: {
+			profile: {limit: 8, ttlMs: 600000},
+			handle: {limit: 200, ttlMs: 600000},
+			quote: {limit: 20},
+			card: {limit: 20}
+		},
 		/**
 		 * 本文の上限。書記素は app.bsky.feed.post の lexicon の maxGraphemes、
 		 * バイトは橋渡しの検査と同じ値
@@ -611,13 +644,13 @@ export const EXT_CONFIG = {
 			card: {
 				extractUrl: 'https://cardyb.bsky.app/v1/extract',
 				timeoutMs: 10000,
-				/** bsky.app の URL はカードにせず、引用か本文のリンクとして扱う */
-				excludedHosts: ['bsky.app'],
+				/** bsky.app の URL はカードにせず、引用か本文のリンクとして扱う (引用にできるホストと同じ) */
+				excludedHosts: EXT_SHARED.bskyWebHosts,
 				/** 画像そのものの URL。カードにせず画像として扱う判定に使う */
 				imageExtensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'svg']
 			},
 			/** 引用にできる投稿の URL のホスト */
-			quote: {hosts: ['bsky.app']},
+			quote: {hosts: EXT_SHARED.bskyWebHosts},
 			/** 本文中の長い URL の短縮表示 (残りが maxRestChars を超えたら keepChars で切って … を付ける) */
 			links: {maxRestChars: 15, keepChars: 13},
 			/** リンクカードのサムネイルの縮小 (橋渡しの maxThumbBytes に収める) */
@@ -727,8 +760,7 @@ export const EXT_CONFIG = {
 				panelOpen: 'ext-lb-sheet-open',
 				sheet: 'ext-lb-sheet',
 				sentinel: 'ext-lb-sheet-sentinel',
-				wide: 'is-wide',
-				/** 開いたボタンに付ける吹き出し (絵文字) と、ボタンの上に出したときの印 */
+				/** 開いたボタンに付ける吹き出し (絵文字・GIF) と、ボタンの上に出したときの印 */
 				popover: 'is-popover',
 				popoverAbove: 'is-above',
 				/** 吹き出しの矢印の横位置 (吹き出しの左端からの px) を渡す CSS カスタムプロパティ */
@@ -764,6 +796,8 @@ export const EXT_CONFIG = {
 				langList: 'ext-lb-lang-list',
 				langCount: 'ext-lb-lang-count',
 				emojiFrame: 'ext-lb-emoji-frame',
+				/** 絵文字のページが準備できたと知らせるまで iframe に重ねて出す 1 行 */
+				emojiLoading: 'ext-lb-emoji-loading',
 				gifSearch: 'ext-lb-gif-search',
 				gifGrid: 'ext-lb-gif-grid',
 				gifItem: 'ext-lb-gif-item',
@@ -831,10 +865,10 @@ export const EXT_CONFIG = {
 			text: {
 				sheetDone: '完了',
 				sheetCancel: 'キャンセル',
-				sheetClose: '閉じる',
 				altTitle: 'ALT テキストを追加',
 				altLabel: 'ALT テキスト',
 				altPlaceholder: '画像の内容を説明する',
+				videoAltPlaceholder: '動画の内容を説明する',
 				altPreview: '添付する画像',
 				altRemaining: '残り {count}',
 				cropTitle: '画像を切り抜く',
@@ -863,6 +897,7 @@ export const EXT_CONFIG = {
 				emojiTitle: '絵文字',
 				emojiFrame: '絵文字を選ぶ',
 				emojiFailed: '絵文字を読み込めませんでした',
+				emojiLoading: '絵文字を読み込み中…',
 				/** 以下は入力欄 (reply-composer.js) の文言 */
 				addImage: '画像・動画を追加',
 				videoExclusive: '動画は画像・GIF と同時に付けられません',
@@ -918,6 +953,7 @@ export const EXT_CONFIG = {
 				gifTitle: 'GIF を選ぶ',
 				gifSearch: 'KLIPY を検索',
 				gifFailed: 'GIF を読み込めませんでした',
+				gifLoading: 'GIF を読み込み中…',
 				gifRetry: '再試行',
 				gifEmpty: '見つかりませんでした',
 				gifItem: 'GIF「{title}」を選ぶ',
@@ -993,7 +1029,9 @@ export const EXT_CONFIG = {
 				videoThumb: 'ext-lb-video-thumb',
 				videoPlay: 'ext-lb-video-play',
 				videoPlayer: 'ext-lb-video-player',
-				videoFallback: 'ext-lb-video-fallback'
+				videoFallback: 'ext-lb-video-fallback',
+				/** 再生と停止の切り替えボタンが流れているあいだに付ける印 (図形を隠す) */
+				playing: 'is-playing'
 			},
 			text: {
 				gifPlay: 'GIF を再生',

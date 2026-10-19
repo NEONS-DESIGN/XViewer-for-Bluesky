@@ -264,7 +264,9 @@ test('ライセンスタブ: この拡張機能 (MIT)・Material Symbols (Apache
 test('初期タブを渡すとそのタブで開く', () => {
 	const {root, screen} = setup({initialTab: 'license'});
 	assert.strictEqual(root.querySelector(byRole('panel-license')).hidden, false);
-	assert.strictEqual(screen.currentTab(), 'license');
+	const selected = root.querySelectorAll('[role="tab"]').filter((tab) => tab.getAttribute('aria-selected') === 'true');
+	assert.deepStrictEqual(selected.map((tab) => tab.dataset.role), ['tab-license']);
+	screen.dispose();
 });
 
 test('dispose で中身を片付ける', () => {

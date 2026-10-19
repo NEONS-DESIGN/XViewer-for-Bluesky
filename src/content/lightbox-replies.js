@@ -11,24 +11,36 @@
  * 入力欄は部品 (reply-composer.js) が組む。ここは宛先・世代・送信中の印・言語の保存と、
  * 送れた返信の一覧への差し込みだけを持つ。
  *
- * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / reply-text.js / media-source.js /
- *       reply-composer.js / reply-embed.js / blob-transfer.js / image-prepare.js
+ * **取得はライトボックスを開いている間だけ覚える。** 1 段目の一覧はパネルが投稿と一緒に読んだ応答を受け取り、
+ * 開いた返信の中は畳んでも捨てず、開き直しても引き直さない。閉じたら (destroy) すべて捨てる。
+ *
+ * 依存: config.js (EXT_CONFIG) / debug.js (ExtDebug) / http.js / motion.js / remote-cache.js /
+ *       routes.js / reply-text.js / media-source.js / reply-composer.js / reply-embed.js /
+ *       blob-transfer.js / image-prepare.js
  */
 import {EXT_CONFIG} from '../common/config.js';
 import {ExtDebug} from '../common/debug.js';
+import {buildUrl, fetchJson, fetchBlob, fetchOkJson} from '../common/http.js';
+import {prefersReducedMotion, scrollBehavior} from '../common/motion.js';
+import {RemoteCache} from '../common/remote-cache.js';
+import {postRoute, profileRoute} from './routes.js';
 import {
 	extractMediaFromEmbed, toLightboxImages, matchBlurLabels, formatBlurLabels
 } from './media-source.js';
 import {
-	parseThreadReplies, flattenThreadBranch, sortNewestFirst, formatReplyDate, insertVisible, mediaAspectRatio
+	parseThreadReplies, flattenThreadBranch, sortNewestFirst, formatReplyDate, insertVisible, mediaAspectRatio,
+	threadFromNode
 } from './reply-text.js';
 import {ReplyComposer, defaultLanguages} from './reply-composer.js';
 import {normalizeLanguages} from './reply-embed.js';
 import {uploadBlob, uploadVideo, cancelVideoUpload} from './blob-transfer.js';
 import {prepareImage} from './image-prepare.js';
 import {readVideoMeta} from './reply-video.js';
-import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, buildVideoCard, prefersReducedMotion} from './embed-cards.js';
+import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, buildVideoCard} from './embed-cards.js';
 import {gifPlayerFromUri, stripAltPrefix} from './klipy.js';
+
+/** getPostThread が「見つからない」(lexicon の NotFound) に返す HTTP の状態 */
+const THREAD_NOT_FOUND_STATUS = 400;
 
 /**
  * ms ミリ秒待つ。
@@ -66,6 +78,16 @@ function waitMs(ms) {
  * @property {string} authorDid
  * @property {string} handle 開けなかったときに投稿ページへ移るのに使う
  * @property {string} rkey
+ * @property {{view: Object, thread: ThreadResult|null}|null} seed 手元にある返信の PostView と、
+ *   揃っていればその返信を起点にした一覧 (パネルが引き直しを省く)
+ */
+
+/**
+ * スレッドの取得の結果。
+ * @typedef {Object} ThreadResult
+ * @property {Object|null} json getPostThread の応答。読めなければ null
+ * @property {boolean} fromPublic 公開 API で読んだか (viewer が無いので書き込みを出さない)
+ * @property {boolean} notFound 投稿が見つからないと分かったか
  */
 
 /**
@@ -104,59 +126,6 @@ export function isFocusInOrLost(el) {
 	} catch (error) {
 		return false;
 	}
-}
-
-/**
- * URL を 1 回引き、応答を read で読む。timeoutMs で打ち切る (本文の読み込みも含む)。
- * 通信・読み込みの失敗と打ち切りはすべて null。
- * @template T
- * @param {string} url
- * @param {number} timeoutMs
- * @param {(response: Response) => Promise<T>} read
- * @returns {Promise<T|null>}
- */
-async function fetchWithTimeout(url, timeoutMs, read) {
-	let timer = null;
-	try {
-		const controller = new AbortController();
-		timer = setTimeout(() => controller.abort(), timeoutMs);
-		const response = await fetch(url, {signal: controller.signal});
-		return await read(response);
-	} catch (error) {
-		return null;
-	} finally {
-		if (timer !== null) {
-			clearTimeout(timer);
-		}
-	}
-}
-
-/**
- * JSON を引く (リンクカード・GIF の検索)。中身を読めなければ json は null。
- * @param {string} url
- * @param {number} timeoutMs
- * @returns {Promise<{status: number, json: any}|null>} 通信の失敗・打ち切りは null
- */
-function fetchJsonWithTimeout(url, timeoutMs) {
-	return fetchWithTimeout(url, timeoutMs, async (response) => {
-		let json = null;
-		try {
-			json = await response.json();
-		} catch (error) {
-			json = null;
-		}
-		return {status: response.status, json};
-	});
-}
-
-/**
- * 画像を Blob で引く (リンクカード・GIF のサムネイル)。
- * @param {string} url
- * @param {number} timeoutMs
- * @returns {Promise<Blob|null>} 失敗・打ち切り・2xx 以外は null
- */
-function fetchBlobWithTimeout(url, timeoutMs) {
-	return fetchWithTimeout(url, timeoutMs, async (response) => (response.ok ? response.blob() : null));
 }
 
 /**
@@ -218,8 +187,15 @@ export class LightboxReplies {
 		this.sessionDid = null;
 		/** @type {{did: string, handle: string, displayName: string, avatarUrl: string|null}|null} */
 		this.selfProfile = null;
-		/** @type {Map<string, Object>} DID ごとの自分のプロフィール (アカウント切り替えに備える) */
-		this.profileCache = new Map();
+		const cache = this.config.remoteCache;
+		/** DID ごとの自分のプロフィール (アカウント切り替えに備える)。ページを離れるまで覚える */
+		this.profileCache = new RemoteCache(cache.profile);
+		/** ハンドルから DID (メンションと引用の URL)。ページを離れるまで覚える */
+		this.handleCache = new RemoteCache(cache.handle);
+		/** 引用する投稿 (getPosts)。ライトボックスを閉じたら捨てる (引用を許すかが変わりうる) */
+		this.quoteCache = new RemoteCache(cache.quote);
+		/** リンクカードの中身 (cardyb)。ライトボックスを閉じたら捨てる */
+		this.cardCache = new RemoteCache(cache.card);
 		/** @type {Promise<void>|null} セッションの読み込み。一覧の描画はこれを待つ */
 		this.sessionPromise = null;
 		/** 送信中か。**連打・Ctrl+Enter との二重送信で返信が 2 件できるのを防ぐ** */
@@ -254,10 +230,12 @@ export class LightboxReplies {
 
 	/**
 	 * 区画を作って container の末尾に足す。
-	 * 同じ投稿で取得済みなら取り直さない (設定の切り替えでパネルが描き直されたとき)
-	 * @param {HTMLElement} container パネルの本文の入れ物
+	 * **同じ投稿で区画が container に付いたままなら作り直さない** (設定の切り替えや、操作の失敗の後の
+	 * 引き直しでパネルが描き直されても、書きかけと動画のアップロードを消さない)。書き込めるかが
+	 * 変わったときだけ入力欄と一覧を描き直す。取得済みなら取り直さない
+	 * @param {HTMLElement} container 返信欄の置き場
 	 * @param {Object} post PanelPost
-	 * @param {{canWrite: boolean}} options
+	 * @param {{canWrite: boolean, thread?: ThreadResult|null}} options thread はパネルが投稿と一緒に読んだ一覧
 	 * @returns {void}
 	 */
 	mount(container, post, options) {
@@ -269,23 +247,41 @@ export class LightboxReplies {
 				this.reset(post.postUri);
 			}
 			this.post = post;
-			this.requestedCanWrite = !!(options && options.canWrite);
+			const canWrite = !!(options && options.canWrite);
+			if (this.sectionEl && this.sectionEl.isConnected && this.sectionEl.parentNode === container) {
+				if (canWrite !== this.requestedCanWrite) {
+					this.requestedCanWrite = canWrite;
+					this.sessionPromise = this.prepareSession(this.generation);
+					this.renderAfterSession();
+				}
+				return;
+			}
+			this.requestedCanWrite = canWrite;
 			this.removeDom();
 			this.buildSection(container);
 			this.sessionPromise = this.prepareSession(this.generation);
 			if (this.loadState === 'idle') {
-				this.load();
+				this.load((options && options.thread) || null);
 				return;
 			}
-			this.sessionPromise.then(() => {
-				if (this.sectionEl) {
-					this.renderForm();
-					this.renderBody();
-				}
-			});
+			this.renderAfterSession();
 		} catch (error) {
 			console.error('[XViewer] 返信欄の描画に失敗しました', error);
 		}
+	}
+
+	/**
+	 * セッションの読み込みを待ってから、入力欄と一覧を描き直す。
+	 * @returns {void}
+	 */
+	renderAfterSession() {
+		const generation = this.generation;
+		this.sessionPromise.then(() => {
+			if (this.sectionEl && generation === this.generation) {
+				this.renderForm();
+				this.renderBody();
+			}
+		});
 	}
 
 	/**
@@ -307,6 +303,8 @@ export class LightboxReplies {
 	destroy() {
 		this.reset(null);
 		this.removeDom();
+		this.quoteCache.clear();
+		this.cardCache.clear();
 	}
 
 	/**
@@ -402,23 +400,11 @@ export class LightboxReplies {
 			if (!this.mainComposer || !this.sectionEl || !this.sectionEl.isConnected) {
 				return false;
 			}
-			this.sectionEl.scrollIntoView({block: 'start', behavior: this.scrollBehavior()});
+			this.sectionEl.scrollIntoView({block: 'start', behavior: scrollBehavior()});
 			this.mainComposer.focus();
 			return true;
 		} catch (error) {
 			return false;
-		}
-	}
-
-	/**
-	 * 動きを減らす設定なら即座に、そうでなければ滑らかに送る。
-	 * @returns {'auto'|'smooth'}
-	 */
-	scrollBehavior() {
-		try {
-			return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-		} catch (error) {
-			return 'auto';
 		}
 	}
 
@@ -454,13 +440,9 @@ export class LightboxReplies {
 	 * @returns {Promise<{did: string, handle: string, displayName: string, avatarUrl: string|null}>}
 	 */
 	async fetchProfile(did) {
-		const cached = this.profileCache.get(did);
-		if (cached) {
-			return cached;
-		}
-		const json = await this.fetchPublicJson(this.config.api.profilePath, {actor: did});
+		const json = await this.profileCache.get(did, () => this.fetchPublicJson(this.config.api.profilePath, {actor: did}));
 		const handle = json && typeof json.handle === 'string' ? json.handle : did;
-		const profile = {
+		return {
 			did,
 			handle,
 			displayName: json && typeof json.displayName === 'string' && json.displayName
@@ -468,59 +450,65 @@ export class LightboxReplies {
 				: handle,
 			avatarUrl: json && typeof json.avatar === 'string' ? json.avatar : null
 		};
-		if (json) {
-			this.profileCache.set(did, profile);
-		}
-		return profile;
 	}
 
 	/**
 	 * 公開 API を 1 回呼ぶ。タイムアウト付き。
 	 * @param {string} apiPath /xrpc/...
 	 * @param {Object} params
-	 * @returns {Promise<Object|null>} 失敗なら null
+	 * @returns {Promise<Object|null>} 失敗・2xx 以外なら null
 	 */
-	async fetchPublicJson(apiPath, params) {
+	fetchPublicJson(apiPath, params) {
 		const api = this.config.api;
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), api.timeoutMs);
-		try {
-			const url = new URL(apiPath, api.origin);
-			Object.keys(params).forEach((key) => url.searchParams.set(key, String(params[key])));
-			const response = await fetch(url.toString(), {signal: controller.signal});
-			if (!response.ok) {
-				return null;
-			}
-			return await response.json();
-		} catch (error) {
-			return null;
-		} finally {
-			clearTimeout(timer);
-		}
+		return fetchOkJson(buildUrl(api.origin, apiPath, params), api.timeoutMs);
 	}
 
 	/**
 	 * スレッドを引く。認証付きを先に試し、だめなら公開 API に落ちる。
+	 * 認証付きが「見つからない」と答えたら公開 API には行かない (同じ答えになるため)。
+	 * パネルも投稿の取得にこれを使う
 	 * @param {string} uri 起点
 	 * @param {number} depth
-	 * @returns {Promise<{json: Object|null, fromPublic: boolean}>}
+	 * @returns {Promise<ThreadResult>}
 	 */
 	async fetchThread(uri, depth) {
 		const authed = await this.host.actions.fetchThread(uri, depth);
-		if (authed) {
-			return {json: authed, fromPublic: false};
+		if (authed && authed.ok && authed.json) {
+			return {json: authed.json, fromPublic: false, notFound: false};
+		}
+		if (authed && authed.status === THREAD_NOT_FOUND_STATUS) {
+			return {json: null, fromPublic: false, notFound: true};
 		}
 		const json = await this.fetchPublicJson(this.config.api.threadPath, {
 			uri, depth, parentHeight: 0
 		});
-		return {json, fromPublic: json !== null};
+		return {json, fromPublic: json !== null, notFound: false};
 	}
 
 	/**
-	 * 1 段目の返信を読む。返信数が 0 なら取得しない。
+	 * 取得した 1 段目の一覧を取り込む。
+	 * @param {ThreadResult} result json を持つこと
+	 * @returns {void}
+	 */
+	applyRoot(result) {
+		this.fromPublic = result.fromPublic;
+		const thread = result.json.thread;
+		const viewer = thread && thread.post && thread.post.viewer;
+		if (viewer && viewer.replyDisabled === true) {
+			this.replyDisabled = true;
+		}
+		this.items = sortNewestFirst(parseThreadReplies(result.json));
+		this.loadState = 'loaded';
+		this.shown = Math.min(this.config.pageSize, this.items.length);
+	}
+
+	/**
+	 * 1 段目の返信を読む。パネルが一緒に読んだ一覧があればそれを使い、無ければ引く
+	 * (返信数が 0 なら引かない)。
+	 * @param {ThreadResult|null} [preloaded] パネルが投稿と一緒に読んだ一覧
 	 * @returns {Promise<void>}
 	 */
-	async load() {
+	async load(preloaded = null) {
 		const generation = this.generation;
 		const post = this.post;
 		try {
@@ -531,8 +519,12 @@ export class LightboxReplies {
 				return;
 			}
 			this.replyDisabled = !!(post.viewer && post.viewer.replyDisabled === true);
-			if (!post.counts || post.counts.reply === 0) {
+			if (preloaded && preloaded.json) {
+				this.applyRoot(preloaded);
+			} else if (!post.counts || post.counts.reply === 0) {
 				this.items = [];
+				this.loadState = 'loaded';
+				this.shown = 0;
 			} else {
 				ExtDebug.log('返信の取得を開始', {postUri: post.postUri});
 				const result = await this.fetchThread(post.postUri, this.config.depth.root);
@@ -545,17 +537,11 @@ export class LightboxReplies {
 					this.renderBody();
 					return;
 				}
-				this.fromPublic = result.fromPublic;
-				const thread = result.json.thread;
-				const viewer = thread && thread.post && thread.post.viewer;
-				if (viewer && viewer.replyDisabled === true) {
-					this.replyDisabled = true;
-				}
-				this.items = sortNewestFirst(parseThreadReplies(result.json));
-				ExtDebug.log('返信の取得が終了', {件数: this.items.length, 公開API: this.fromPublic});
+				this.applyRoot(result);
 			}
-			this.loadState = 'loaded';
-			this.shown = Math.min(this.config.pageSize, this.items.length);
+			ExtDebug.log('返信の一覧を用意した', {
+				件数: this.items.length, 公開API: this.fromPublic, パネルの取得を使った: !!(preloaded && preloaded.json)
+			});
 			this.renderForm();
 			this.renderBody();
 		} catch (error) {
@@ -620,10 +606,7 @@ export class LightboxReplies {
 				this.renderBody();
 				return;
 			}
-			this.fromPublic = result.fromPublic;
-			this.items = sortNewestFirst(parseThreadReplies(result.json));
-			this.loadState = 'loaded';
-			this.shown = Math.min(this.config.pageSize, this.items.length);
+			this.applyRoot(result);
 			ExtDebug.log('返信の一覧を取り直した', {件数: this.items.length, 公開API: this.fromPublic});
 			this.renderBody();
 		} catch (error) {
@@ -662,7 +645,7 @@ export class LightboxReplies {
 		toTop.textContent = text.toTop;
 		toTop.hidden = true;
 		toTop.addEventListener('click', () => {
-			sentinel.scrollIntoView({block: 'start', behavior: this.scrollBehavior()});
+			sentinel.scrollIntoView({block: 'start', behavior: scrollBehavior()});
 			heading.focus({preventScroll: true});
 		});
 		heading.appendChild(headingText);
@@ -795,6 +778,12 @@ export class LightboxReplies {
 			isPosting: () => this.posting,
 			setPosting: (posting) => {
 				this.posting = posting === true;
+				// 送信中は他の入力欄の送信ボタンも止める (押しても何も起きないまま押せる状態に見せない)
+				for (const other of this.composers) {
+					if (other !== composer) {
+						other.sync();
+					}
+				}
 			},
 			onPosted: (result, record, posted, embedView) => {
 				this.insertOwnReply(posted, this.buildOwnItem(result, record, posted, embedView), composer);
@@ -806,9 +795,9 @@ export class LightboxReplies {
 			parentLangs: Array.isArray(parentLangs) ? parentLangs : null,
 			loadLanguages: () => this.loadLanguages(),
 			saveLanguages: (codes) => this.saveLanguages(codes),
-			fetchJson: fetchJsonWithTimeout,
-			fetchBlob: fetchBlobWithTimeout,
-			fetchPost: (uri) => this.host.actions.fetchPost(uri),
+			fetchJson: (url, timeoutMs, signal) => this.fetchJsonCached(url, timeoutMs, signal),
+			fetchBlob,
+			fetchPost: (uri) => this.quoteCache.get(uri, () => this.host.actions.fetchPost(uri)),
 			safeHref: (uri) => this.host.safeHref(uri),
 			formatDate: (iso) => this.host.formatDate(iso),
 			gifLocale: localeRegion(navigator.language),
@@ -823,9 +812,35 @@ export class LightboxReplies {
 	 * @param {string} handle
 	 * @returns {Promise<string|null>} 引けなければ null
 	 */
-	async resolveHandle(handle) {
-		const json = await this.fetchPublicJson(this.config.api.resolveHandlePath, {handle});
-		return json && typeof json.did === 'string' ? json.did : null;
+	resolveHandle(handle) {
+		return this.handleCache.get(String(handle).toLowerCase(), async () => {
+			const json = await this.fetchPublicJson(this.config.api.resolveHandlePath, {handle});
+			return json && typeof json.did === 'string' ? json.did : null;
+		});
+	}
+
+	/**
+	 * 入力欄が引く JSON。リンクカード (cardyb) の 2xx の応答だけを、開いている間覚える
+	 * (同じ URL を打ち直す・スレッドの別の投稿に書くたびに引き直さない)。GIF の検索などは覚えない
+	 * (本体も featured を開くたびに引き直す)。
+	 * @param {string} url
+	 * @param {number} timeoutMs
+	 * @param {AbortSignal} [signal]
+	 * @returns {Promise<{status: number, json: any}|null>}
+	 */
+	async fetchJsonCached(url, timeoutMs, signal) {
+		const cacheable = typeof url === 'string' && url.startsWith(this.config.compose.card.extractUrl);
+		if (cacheable) {
+			const cached = this.cardCache.peek(url);
+			if (cached !== undefined) {
+				return cached;
+			}
+		}
+		const result = await fetchJson(url, timeoutMs, signal);
+		if (cacheable && result && result.status >= 200 && result.status < 300 && result.json) {
+			this.cardCache.set(url, result);
+		}
+		return result;
 	}
 
 	/**
@@ -955,14 +970,16 @@ export class LightboxReplies {
 			anchorRow.item.replyCount += 1;
 		}
 		const branch = this.branches.get(target.anchorUri);
-		if (branch && branch.open && Array.isArray(branch.items)) {
-			const inserted = insertVisible(branch.items, branch.shown, item);
+		if (branch && Array.isArray(branch.items)) {
+			// 畳んであっても読んだ中身は残っている。そこへ入れて開く
+			const inserted = insertVisible(branch.items, branch.open ? branch.shown : branch.items.length, item);
 			branch.items = inserted.items;
 			branch.shown = inserted.shown;
+			branch.open = true;
 			this.renderBranch(target.anchorUri);
 		} else {
-			// 開いていなければ、投稿した 1 件だけを持って開く (取り直すと反映が間に合わないことがある)
-			this.branches.set(target.anchorUri, {open: true, items: [item], shown: 1});
+			// 読んでいなければ、投稿した 1 件だけを持って開く (取り直すと反映が間に合わないことがある)
+			this.branches.set(target.anchorUri, {open: true, items: [item], shown: 1, node: null});
 			this.renderBranch(target.anchorUri);
 		}
 		this.focusRowToggle(focusUri, target.anchorUri);
@@ -1099,10 +1116,9 @@ export class LightboxReplies {
 	buildRow(item, depth, anchorUri) {
 		const c = this.config.classes;
 		const text = this.config.text;
-		const routes = EXT_CONFIG.mediaGrid.bridge.routes;
 		const li = document.createElement('li');
 		li.className = depth === 0 ? c.item : `${c.item} ${c.child}`;
-		const toProfile = () => this.host.leaveTo({route: routes.profile, params: {name: item.handle}});
+		const toProfile = () => this.host.leaveTo(profileRoute(item.handle));
 
 		const avatar = document.createElement('img');
 		avatar.className = c.avatar;
@@ -1239,12 +1255,32 @@ export class LightboxReplies {
 					postUri: item.uri,
 					authorDid: item.authorDid,
 					handle: item.handle,
-					rkey: item.rkey
+					rkey: item.rkey,
+					seed: this.seedFor(item)
 				});
 			});
 			wrap.appendChild(button);
 		});
 		return wrap;
+	}
+
+	/**
+	 * 返信の画像から開き直すときにパネルへ渡す手がかり。返信の PostView と、
+	 * その返信の中を読んであれば (または返信が無ければ) その返信を起点にした一覧。
+	 * @param {Object} item ReplyItem
+	 * @returns {{view: Object, thread: ThreadResult|null}|null} 自分で送った返信など、ノードが無ければ null
+	 */
+	seedFor(item) {
+		const branch = this.branches.get(item.uri);
+		const node = (branch && branch.node) || item.node || null;
+		if (!node || !node.post) {
+			return null;
+		}
+		const json = threadFromNode(node);
+		return {
+			view: node.post,
+			thread: json ? {json, fromPublic: this.fromPublic, notFound: false} : null
+		};
 	}
 
 	/**
@@ -1432,10 +1468,7 @@ export class LightboxReplies {
 				return true;
 			},
 			onOpenPost: canOpen
-				? () => this.host.leaveTo({
-					route: EXT_CONFIG.mediaGrid.bridge.routes.post,
-					params: {name: item.handle, rkey: item.rkey}
-				})
+				? () => this.host.leaveTo(postRoute(item.handle, item.rkey))
 				: null
 		});
 		if (blurText) this.unblurOnFirstClick(card);
@@ -1457,10 +1490,7 @@ export class LightboxReplies {
 			formatDate: (iso) => this.host.formatDate(iso),
 			blurText,
 			onOpen: canOpen
-				? () => this.host.leaveTo({
-					route: EXT_CONFIG.mediaGrid.bridge.routes.post,
-					params: {name: model.handle, rkey: model.rkey}
-				})
+				? () => this.host.leaveTo(postRoute(model.handle, model.rkey))
 				: undefined
 		});
 		if (blurText) this.unblurOnFirstClick(card);
@@ -1514,7 +1544,6 @@ export class LightboxReplies {
 	buildMeta(row) {
 		const c = this.config.classes;
 		const text = this.config.text;
-		const routes = EXT_CONFIG.mediaGrid.bridge.routes;
 		const item = row.item;
 		const meta = document.createElement('div');
 		meta.className = c.meta;
@@ -1551,9 +1580,7 @@ export class LightboxReplies {
 			row.showButton = show;
 		}
 		const date = button(c.date, formatReplyDate(item.createdAt));
-		date.addEventListener('click', () => this.host.leaveTo({
-			route: routes.post, params: {name: item.handle, rkey: item.rkey}
-		}));
+		date.addEventListener('click', () => this.host.leaveTo(postRoute(item.handle, item.rkey)));
 		return meta;
 	}
 
@@ -1609,18 +1636,24 @@ export class LightboxReplies {
 	}
 
 	/**
-	 * 1 段目の返信の中を開く / 閉じる。閉じたら中身を捨て、次に開くときは取り直す。
+	 * 1 段目の返信の中を開く / 閉じる。**閉じても読んだ中身は捨てない** (開いている間は覚え、
+	 * 開き直しても引き直さない)。読めていなかった・失敗していたときだけ引く。
 	 * @param {string} anchorUri
 	 * @returns {void}
 	 */
 	toggleBranch(anchorUri) {
 		const branch = this.branches.get(anchorUri);
 		if (branch && branch.open) {
-			this.branches.delete(anchorUri);
+			branch.open = false;
 			this.renderBranch(anchorUri);
 			return;
 		}
-		this.branches.set(anchorUri, {open: true, items: null, shown: 0});
+		if (branch && Array.isArray(branch.items) && !branch.error) {
+			branch.open = true;
+			this.renderBranch(anchorUri);
+			return;
+		}
+		this.branches.set(anchorUri, {open: true, items: null, shown: 0, node: null});
 		this.renderBranch(anchorUri);
 		this.loadBranch(anchorUri);
 	}
@@ -1635,7 +1668,8 @@ export class LightboxReplies {
 		try {
 			const result = await this.fetchThread(anchorUri, this.config.depth.branch);
 			const branch = this.branches.get(anchorUri);
-			if (generation !== this.generation || !branch || !branch.open) {
+			// 待つ間に畳まれても、読んだ中身は覚えておく (開き直したときに引き直さない)
+			if (generation !== this.generation || !branch) {
 				return;
 			}
 			if (!result.json) {
@@ -1645,6 +1679,7 @@ export class LightboxReplies {
 			}
 			branch.items = flattenThreadBranch(result.json, anchorUri);
 			branch.shown = Math.min(this.config.pageSize, branch.items.length);
+			branch.node = result.json.thread || null;
 			this.renderBranch(anchorUri);
 		} catch (error) {
 			console.error('[XViewer] 返信の中の取得に失敗しました', error);

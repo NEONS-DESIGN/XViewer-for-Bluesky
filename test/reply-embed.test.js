@@ -9,7 +9,8 @@ import assert from 'node:assert';
 import {
 	buildMediaEmbed, buildSelfLabels, acceptImages, canSubmitComposer,
 	normalizeLanguages, suggestReplyLanguage, buildOwnEmbedView,
-	buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView, toQuoteViewRecord, buildVideoEmbed
+	buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView, toQuoteViewRecord, buildVideoEmbed,
+	measureText, evaluateSubmit, checkMediaRequest
 } from '../src/content/reply-embed.js';
 
 const LEGACY_MAX = 4;
@@ -258,4 +259,42 @@ test('buildOwnPostEmbedView: 動画の view は video.bsky.app の playlist と 
 	const bare = buildOwnPostEmbedView({images: [], video: uploadedVideo({alt: '', width: 0}), external: null, quoteView: null}, DID, CDN_WITH_VIDEO, 4);
 	assert.ok(!('alt' in bare));
 	assert.ok(!('aspectRatio' in bare));
+});
+
+test('measureText / evaluateSubmit: 数えた大きさから canSubmitComposer と同じ答えを出す', () => {
+	const cases = [['', 0], ['  ', 1], ['あ'.repeat(300), 0], ['あ'.repeat(301), 0], ['x'.repeat(10), 0]];
+	for (const [text, count] of cases) {
+		assert.deepStrictEqual(evaluateSubmit(measureText(text), count, LIMITS), canSubmitComposer(text, count, LIMITS));
+	}
+	assert.deepStrictEqual(measureText('あ👍'), {graphemes: 2, bytes: 7, blank: false});
+	assert.strictEqual(evaluateSubmit({graphemes: 1, bytes: 3001, blank: false}, 0, LIMITS).ok, false, 'バイトの上限');
+});
+
+test('checkMediaRequest: 画像は GIF・動画があると断る', () => {
+	assert.deepStrictEqual(checkMediaRequest('images', {imageCount: 3, hasVideo: false, hasGif: false}), {ok: true});
+	assert.deepStrictEqual(checkMediaRequest('images', {imageCount: 0, hasVideo: false, hasGif: true}),
+		{ok: false, noticeKey: 'gifExclusive', cause: 'gif'});
+	assert.deepStrictEqual(checkMediaRequest('images', {imageCount: 0, hasVideo: true, hasGif: false}),
+		{ok: false, noticeKey: 'videoExclusive', cause: 'video'});
+});
+
+test('checkMediaRequest: 動画は GIF・画像があると断り、2 本目は tooManyVideos', () => {
+	assert.deepStrictEqual(checkMediaRequest('video', {imageCount: 0, hasVideo: false, hasGif: false}), {ok: true});
+	assert.deepStrictEqual(checkMediaRequest('video', {imageCount: 0, hasVideo: false, hasGif: true}),
+		{ok: false, noticeKey: 'videoExclusive', cause: 'gif'});
+	assert.deepStrictEqual(checkMediaRequest('video', {imageCount: 1, hasVideo: false, hasGif: false}),
+		{ok: false, noticeKey: 'videoExclusive', cause: 'images'});
+	assert.deepStrictEqual(checkMediaRequest('video', {imageCount: 0, hasVideo: true, hasGif: false}),
+		{ok: false, noticeKey: 'tooManyVideos', cause: null});
+	assert.deepStrictEqual(checkMediaRequest('video', {imageCount: 0, hasVideo: false, hasGif: false, videoCount: 2}),
+		{ok: false, noticeKey: 'tooManyVideos', cause: null});
+});
+
+test('checkMediaRequest: GIF は動画・画像があると断り、GIF の差し替えは通す', () => {
+	assert.deepStrictEqual(checkMediaRequest('gif', {imageCount: 0, hasVideo: false, hasGif: true}), {ok: true});
+	assert.deepStrictEqual(checkMediaRequest('gif', {imageCount: 0, hasVideo: true, hasGif: false}),
+		{ok: false, noticeKey: 'videoExclusive', cause: 'video'});
+	assert.deepStrictEqual(checkMediaRequest('gif', {imageCount: 2, hasVideo: false, hasGif: false}),
+		{ok: false, noticeKey: 'gifExclusive', cause: 'images'});
+	assert.strictEqual(checkMediaRequest('other', {imageCount: 0, hasVideo: false, hasGif: false}).ok, false);
 });

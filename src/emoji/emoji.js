@@ -43,7 +43,8 @@ function mount() {
 		});
 		document.getElementById(EMOJI.rootId).appendChild(picker);
 		document.addEventListener('keydown', (event) => {
-			if (event.key === EMOJI.closeKey) {
+			// 検索欄の変換中 (IME) の Escape は変換の取り消しなので閉じない
+			if (event.key === EMOJI.closeKey && !event.isComposing) {
 				notifyParent({type: EMOJI.closeType});
 			}
 		});

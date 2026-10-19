@@ -1,6 +1,6 @@
 /**
- * パネルに重ねる画面 (reply-sheets.js / crop-sheet.js / language-sheet.js) が共通で使う、
- * 要素の組み立てと小さな道具。config も知らない。
+ * パネルに重ねる画面 (reply-sheets.js / crop-sheet.js / language-sheet.js など) とカード (embed-cards.js) が
+ * 共通で使う、要素の組み立てと小さな道具。config も知らない。
  */
 
 /**
@@ -29,6 +29,35 @@ export function createButton(doc, className, label) {
 	const button = createElement(doc, 'button', className, label);
 	button.type = 'button';
 	return button;
+}
+
+/**
+ * 失敗を知らせる 1 行 (role="alert")。最初は隠しておき、出すときに hidden を外す。
+ * @param {Document} doc 対象の文書
+ * @param {string} className クラス名
+ * @param {string} [text] 文言 (後から textContent で差し替えてもよい)
+ * @returns {HTMLElement}
+ */
+export function createAlert(doc, className, text) {
+	const alert = createElement(doc, 'p', className, text);
+	alert.setAttribute('role', 'alert');
+	alert.hidden = true;
+	return alert;
+}
+
+/**
+ * 押下を親へ伝えずに処理する。既定の動作 (カードの a の遷移など) も止める。
+ * カードの中に置くボタン (外す・ALT・再生) が、カード自身の押下を起こさないようにする。
+ * @param {HTMLElement} element 押す要素
+ * @param {(event: Event) => void} handler 押したときの処理
+ * @returns {void}
+ */
+export function onIsolatedClick(element, handler) {
+	element.addEventListener('click', (event) => {
+		event.preventDefault();
+		event.stopPropagation();
+		handler(event);
+	});
 }
 
 /**
