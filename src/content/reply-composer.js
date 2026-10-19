@@ -1,62 +1,67 @@
 /**
- * 返信の入力欄 1 つ分の部品。本文・添付 (画像 10 枚まで、GIF 1 つ、または動画 1 本)・ALT・切り抜き・
- * リンクカード・引用・コンテンツの警告・投稿言語と言語の提案・絵文字・貼り付けとドロップ・送信を持つ。
+ * 返信の入力欄 1 つ分の入れ物。投稿 (reply-post.js の ComposerPost) を並べ、共通の行 (言語の提案・「＋」・言語・
+ * 残りの文字数・送信) と送信を持つ。共通の行はアクティブな投稿のツールバーに並べる。
+ * 「＋」で続きの投稿を足し、空でない投稿が 2 件以上なら 1 回の applyWrites で返信の連なりとして送る。
  * 投稿への入力欄も、返信への返信の入力欄もこれを使う。
  *
  * **返信欄 (lightbox-replies.js) を import しない。** 送った結果・世代・送信中の印・
  * 言語の保存・通信は、返信欄が deps として渡す口だけを使う。書き込みは呼び出し層 (PostActions)
  * と橋渡しを通る。
  *
- * 依存: debug.js / icons.js / reply-text.js / reply-embed.js / reply-sheets.js /
- *       reply-attachments.js / reply-submit.js / sheet-dom.js / reply-extras.js / reply-links.js /
- *       gif-sheet.js / klipy.js / bridge-protocol.js / reply-video.js / video-sheet.js / video-rules.js
+ * 依存: debug.js / icons.js / bridge-protocol.js / reply-text.js / reply-embed.js / reply-sheets.js /
+ *       reply-attachments.js / reply-submit.js / sheet-dom.js / reply-post.js / reply-thread.js / record-cid.js
  */
 import {ExtDebug} from '../common/debug.js';
 import {createIcon} from '../common/icons.js';
-import {
-	detectRichText, buildFacets, resolveReplyRef, buildReplyRecord, primaryLanguage, fitTextareaHeight, countGraphemes
-} from './reply-text.js';
-import {
-	buildSelfLabels, acceptImages, canSubmitComposer, normalizeLanguages,
-	suggestReplyLanguage, buildPostEmbed, hasLabelableMedia, buildOwnPostEmbedView
-} from './reply-embed.js';
-import {
-	openAltSheet, openCropSheet, openLabelSheet, openLanguageSheet, openEmojiSheet, languageName
-} from './reply-sheets.js';
-import {renderAttachments, updateAttachmentCell, createIconButton} from './reply-attachments.js';
-import {createElement, createButton, formatText, browserLocale} from './sheet-dom.js';
-import {pickPastedMedia, hasMediaItems, runSubmit} from './reply-submit.js';
-import {ComposerExtras} from './reply-extras.js';
-import {shortenLinks} from './reply-links.js';
-import {openGifSheet} from './gif-sheet.js';
-import {GIF_ALT_PREFIX} from './klipy.js';
 import {BRIDGE_PROTOCOL} from '../common/bridge-protocol.js';
-import {ComposerVideo, readCaptionFile} from './reply-video.js';
-import {openVideoSheet} from './video-sheet.js';
-import {isVideoFile} from './video-rules.js';
+import {resolveReplyRef} from './reply-text.js';
+import {normalizeLanguages, suggestReplyLanguage} from './reply-embed.js';
+import {openLanguageSheet, languageName} from './reply-sheets.js';
+import {createIconButton} from './reply-attachments.js';
+import {createElement, createButton, formatText, browserLocale} from './sheet-dom.js';
+import {runSubmit, runThreadSubmit} from './reply-submit.js';
+import {ComposerPost, defaultLanguages} from './reply-post.js';
+import {
+	isEmptyPost, splitEmptyPosts, canAddPost, canSubmitThread, chainThreadRecords, chainTargets
+} from './reply-thread.js';
+import {computeRecordCid, nextTid} from './record-cid.js';
 
-/** GIF の検索の応答で中身を使ってよい HTTP の状態 */
-const GIF_OK_STATUS = 200;
+export {pickPastedMedia, hasMediaItems, uploadAll, runSubmit, runThreadSubmit} from './reply-submit.js';
+export {defaultLanguages} from './reply-post.js';
 
-/** 送る本文の末尾の空白 */
-const TRAILING_SPACE = /\s+$/u;
+/** TID の clock id が取れる値の数 (10 ビット) */
+const TID_CLOCK_ID_COUNT = 1024;
+
+/** Date.now() のミリ秒を TID のマイクロ秒にする倍率 */
+const MICROS_PER_MS = 1000;
+
+/** 送信ボタンの読み上げを「{件数} 件の返信を送信」にする件数の下限 */
+const THREAD_LABEL_MIN_POSTS = 2;
+
+/** 動きを減らす設定の問い合わせ */
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
 /**
- * GIF の ALT 文の上限 (書記素)。description は接頭辞 + ALT 文で、橋渡しの external の説明の上限に収める
+ * 動きを減らす設定か。読めなければ偽。
+ * @returns {boolean}
  */
-const GIF_ALT_MAX_GRAPHEMES = BRIDGE_PROTOCOL.postRecord.external.maxDescriptionGraphemes
-	- countGraphemes(GIF_ALT_PREFIX);
-
-export {pickPastedMedia, hasMediaItems, uploadAll, runSubmit} from './reply-submit.js';
+function prefersReducedMotion() {
+	try {
+		const view = document.defaultView;
+		return !!view && typeof view.matchMedia === 'function' && view.matchMedia(REDUCED_MOTION_QUERY).matches === true;
+	} catch (error) {
+		return false;
+	}
+}
 
 /**
  * 入力欄が使う口。返信欄 (lightbox-replies.js) が入力欄ごとに作って渡す。
  * @typedef {Object} ComposerDeps
- * @property {import('./post-actions.js').PostActions} actions 呼び出し層
+ * @property {import('./post-actions.js').PostActions} actions 呼び出し層 (createReply / createReplyThread)
  * @property {import('./reply-sheets.js').SheetHost|null} sheets 重ねる画面の持ち主
  * @property {(blob: Blob) => Promise<{ok: boolean, blob: Object|null, reason: string|null}>} uploadBlob
  * @property {typeof import('./image-prepare.js').prepareImage} prepareImage
- * @property {() => Object|null} getSelfProfile 自分のプロフィール (アバターに使う)
+ * @property {() => Object|null} getSelfProfile 自分のプロフィール (アバターと連なりの宛先のハンドルに使う)
  * @property {() => string|null} getSessionDid ログイン中の DID
  * @property {(generation: number) => boolean} isCurrent 応答を使ってよい世代か
  * @property {() => number} getGeneration 今の世代
@@ -64,7 +69,8 @@ export {pickPastedMedia, hasMediaItems, uploadAll, runSubmit} from './reply-subm
  * @property {(posting: boolean) => void} setPosting
  * @property {(result: {uri: string, cid: string}, record: Object,
  *   target: import('./lightbox-replies.js').ReplyTarget, embedView: Object|null) => void} onPosted
- *   送れた返信を一覧へ入れる
+ *   送れた返信を一覧へ入れる (連なりなら送った順に 1 件ずつ呼ぶ)
+ * @property {() => void} reload 返信欄が一覧を取り直す (連なりが届いたか確かめられなかったとき)
  * @property {(handle: string) => Promise<string|null>} resolveHandle メンションを DID に引く
  * @property {string[]|null} parentLangs 返信先の record.langs (言語の提案に使う)
  * @property {() => Promise<string[]>} loadLanguages 覚えている投稿言語
@@ -83,22 +89,47 @@ export {pickPastedMedia, hasMediaItems, uploadAll, runSubmit} from './reply-subm
  */
 
 /**
- * メディアの排他の知らせの原因。GIF・動画・画像のどれがあるために断ったか。
- * @typedef {'gif'|'video'|'images'} ExclusiveCause
+ * 連なりの送信の進み具合を、全投稿を通した 1 つの番号にまとめる。
+ * 画像・字幕は送る前に数が分かるため最初から全体に入れ、GIF・カードのサムネイルは record を組むとき
+ * (すべての画像を送り終えた後) に分かるため、分かった時点で全体に足す。
+ * @param {(current: number, total: number) => void} show いま送っている番号 (1 始まり) と全体の数を出す
+ * @returns {{blob: (current: number, total: number) => void,
+ *   thumbnail: (index: number, done: number, total: number) => void}}
+ *   blob は runThreadSubmit の進み具合 (全投稿を通した画像の番号)、thumbnail は投稿 index のサムネイルの進み具合
+ *   (done は送り終えた数、total はその投稿のサムネイルの数)
  */
-
-/**
- * 覚えた言語が無いときの既定。ブラウザの言語の主タグ (選べる一覧にあるときだけ)。
- * @param {string|undefined} locale ブラウザの言語
- * @param {{maxLanguages: number, languageCodes: string[]}} compose
- * @returns {string[]}
- */
-export function defaultLanguages(locale, compose) {
-	return normalizeLanguages([primaryLanguage(locale)], compose.maxLanguages, compose.languageCodes);
+export function createThreadProgress(show) {
+	let blobTotal = 0;
+	let thumbTotal = 0;
+	/** @type {Map<number, number>} 投稿ごとの、その投稿より前のサムネイルの数 */
+	const thumbBase = new Map();
+	return {
+		blob(current, total) {
+			blobTotal = total;
+			show(current, blobTotal + thumbTotal);
+		},
+		thumbnail(index, done, total) {
+			if (!thumbBase.has(index)) {
+				thumbBase.set(index, thumbTotal);
+				thumbTotal += total;
+			}
+			// done は送り終えた数。送っている最中のものを 1 始まりで数える (画像と同じ見せ方)
+			const current = blobTotal + thumbBase.get(index) + Math.min(Math.max(done, 0) + 1, total);
+			show(current, blobTotal + thumbTotal);
+		}
+	};
 }
 
 /**
- * 入力欄 1 つ分。
+ * 送り始めたときのフォーカスの位置。
+ * @typedef {Object} SubmitFocus
+ * @property {import('./reply-post.js').ComposerPost|null} post 本文の欄にフォーカスがあった投稿
+ * @property {boolean} inside フォーカスがこの入力欄の中 (送信ボタンなど) にあったか
+ * @property {number} resets 送り始めたときの resetCount
+ */
+
+/**
+ * 入力欄 1 つ分 (投稿の入れ物)。
  */
 export class ReplyComposer {
 	/**
@@ -113,14 +144,10 @@ export class ReplyComposer {
 		this.deps = deps;
 		this.target = target;
 		this.locale = browserLocale(this.compose.emoji.query.localeJa);
-		/** @type {import('./reply-attachments.js').Attachment[]} */
-		this.attachments = [];
-		/** 取り込みで縮小している最中の枚数 (枚数の上限に数え、送信ボタンを止める) */
-		this.importing = 0;
-		/** 切り抜き直しで縮小している最中の枚数 (枚数には数えず、送信ボタンだけを止める) */
-		this.recropping = 0;
-		/** 自己ラベルの選択 */
-		this.labels = {adult: null, graphic: false};
+		/** @type {ComposerPost[]} 並べている投稿 */
+		this.posts = [];
+		/** アクティブな投稿の位置 (共通の行を並べる投稿) */
+		this.activeIndex = 0;
 		/** @type {string[]} 選んでいる投稿言語 */
 		this.languages = defaultLanguages(navigator.language, this.compose);
 		/** 利用者が言語を選び直したか (覚えた言語の読み込みで上書きしない) */
@@ -129,62 +156,33 @@ export class ReplyComposer {
 		this.suggestDismissed = false;
 		/** @type {string|null} 出している言語の提案 */
 		this.suggestCode = null;
-		/**
-		 * 出ている 1 行がメディアの排他の知らせなら、その原因 (それが無くなったら消す)。他の知らせは null
-		 * @type {ExclusiveCause|null}
-		 */
-		this.noticeExclusive = null;
-		/** @type {HTMLElement|null} 入力欄の末尾の 1 行 (失敗・受け取れなかった画像の知らせ) */
+		/** @type {HTMLElement|null} 入れ物の末尾の 1 行 (返信の作成の失敗の知らせ・空の投稿の問い合わせ) */
 		this.noticeEl = null;
+		/** @type {HTMLElement|null} 出している空の投稿の問い合わせ (noticeEl と同じ要素) */
+		this.skipPromptEl = null;
 		/** この入力欄が送信中か */
 		this.busy = false;
 		this.destroyed = false;
-		/** 直前の操作が文字の貼り付けか (次の input の 1 回だけ真として extras へ渡す) */
-		this.pastedPending = false;
-		/** GIF・リンクカード・引用の状態 */
-		this.extras = this.createExtras();
-		/** 動画 1 本の状態 (組み立ての中で参照するため、build より前に作る) */
-		this.video = this.createVideo();
+		/** rkey (TID) の clock id。入力欄ごとに 1 つ決める */
+		this.clockId = Math.floor(Math.random() * TID_CLOCK_ID_COUNT);
+		/** @type {string|null} 最後に作った TID (次の TID をこれより大きくする) */
+		this.lastTid = null;
+		/** 送れた後に入力欄を空に戻した回数 (送信の後のフォーカスの戻し方を決めるのに使う) */
+		this.resetCount = 0;
 		this.build(placeholder);
 		this.applyStoredLanguages();
 	}
 
 	/**
-	 * GIF・リンクカード・引用の状態を作る。口は呼ぶたびに this.deps から引く (差し替えに追随する)。
-	 * @returns {ComposerExtras}
+	 * アクティブな投稿。
+	 * @returns {ComposerPost|null}
 	 */
-	createExtras() {
-		const deps = () => this.deps;
-		return new ComposerExtras(this.config, {
-			fetchJson: (url, timeoutMs) => deps().fetchJson(url, timeoutMs),
-			fetchBlob: (url, timeoutMs) => deps().fetchBlob(url, timeoutMs),
-			resolveHandle: (handle) => deps().resolveHandle(handle),
-			fetchPost: (uri) => deps().fetchPost(uri),
-			prepareImage: (blob, crop, rules) => deps().prepareImage(blob, crop, rules),
-			uploadBlob: (blob) => deps().uploadBlob(blob),
-			safeHref: (uri) => deps().safeHref(uri),
-			formatDate: (iso) => deps().formatDate(iso),
-			blurText: (labels) => (typeof deps().blurText === 'function' ? deps().blurText(labels) : null),
-			onChange: () => this.onExtrasChange()
-		});
+	get active() {
+		return this.posts[this.activeIndex] || null;
 	}
 
 	/**
-	 * 動画 1 本の状態を作る。口は呼ぶたびに this.deps から引く (差し替えに追随する)。
-	 * @returns {ComposerVideo}
-	 */
-	createVideo() {
-		const deps = () => this.deps;
-		return new ComposerVideo(this.config, {
-			uploadVideo: (blob, onProgress) => deps().uploadVideo(blob, onProgress),
-			cancelVideoUpload: (id) => deps().cancelVideoUpload(id),
-			readMeta: (file) => deps().readVideoMeta(file),
-			onChange: () => this.onVideoChange()
-		});
-	}
-
-	/**
-	 * 入力欄の要素を組む。
+	 * 入れ物と共通の行を組み、投稿を 1 件入れる。
 	 * @param {string} placeholder
 	 * @returns {void}
 	 */
@@ -193,304 +191,260 @@ export class ReplyComposer {
 		const cc = this.compose.classes;
 		const t = this.compose.text;
 		const doc = document;
-		const el = createElement(doc, 'div', `${c.form} ${cc.composer}`);
-		const row = createElement(doc, 'div', c.formRow);
-		const avatar = createElement(doc, 'img', c.formAvatar);
-		avatar.alt = '';
-		const profile = this.deps.getSelfProfile();
-		if (profile && profile.avatarUrl) avatar.src = profile.avatarUrl;
-		else avatar.hidden = true;
-		const textarea = createElement(doc, 'textarea', c.input);
-		textarea.rows = 1;
-		textarea.placeholder = placeholder;
-		textarea.setAttribute('aria-label', placeholder);
-		// 枠と余白は外側の入れ物が持つ (欄に余白があるとスクロール時に文字が枠に接する)
-		const frame = createElement(doc, 'div', c.inputFrame);
-		frame.append(textarea);
-		row.append(avatar, frame);
-
-		const attachments = createElement(doc, 'ul', cc.attachments);
-		attachments.setAttribute('aria-label', t.attachments);
-		attachments.hidden = true;
-		// 動画のプレビュー (中身は video が描く。描くたびに子を入れ替えるため専用の入れ物にする)
-		const videoPreview = createElement(doc, 'div', cc.video);
-		videoPreview.hidden = true;
-		// GIF・リンクカード・引用のプレビュー (中身は extras が描く)
-		const embedPreview = createElement(doc, 'div', cc.embedPreview);
-		embedPreview.hidden = true;
-		const labelsButton = createButton(doc, cc.labelsButton, '');
-		labelsButton.hidden = true;
+		const el = createElement(doc, 'div', cc.thread);
 		const suggest = createElement(doc, 'div', cc.suggest);
 		suggest.hidden = true;
 		const suggestText = createElement(doc, 'span', cc.suggestText);
 		const suggestAccept = createButton(doc, cc.suggestAccept, t.suggestAccept);
 		const suggestDismiss = createIconButton(doc, cc.suggestDismiss, 'close', t.suggestDismiss);
 		suggest.append(suggestText, suggestAccept, suggestDismiss);
-
-		const toolbar = createElement(doc, 'div', `${c.formFoot} ${cc.toolbar}`);
-		const fileInput = createElement(doc, 'input', cc.fileInput);
-		fileInput.type = 'file';
-		fileInput.multiple = true;
-		fileInput.accept = this.compose.acceptImageTypes.concat(this.compose.video.acceptTypes).join(',');
-		fileInput.hidden = true;
-		fileInput.tabIndex = -1;
-		const imageTool = createIconButton(doc, cc.tool, 'image', t.addImage);
-		const gifTool = createIconButton(doc, cc.tool, 'gifBox', t.addGif);
-		const emojiTool = createIconButton(doc, cc.tool, 'mood', t.emoji);
+		// 「＋」は足せるときだけツールバーの言語の左に置く (placeAddButton)
+		const addButton = createIconButton(doc, `${cc.tool} ${cc.addPost}`, 'add', t.addPost);
+		addButton.hidden = true;
 		const languageButton = createButton(doc, cc.languageButton, '');
 		languageButton.title = t.language;
 		const languageText = createElement(doc, 'span', cc.languageText);
 		languageButton.append(createIcon(doc, 'translate'), languageText);
 		const remaining = createElement(doc, 'span', c.remaining);
 		const submit = createButton(doc, c.submit, this.config.text.submit);
-		toolbar.append(fileInput, imageTool, gifTool, emojiTool, languageButton, remaining, submit);
-		el.append(row, attachments, videoPreview, embedPreview, labelsButton, suggest, toolbar);
-
 		Object.assign(this, {
-			el, avatar, textarea, attachmentsEl: attachments, videoEl: videoPreview, embedEl: embedPreview, labelsButton,
-			suggestEl: suggest,
-			suggestText, fileInput, imageTool, gifTool, emojiTool, languageButton, languageText, remaining,
-			submitButton: submit
+			el, suggestEl: suggest, suggestText, addButton, languageButton, languageText, remaining, submitButton: submit
 		});
+
+		const post = this.createPost(placeholder);
+		this.posts = [post];
+		this.activeIndex = 0;
+		el.append(post.el);
+		this.mountShared(post);
 		this.bindEvents(suggestAccept, suggestDismiss);
-		this.renderLabels();
 		this.renderLanguages();
 		this.sync();
 	}
 
 	/**
-	 * 要素にリスナーを付ける。
+	 * 投稿を 1 件作る。投稿からの知らせはこの入れ物が受ける。
+	 * @param {string} placeholder
+	 * @returns {ComposerPost}
+	 */
+	createPost(placeholder) {
+		const post = new ComposerPost(this.config, this.deps, {
+			onChange: () => this.sync(),
+			onActivate: (one) => this.onActivate(one),
+			onSubmit: () => this.submit(),
+			onRemove: (one) => this.removePost(one),
+			getLanguages: () => this.languages,
+			isBusy: () => this.busy
+		}, placeholder);
+		// 本文を直したら空の投稿の問い合わせを引っ込める
+		post.textarea.addEventListener('input', () => this.hideSkipPrompt());
+		return post;
+	}
+
+	/**
+	 * 共通の行 (言語・残り・送信と言語の提案) を投稿のツールバーへ並べる。「＋」は placeAddButton が置く。
+	 * @param {ComposerPost} post
+	 * @returns {void}
+	 */
+	mountShared(post) {
+		post.mountShared([this.languageButton, this.remaining, this.submitButton], this.suggestEl);
+	}
+
+	/**
+	 * 「＋」を出す / 外す。出すときはアクティブな投稿のツールバーの言語の左に置く。
+	 * 隠すときは要素ごと外す (投稿が 1 件で空のあいだのツールバーを今までと同じ並びに保つ)。
+	 * 置き場所が変わるときだけ動かす (押している最中のボタンを付け外ししないため)。
+	 * @param {boolean} show
+	 * @returns {void}
+	 */
+	placeAddButton(show) {
+		const button = this.addButton;
+		button.hidden = !show;
+		try {
+			if (!show) {
+				if (button.parentNode) button.remove();
+				return;
+			}
+			const post = this.active;
+			if (!post) return;
+			const toolbar = post.toolbarEl;
+			if (button.parentNode !== toolbar && toolbar.contains(this.languageButton)) {
+				toolbar.insertBefore(button, this.languageButton);
+			}
+		} catch (error) {
+			console.error('[XViewer] 投稿を足すボタンを置けませんでした', error);
+		}
+	}
+
+	/**
+	 * 投稿の中にフォーカスが入った。その投稿をアクティブにする。
+	 * @param {ComposerPost} post
+	 * @returns {void}
+	 */
+	onActivate(post) {
+		if (this.destroyed) return;
+		const index = this.posts.indexOf(post);
+		if (index === -1 || index === this.activeIndex) return;
+		this.setActive(index);
+	}
+
+	/**
+	 * index の投稿をアクティブにし、共通の行をその投稿のツールバーへ移す。
+	 * 共通の行を付け直すのはアクティブな投稿が変わったときだけ (付け直すと押している最中のボタンが外れる)。
+	 * @param {number} index
+	 * @returns {void}
+	 */
+	setActive(index) {
+		if (this.destroyed || index < 0 || index >= this.posts.length) return;
+		const previous = this.active;
+		const next = this.posts[index];
+		this.activeIndex = index;
+		if (previous !== next) {
+			if (previous) previous.mountShared([]);
+			this.addButton.remove();
+			this.mountShared(next);
+		}
+		this.sync();
+		if (previous !== next) this.reveal(next.el);
+	}
+
+	/**
+	 * 「＋」: アクティブな投稿のすぐ後ろに空の投稿を入れ、その本文の欄へフォーカスを移す。
+	 * 足せる条件 (canAddPost) を満たさないとき・送信中は何もしない。
+	 * @returns {void}
+	 */
+	addPost() {
+		if (this.destroyed || this.busy) return;
+		const summaries = this.posts.map((one) => one.summary());
+		if (!canAddPost(summaries, this.activeIndex, this.compose.thread.maxPosts)) return;
+		this.hideSkipPrompt();
+		const post = this.createPost(this.compose.text.addPlaceholder);
+		const index = this.activeIndex + 1;
+		try {
+			const before = index < this.posts.length
+				? this.posts[index].el
+				: (this.noticeEl && this.noticeEl.parentNode === this.el ? this.noticeEl : null);
+			this.el.insertBefore(post.el, before);
+		} catch (error) {
+			console.error('[XViewer] 投稿を足せませんでした', error);
+			post.destroy();
+			return;
+		}
+		this.posts.splice(index, 0, post);
+		this.setActive(index);
+		post.focus();
+	}
+
+	/**
+	 * 投稿を 1 件消す (「×」)。投稿が 1 件のとき・送信中は何もしない。
+	 * 消した投稿は destroy (動画のアップロードを取り消し、預かった画像の URL を捨て、その投稿の重ねる画面を閉じる)。
+	 * アクティブな投稿を消したら、前 (無ければ次) の投稿をアクティブにして本文の欄へフォーカスを移す。
+	 * @param {ComposerPost} post
+	 * @returns {void}
+	 */
+	removePost(post) {
+		if (this.destroyed || this.busy || this.posts.length < 2) return;
+		const index = this.posts.indexOf(post);
+		if (index === -1) return;
+		const wasActive = index === this.activeIndex;
+		this.hideSkipPrompt();
+		post.mountShared([]);
+		if (wasActive) this.addButton.remove();
+		this.posts.splice(index, 1);
+		post.destroy();
+		if (wasActive) {
+			this.activeIndex = index > 0 ? index - 1 : 0;
+			this.mountShared(this.active);
+		} else if (index < this.activeIndex) {
+			this.activeIndex -= 1;
+		}
+		this.sync();
+		if (wasActive && this.active) {
+			this.reveal(this.active.el);
+			this.active.focus();
+		}
+	}
+
+	/**
+	 * 共通の行の要素にリスナーを付ける。
 	 * @param {HTMLButtonElement} suggestAccept 提案の「はい」
 	 * @param {HTMLButtonElement} suggestDismiss 提案の「×」
 	 * @returns {void}
 	 */
 	bindEvents(suggestAccept, suggestDismiss) {
-		this.textarea.addEventListener('input', () => {
-			const pasted = this.pastedPending;
-			this.pastedPending = false;
-			this.notifyTextChange(pasted);
-			this.sync();
-		});
-		this.textarea.addEventListener('keydown', (event) => {
-			// 打鍵は貼り付けより前に届く。何も貼られなかった貼り付けの印を次の入力へ持ち越さない
-			this.pastedPending = false;
-			if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) {
-				event.preventDefault();
-				this.submit();
-			}
-		});
-		this.textarea.addEventListener('paste', (event) => this.onPaste(event));
-		this.el.addEventListener('dragover', (event) => this.onDragOver(event));
-		this.el.addEventListener('dragleave', (event) => this.onDragLeave(event));
-		this.el.addEventListener('drop', (event) => this.onDrop(event));
 		this.submitButton.addEventListener('click', () => this.submit());
-		this.imageTool.addEventListener('click', () => {
-			if (this.busy) return;
-			if (this.extras.gif) {
-				this.showNotice([this.compose.text.gifExclusive], 'gif');
-				return;
-			}
-			// 動画は 1 本までで画像とも並べないため、選ぶ画面を開いても取り込めるものが無い
-			if (this.video.isActive()) {
-				this.showNotice([this.compose.text.videoExclusive], 'video');
-				return;
-			}
-			this.fileInput.click();
-		});
-		this.gifTool.addEventListener('click', () => this.openGif());
-		this.fileInput.addEventListener('change', () => {
-			const files = Array.from(this.fileInput.files || []);
-			// 同じファイルを続けて選んでも change が出るよう空にする
-			this.fileInput.value = '';
-			this.addFiles(files);
-		});
-		this.emojiTool.addEventListener('click', () => this.openEmoji());
+		this.addButton.addEventListener('click', () => this.addPost());
 		this.languageButton.addEventListener('click', () => this.openLanguages());
-		this.labelsButton.addEventListener('click', () => this.openLabels());
 		suggestAccept.addEventListener('click', () => this.acceptSuggestion());
 		suggestDismiss.addEventListener('click', () => {
 			this.suggestDismissed = true;
 			this.renderSuggest();
-			this.textarea.focus({preventScroll: true});
+			this.focus();
 		});
 	}
 
 	/**
-	 * 本文の欄へフォーカスを移す。
+	 * アクティブな投稿の本文の欄へフォーカスを移す。
 	 * @returns {void}
 	 */
 	focus() {
-		this.textarea.focus({preventScroll: true});
+		const post = this.active;
+		if (post) post.focus();
 	}
 
 	/**
-	 * 書きかけがあるか (本文・添付・GIF・動画が 1 つでもある)。Escape でライトボックスを閉じさせない判定に使う。
+	 * 書きかけがあるか (どれかの投稿に本文・添付・GIF・動画が 1 つでもある)。
+	 * Escape でライトボックスを閉じさせない判定に使う。
 	 * @returns {boolean}
 	 */
 	hasDraft() {
 		if (this.destroyed || !this.el.isConnected) return false;
-		return this.textarea.value.trim() !== '' || this.attachments.length > 0 || this.isPreparing()
-			|| this.extras.gif !== null || this.video.isActive();
+		return this.posts.some((post) => post.hasDraft());
 	}
 
 	/**
-	 * 画像の枚数 (取り込み中を含む)。画像だけの判定 (枚数の上限・ラベル) に使う。
-	 * @returns {number}
-	 */
-	imageCount() {
-		return this.attachments.length + this.importing;
-	}
-
-	/**
-	 * メディアの数 (画像の枚数 + 動画)。GIF・カードとの排他と送信できる条件に使う。
-	 * @returns {number}
-	 */
-	mediaCount() {
-		return this.imageCount() + (this.video.isActive() ? 1 : 0);
-	}
-
-	/**
-	 * コンテンツの警告を付けられるか (画像・GIF・動画・送るカードのどれかがある)。引用だけでは付けない。
-	 * @returns {boolean}
-	 */
-	isLabelable() {
-		return hasLabelableMedia({
-			imageCount: this.imageCount(),
-			hasGif: this.extras.gif !== null,
-			hasCard: Boolean(this.extras.sendableCard(this.mediaCount())),
-			hasVideo: this.video.isActive()
-		});
-	}
-
-	/**
-	 * 送るときの本文 (リンクを短い形にしたもの)。残りの文字数と送信できる条件はこれで数える。
-	 * @param {string} value 入力欄の本文
-	 * @returns {string}
-	 */
-	countedText(value) {
-		const facets = buildFacets(detectRichText(value), new Map());
-		return shortenLinks(value, facets, this.compose.links).text;
-	}
-
-	/**
-	 * 本文のリンクを extras へ渡す (カードと引用の提案)。渡すのは短くする前の本文。
-	 * @param {boolean} pasted 貼り付けの直後か
-	 * @returns {void}
-	 */
-	notifyTextChange(pasted) {
-		if (this.destroyed) return;
-		try {
-			const value = this.textarea.value;
-			const links = detectRichText(value).links.map((link) => link.uri);
-			this.extras.onTextChange(value, links, pasted === true);
-		} catch (error) {
-			console.error('[XViewer] 本文のリンクを読めませんでした', error);
-		}
-	}
-
-	/**
-	 * extras の状態が変わった。プレビュー・ラベル・送信ボタンを合わせる。
-	 * @returns {void}
-	 */
-	onExtrasChange() {
-		if (this.destroyed) return;
-		if (this.extras.gif === null) this.clearExclusiveNotice('gif');
-		this.renderExtras();
-		this.renderLabels();
-		this.sync();
-	}
-
-	/**
-	 * 動画の状態が変わった。動画のプレビュー・カードの出し入れ・ラベル・送信ボタンを合わせる。
-	 * @returns {void}
-	 */
-	onVideoChange() {
-		if (this.destroyed) return;
-		if (!this.video.isActive()) this.clearExclusiveNotice('video');
-		this.renderVideo();
-		this.renderExtras();
-		this.renderLabels();
-		this.sync();
-	}
-
-	/**
-	 * 動画のプレビューを描き直す。× で外した後は、押した × が消えるため本文の欄へフォーカスを移す。
-	 * @returns {void}
-	 */
-	renderVideo() {
-		if (this.destroyed) return;
-		this.video.render(this.videoEl, {
-			onAlt: (button) => this.openVideoAlt(button),
-			onRemoved: () => {
-				if (!this.destroyed) this.focus();
-			}
-		}, this.busy);
-	}
-
-	/**
-	 * GIF・リンクカード・引用のプレビューを描き直す。送信中に描いたボタンは押せなくしておく。
-	 * × で外した後は、押した × が消えるため本文の欄へフォーカスを移す。
-	 * @returns {void}
-	 */
-	renderExtras() {
-		if (this.destroyed) return;
-		this.extras.render(this.embedEl, this.mediaCount(), {
-			onGifAlt: (button) => this.openGifAlt(button),
-			onRemoved: () => {
-				if (!this.destroyed) this.focus();
-			}
-		});
-		if (!this.busy) return;
-		try {
-			for (const control of this.embedEl.querySelectorAll(this.compose.busyControls)) control.disabled = true;
-		} catch (error) {
-			console.error('[XViewer] 入力欄のプレビューを送信中の表示にできませんでした', error);
-		}
-	}
-
-	/**
-	 * 送る前の準備が終わっていないか (画像の取り込み・切り抜き直しの縮小、動画の読み取り・アップロード・処理・失敗)。
-	 * @returns {boolean}
-	 */
-	isPreparing() {
-		return this.importing > 0 || this.recropping > 0 || this.video.isPending();
-	}
-
-	/**
-	 * 残りの文字数・送信ボタン・欄の高さを今の状態に合わせる。
+	 * 残りの文字数・送信ボタン・「＋」「×」・投稿の濃淡と、各投稿の GIF ボタンと欄の高さを今の状態に合わせる。
 	 * @returns {void}
 	 */
 	sync() {
+		const post = this.active;
+		if (!post || !this.remaining) return;
 		const c = this.config.classes;
-		// contentCount はメディアの数を含んだ合計 (GIF・送るカード・取得できた引用を足したもの)
-		const check = canSubmitComposer(this.countedText(this.textarea.value),
-			this.extras.contentCount(this.mediaCount()), this.config.limits);
+		const summaries = [];
+		const checks = [];
+		for (const one of this.posts) {
+			one.sync();
+			const summary = one.summary();
+			summaries.push(summary);
+			checks.push({empty: isEmptyPost(summary), ok: one.check().ok});
+		}
+		this.renderPosts();
+		this.placeAddButton(canAddPost(summaries, this.activeIndex, this.compose.thread.maxPosts));
+		const check = post.check();
 		this.remaining.textContent = `${this.config.text.remaining} ${check.remaining}`;
 		this.remaining.classList.toggle(c.warn, check.remaining <= this.config.warnRemaining);
-		this.submitButton.disabled = !check.ok || this.busy || this.isPreparing() || this.deps.isPosting();
-		this.gifTool.disabled = this.busy || this.mediaCount() > 0 || this.isPreparing();
-		this.fitHeight();
+		this.submitButton.disabled = !canSubmitThread(checks) || this.busy || this.deps.isPosting();
+		const filled = checks.filter((one) => !one.empty).length;
+		// 送信中は外す (見える「送信中 2/5」を読ませる)
+		if (filled >= THREAD_LABEL_MIN_POSTS && !this.busy) {
+			this.submitButton.setAttribute('aria-label', formatText(this.compose.text.submitThread, {count: filled}));
+		} else {
+			this.submitButton.removeAttribute('aria-label');
+		}
 	}
 
 	/**
-	 * 本文の欄の高さを中身に合わせる。DOM に入る前は scrollHeight が 0 で、
-	 * そのまま当てると欄が潰れる (2026-10-18 実機で確認)。入れた後に呼び直す。
+	 * 投稿の濃淡と「×」を合わせる。投稿が 2 件以上のときだけ、アクティブでない投稿を薄くし、
+	 * アクティブな投稿に「×」を出す。
 	 * @returns {void}
 	 */
-	fitHeight() {
-		const textarea = this.textarea;
-		if (!textarea.isConnected) return;
-		try {
-			const style = window.getComputedStyle(textarea);
-			const border = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
-			// 一度高さを外してから測ると、消して短くなったときも縮む
-			textarea.style.height = '';
-			const fitted = fitTextareaHeight(textarea.scrollHeight, border, parseFloat(style.maxHeight));
-			textarea.style.height = `${fitted.height}px`;
-			textarea.style.overflowY = fitted.scroll ? 'auto' : 'hidden';
-		} catch (error) {
-			console.error('[XViewer] 入力欄の高さの調整に失敗しました', error);
-		}
+	renderPosts() {
+		const multiple = this.posts.length >= 2;
+		this.el.classList.toggle(this.compose.classes.threadMulti, multiple);
+		this.posts.forEach((one, index) => {
+			const active = index === this.activeIndex;
+			one.setActive(active || !multiple);
+			one.setRemovable(multiple && active);
+		});
 	}
 
 	/**
@@ -545,278 +499,7 @@ export class ReplyComposer {
 		this.languages = [this.suggestCode];
 		this.languagesTouched = true;
 		this.renderLanguages();
-		this.textarea.focus({preventScroll: true});
-	}
-
-	/**
-	 * ラベルのボタンの文言を今の選択に合わせる。画像・GIF・送るカードのどれかがあるときだけ出し、
-	 * どれも無くなったら選択を空に戻す。
-	 * @returns {void}
-	 */
-	renderLabels() {
-		const doc = this.labelsButton.ownerDocument;
-		const t = this.compose.text;
-		const labelable = this.isLabelable();
-		if (!labelable) this.labels = {adult: null, graphic: false};
-		const values = [];
-		if (this.labels.adult) values.push(this.labels.adult);
-		if (this.labels.graphic) values.push(this.compose.labels.graphic);
-		const names = values.map((value) => t.labelNames[value] || value).join(t.listSeparator);
-		this.labelsButton.hidden = !labelable;
-		this.labelsButton.classList.toggle(this.compose.classes.labelsActive, values.length > 0);
-		this.labelsButton.textContent = '';
-		this.labelsButton.append(createIcon(doc, 'warning'), createElement(doc, 'span', '', names || t.labels));
-		this.labelsButton.setAttribute('aria-label', names ? formatText(t.labelsCurrent, {names}) : t.labelTitle);
-	}
-
-	/**
-	 * 添付のプレビューを描き直す。画像の有無でカードの出し入れが変わるため、extras のプレビューも描き直す。
-	 * @returns {void}
-	 */
-	renderAttachments() {
-		renderAttachments(this.attachmentsEl, this.attachments, this.compose, {
-			onAlt: (attachment, button) => this.openAlt(attachment, button),
-			onCrop: (attachment, button) => this.openCrop(attachment, button),
-			onRemove: (attachment) => this.removeAttachment(attachment)
-		}, this.busy);
-		this.renderExtras();
-		this.renderLabels();
-	}
-
-	/**
-	 * 選んだ・貼り付けた・落としたファイルを取り込む。受け取れないものは 1 行で知らせる。
-	 * 動画と画像に分け、メディアは 1 種類だけにする。動画は GIF・画像 (取り込み中と同じ回の画像を含む) が
-	 * あれば取り込まず、1 本まで。画像は動画か GIF があれば取り込まない。
-	 * 受け付けない形式の動画 (.mkv など) は画像として扱わず、動画の形式の知らせを出す。
-	 * @param {File[]|FileList} files
-	 * @returns {Promise<void>}
-	 */
-	async addFiles(files) {
-		if (this.destroyed || this.busy) return;
-		const t = this.compose.text;
-		const list = Array.from(files || []);
-		const videoTypes = this.compose.video.acceptTypes;
-		const videoPrefix = this.compose.video.typePrefix;
-		const isOtherVideo = (file) => !isVideoFile(file, videoTypes)
-			&& !!file && typeof file.type === 'string' && file.type.startsWith(videoPrefix);
-		const videos = list.filter((file) => isVideoFile(file, videoTypes));
-		const unsupportedVideos = list.filter(isOtherVideo);
-		const images = list.filter((file) => !isVideoFile(file, videoTypes) && !isOtherVideo(file));
-		const notices = unsupportedVideos.length > 0 ? [t.videoUnsupported] : [];
-		/** @type {ExclusiveCause|null} 動画を断った原因 (排他の知らせだけのとき、それが無くなったら消す) */
-		let cause = null;
-		if (videos.length > 0) {
-			if (this.extras.gif || this.imageCount() > 0 || images.length > 0) {
-				notices.push(t.videoExclusive);
-				cause = this.extras.gif ? 'gif' : 'images';
-			} else if (videos.length > 1 || this.video.isActive()) {
-				notices.push(t.tooManyVideos);
-			} else {
-				await this.addVideo(videos[0], notices);
-				return;
-			}
-		}
-		if (images.length === 0) {
-			this.showNotice(notices, notices.length === 1 ? cause : null);
-			return;
-		}
-		if (this.video.isActive()) {
-			if (notices.indexOf(t.videoExclusive) === -1) notices.push(t.videoExclusive);
-			this.showNotice(notices, notices.length === 1 ? 'video' : null);
-			return;
-		}
-		if (this.extras.gif) {
-			// GIF があるとき出す排他の行はどれも GIF が原因 (動画も GIF のために断っている)。
-			// 形式の知らせが混じるときは、GIF を外しても消さない
-			const gifCause = notices.indexOf(t.videoUnsupported) === -1 ? 'gif' : null;
-			this.showNotice(notices.concat(t.gifExclusive), gifCause);
-			return;
-		}
-		await this.addImages(images, notices, cause);
-	}
-
-	/**
-	 * 動画を 1 本取り込む。受け取れなければ 1 行で知らせる (読んでいる間に外されたときは知らせない)。
-	 * @param {File} file
-	 * @param {string[]} [notices] 先に出す知らせ (同じ回で断ったほかのファイルの分)
-	 * @returns {Promise<void>}
-	 */
-	async addVideo(file, notices = []) {
-		this.showNotice(notices);
-		let result = null;
-		try {
-			result = await this.video.setFile(file);
-		} catch (error) {
-			console.error('[XViewer] 動画を取り込めませんでした', error);
-			result = {ok: false, notice: this.compose.text.videoUnreadable};
-		}
-		if (this.destroyed || !result || result.ok) return;
-		if (result.notice) this.showNotice(notices.concat(result.notice));
-	}
-
-	/**
-	 * 画像を 1 枚ずつ縮小して預かる。縮小の最中は送信ボタンだけを止める。
-	 * @param {File[]} list 画像の候補 (受け付けない形式を含んでよい)
-	 * @param {string[]} notices 先に出す知らせ
-	 * @param {ExclusiveCause|null} cause notices が排他の知らせのとき、その原因
-	 * @returns {Promise<void>}
-	 */
-	async addImages(list, notices, cause) {
-		const t = this.compose.text;
-		const result = acceptImages(this.attachments.length + this.importing, list,
-			this.compose.acceptImageTypes, this.compose.maxImages);
-		if (result.tooMany > 0) notices.push(t.tooManyImages);
-		if (result.unsupported > 0) notices.push(t.unsupportedImage);
-		this.showNotice(notices, notices.length === 1 ? cause : null);
-		this.importing += result.accepted.length;
-		if (result.accepted.length > 0) {
-			// 取り込み中から画像として扱う (カードを隠し、ラベルを出す)
-			this.renderExtras();
-			this.renderLabels();
-		}
-		this.sync();
-		let failed = false;
-		for (const index of result.accepted) {
-			const prepared = await this.prepare(list[index], null);
-			this.importing -= 1;
-			if (this.destroyed) {
-				this.revoke(prepared);
-				continue;
-			}
-			if (prepared) this.attachments.push({prepared, alt: '', cell: null});
-			else failed = true;
-			this.renderAttachments();
-			this.sync();
-		}
-		if (failed && !this.destroyed) this.showNotice(notices.concat(t.imageLoadFailed));
-	}
-
-	/**
-	 * 画像を 1 枚縮小する。失敗・例外は null。
-	 * @param {File} file
-	 * @param {import('./image-prepare.js').CropRect|null} crop
-	 * @returns {Promise<import('./image-prepare.js').PreparedImage|null>}
-	 */
-	async prepare(file, crop) {
-		try {
-			return (await this.deps.prepareImage(file, crop, this.compose.image)) || null;
-		} catch (error) {
-			console.error('[XViewer] 画像を取り込めませんでした', error);
-			return null;
-		}
-	}
-
-	/**
-	 * 縮小済みの画像の object URL を破棄する。
-	 * @param {import('./image-prepare.js').PreparedImage|null} prepared
-	 * @returns {void}
-	 */
-	revoke(prepared) {
-		try {
-			if (prepared && prepared.previewUrl) URL.revokeObjectURL(prepared.previewUrl);
-		} catch (error) {
-			console.error('[XViewer] 画像の URL を破棄できませんでした', error);
-		}
-	}
-
-	/**
-	 * 添付を 1 枚外す。フォーカスは次のマスの「外す」、無ければ「画像を追加」へ移す。
-	 * @param {import('./reply-attachments.js').Attachment} attachment
-	 * @returns {void}
-	 */
-	removeAttachment(attachment) {
-		const index = this.attachments.indexOf(attachment);
-		if (index === -1 || this.busy) return;
-		this.attachments.splice(index, 1);
-		this.revoke(attachment.prepared);
-		if (this.imageCount() === 0) this.clearExclusiveNotice('images');
-		this.renderAttachments();
-		this.sync();
-		const next = this.attachments[Math.min(index, this.attachments.length - 1)];
-		const target = next && next.cell ? next.cell.removeButton : this.imageTool;
-		target.focus({preventScroll: true});
-	}
-
-	/**
-	 * 重ねる画面に添える情報。持ち主はこの入力欄で、開いたボタンが描き直されて外れていたら
-	 * focusTarget が返す要素 (無ければ「画像を追加」) へフォーカスを戻す。
-	 * @param {() => (HTMLElement|null|undefined)} [focusTarget] 描き直した後の戻し先
-	 * @returns {import('./reply-sheets.js').SheetOptions}
-	 */
-	sheetOptions(focusTarget) {
-		return {
-			owner: this.el,
-			restoreFocus: () => {
-				const target = (typeof focusTarget === 'function' && focusTarget()) || this.imageTool;
-				if (target && this.el.contains(target)) target.focus({preventScroll: true});
-			}
-		};
-	}
-
-	/**
-	 * ALT テキストの画面を開く。
-	 * @param {import('./reply-attachments.js').Attachment} attachment
-	 * @param {HTMLButtonElement} button
-	 * @returns {void}
-	 */
-	openAlt(attachment, button) {
-		if (!this.deps.sheets || this.busy) return;
-		openAltSheet(this.deps.sheets, {previewUrl: attachment.prepared.previewUrl, alt: attachment.alt}, button,
-			(alt) => {
-				attachment.alt = alt;
-				updateAttachmentCell(attachment, this.attachments.indexOf(attachment), this.compose);
-			}, this.sheetOptions(() => attachment.cell && attachment.cell.altButton));
-	}
-
-	/**
-	 * 切り抜きの画面を開く。保存したら元のファイルから縮小し直す。
-	 * @param {import('./reply-attachments.js').Attachment} attachment
-	 * @param {HTMLButtonElement} button
-	 * @returns {void}
-	 */
-	openCrop(attachment, button) {
-		if (!this.deps.sheets || this.busy) return;
-		const prepared = attachment.prepared;
-		openCropSheet(this.deps.sheets, {source: prepared.source, image: prepared.natural, crop: prepared.crop},
-			button, (crop) => this.recrop(attachment, crop),
-			this.sheetOptions(() => attachment.cell && attachment.cell.cropButton));
-	}
-
-	/**
-	 * 切り抜き直した画像に差し替える。失敗したら前の画像のまま 1 行で知らせる。
-	 * @param {import('./reply-attachments.js').Attachment} attachment
-	 * @param {import('./image-prepare.js').CropRect|null} crop
-	 * @returns {Promise<void>}
-	 */
-	async recrop(attachment, crop) {
-		this.recropping += 1;
-		this.sync();
-		const next = await this.prepare(attachment.prepared.source, crop);
-		this.recropping -= 1;
-		if (this.destroyed || this.attachments.indexOf(attachment) === -1) {
-			this.revoke(next);
-			return;
-		}
-		if (!next) {
-			this.showNotice([this.compose.text.imageLoadFailed]);
-		} else {
-			this.revoke(attachment.prepared);
-			attachment.prepared = next;
-			updateAttachmentCell(attachment, this.attachments.indexOf(attachment), this.compose);
-		}
-		this.sync();
-	}
-
-	/**
-	 * コンテンツの警告の画面を開く。
-	 * @returns {void}
-	 */
-	openLabels() {
-		if (!this.deps.sheets || this.busy || !this.isLabelable()) return;
-		openLabelSheet(this.deps.sheets, {...this.labels}, this.labelsButton, (selection) => {
-			this.labels = {adult: selection.adult || null, graphic: selection.graphic === true};
-			this.renderLabels();
-		}, this.sheetOptions(() => this.labelsButton));
+		this.focus();
 	}
 
 	/**
@@ -830,327 +513,366 @@ export class ReplyComposer {
 			this.languagesTouched = true;
 			this.deps.saveLanguages(this.languages.slice());
 			this.renderLanguages();
-		}, this.sheetOptions(() => this.languageButton));
-	}
-
-	/**
-	 * 絵文字の画面を開く。選んだ絵文字は本文のカーソルの位置に入れ、画面は開いたままにする。
-	 * @returns {void}
-	 */
-	openEmoji() {
-		if (!this.deps.sheets || this.busy) return;
-		openEmojiSheet(this.deps.sheets, this.emojiTool, (native) => this.insertText(native),
-			this.sheetOptions(() => this.emojiTool));
-	}
-
-	/**
-	 * GIF の画面を開く。画像 (取り込み中を含む) か動画がある・送信中なら開かない。
-	 * @returns {void}
-	 */
-	openGif() {
-		if (!this.deps.sheets || this.busy || this.mediaCount() > 0 || this.isPreparing()) return;
-		openGifSheet(this.deps.sheets, {
-			fetchJson: (url) => this.fetchGifJson(url),
-			locale: typeof this.deps.gifLocale === 'string' && this.deps.gifLocale ? this.deps.gifLocale : null,
-			rule: this.compose.gif
-		}, this.gifTool, (item) => {
-			if (this.destroyed) return;
-			// 画面を開いているあいだに画像か動画が落とされていたら付けない
-			if (this.video.isActive()) {
-				this.showNotice([this.compose.text.videoExclusive], 'video');
-				return;
+		}, {
+			owner: this.el,
+			restoreFocus: () => {
+				if (this.el.contains(this.languageButton)) this.languageButton.focus({preventScroll: true});
 			}
-			if (this.imageCount() > 0) {
-				this.showNotice([this.compose.text.gifExclusive], 'images');
-				return;
-			}
-			this.showNotice([]);
-			this.extras.setGif(item);
-		}, this.sheetOptions(() => this.gifTool));
+		});
 	}
 
 	/**
-	 * GIF の検索を 1 回引く。状態が 200 のときだけ中身を返し、それ以外・失敗は null。
-	 * @param {string} url
-	 * @returns {Promise<any|null>}
-	 */
-	async fetchGifJson(url) {
-		try {
-			const response = await this.deps.fetchJson(url, this.compose.gif.timeoutMs);
-			return response && response.status === GIF_OK_STATUS ? response.json : null;
-		} catch (error) {
-			console.error('[XViewer] GIF を検索できませんでした', error);
-			return null;
-		}
-	}
-
-	/**
-	 * GIF の ALT テキストの画面を開く。初期値は入力済みの ALT、無ければ GIF の題名。
-	 * 上限は画像の ALT より短い (external の説明に接頭辞ごと収めるため)。
-	 * @param {HTMLButtonElement} button プレビューの ALT ボタン
-	 * @returns {void}
-	 */
-	openGifAlt(button) {
-		const gif = this.extras.gif;
-		if (!this.deps.sheets || this.busy || !gif) return;
-		const altSelector = `.${this.config.cards.classes.gifAlt}`;
-		openAltSheet(this.deps.sheets, {
-			previewUrl: gif.item.previewUrl, alt: gif.alt || gif.item.title, maxGraphemes: GIF_ALT_MAX_GRAPHEMES
-		}, button,
-			(alt) => this.extras.setGifAlt(String(alt || '').trim()),
-			this.sheetOptions(() => this.embedEl.querySelector(altSelector) || this.gifTool));
-	}
-
-	/**
-	 * 動画の字幕と ALT の画面を開く。字幕の言語の既定は選んでいる投稿言語の先頭。
-	 * @param {HTMLButtonElement} button プレビューの ALT ボタン
-	 * @returns {void}
-	 */
-	openVideoAlt(button) {
-		const state = this.video.state;
-		if (!this.deps.sheets || this.busy || !state) return;
-		const altSelector = `.${this.config.cards.classes.gifAlt}`;
-		openVideoSheet(this.deps.sheets, {
-			previewUrl: state.url,
-			alt: state.alt,
-			caption: state.caption,
-			maxAltGraphemes: this.compose.maxAltGraphemes,
-			languageCodes: this.compose.languageCodes,
-			defaultLang: this.languages[0] || defaultLanguages(navigator.language, this.compose)[0] || '',
-			locale: this.locale,
-			readCaption: (file) => readCaptionFile(file, this.compose.video)
-		}, button, (value) => {
-			// 画面を開いているあいだに外した・別の動画に替えたなら付けない
-			if (this.destroyed || this.video.state !== state) return;
-			this.video.setAlt(value.alt);
-			this.video.setCaption(value.caption);
-		}, this.sheetOptions(() => this.videoEl.querySelector(altSelector) || this.imageTool));
-	}
-
-	/**
-	 * 本文のカーソルの位置 (選択範囲があれば置き換え) に文字を入れる。
-	 * @param {string} value 入れる文字
-	 * @returns {void}
-	 */
-	insertText(value) {
-		if (typeof value !== 'string' || value === '' || this.destroyed) return;
-		const textarea = this.textarea;
-		try {
-			const start = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : textarea.value.length;
-			const end = typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : start;
-			textarea.setRangeText(value, start, end, 'end');
-		} catch (error) {
-			textarea.value += value;
-		}
-		this.notifyTextChange(false);
-		this.sync();
-	}
-
-	/**
-	 * 貼り付け。画像か動画があるときだけ既定の貼り付けを止めて取り込む (取り込めなければ知らせる)。
-	 * 文字だけなら既定の貼り付けに任せ、続く input を「貼り付けの直後」として扱う。
-	 * @param {ClipboardEvent} event
-	 * @returns {void}
-	 */
-	onPaste(event) {
-		const files = pickPastedMedia(event.clipboardData && event.clipboardData.items);
-		if (files.length === 0) {
-			this.pastedPending = true;
-			return;
-		}
-		event.preventDefault();
-		this.addFiles(files);
-	}
-
-	/**
-	 * ドラッグが重なった。画像か動画のファイルを含むときだけ受ける (送信中は受けないが、既定の動作は止める)。
-	 * @param {DragEvent} event
-	 * @returns {void}
-	 */
-	onDragOver(event) {
-		const transfer = event.dataTransfer;
-		if (!transfer || !hasMediaItems(transfer.items)) return;
-		// 送信中も止める (止めないと、落としたファイルをブラウザが開いてタブが遷移する)
-		event.preventDefault();
-		if (this.busy) {
-			transfer.dropEffect = this.compose.noDropEffect;
-			return;
-		}
-		transfer.dropEffect = this.compose.dropEffect;
-		this.el.classList.add(this.compose.classes.dragOver);
-	}
-
-	/**
-	 * ドラッグが外へ出た。
-	 * @param {DragEvent} event
-	 * @returns {void}
-	 */
-	onDragLeave(event) {
-		if (!event.relatedTarget || !this.el.contains(event.relatedTarget)) {
-			this.el.classList.remove(this.compose.classes.dragOver);
-		}
-	}
-
-	/**
-	 * ドロップ。画像か動画のファイルを含むときだけ受け、本体のページへは届かせない。送信中は取り込まない。
-	 * @param {DragEvent} event
-	 * @returns {void}
-	 */
-	onDrop(event) {
-		this.el.classList.remove(this.compose.classes.dragOver);
-		const transfer = event.dataTransfer;
-		if (!transfer || !hasMediaItems(transfer.items)) return;
-		event.preventDefault();
-		event.stopPropagation();
-		// 送信中は取り込まない (添付が送るものと食い違うため)
-		if (!this.busy) this.addFiles(Array.from(transfer.files || []));
-	}
-
-	/**
-	 * 返信を送る。失敗したら本文・添付・ALT・GIF・動画・字幕・カード・引用・ラベル・言語を残して 1 行で知らせる。
-	 * 本文のリンクは短い形にして送る (facet の uri は元のまま)。動画の字幕は upload-blob で先に送る。
+	 * 返信を送る。空でない投稿が 1 件なら今までどおり createRecord で、2 件以上なら連なりとして
+	 * applyWrites で 1 回に送る。空でない投稿のあいだに空の投稿があれば、1 回目は送らずに問い合わせを出す。
+	 * @param {{skipEmpty?: boolean}} [options] skipEmpty: 問い合わせに「飛ばして送信」と答えた
 	 * @returns {Promise<void>}
 	 */
-	async submit() {
-		if (this.destroyed || this.busy || this.isPreparing() || this.deps.isPosting()) return;
-		const value = this.textarea.value;
-		const mediaCount = this.mediaCount();
-		const check = canSubmitComposer(this.countedText(value), this.extras.contentCount(mediaCount), this.config.limits);
-		if (!check.ok) return;
+	async submit(options = {}) {
+		if (this.destroyed || this.busy || this.deps.isPosting()) return;
+		const summaries = this.posts.map((post) => post.summary());
+		const checks = this.posts.map((post, index) => ({empty: isEmptyPost(summaries[index]), ok: post.check().ok}));
+		if (!canSubmitThread(checks)) return;
+		const {indexes, skippedMiddle} = splitEmptyPosts(summaries);
+		if (indexes.length === 1) {
+			await this.submitSingle(this.posts[indexes[0]]);
+			return;
+		}
+		if (skippedMiddle && !(options && options.skipEmpty === true)) {
+			this.showSkipPrompt();
+			return;
+		}
+		await this.submitThread(indexes.map((index) => this.posts[index]));
+	}
+
+	/**
+	 * 返信を 1 件送る。失敗したら本文・添付・ALT・GIF・動画・字幕・カード・引用・ラベル・言語を残して 1 行で知らせる
+	 * (blob の送信の失敗は投稿に、返信の作成の失敗は入れ物に)。
+	 * @param {ComposerPost} post 送る投稿 (空でない唯一の投稿)
+	 * @returns {Promise<void>}
+	 */
+	async submitSingle(post) {
 		const generation = this.deps.getGeneration();
-		const hadFocus = document.activeElement === this.textarea;
-		const attachments = this.attachments.slice();
+		const focused = this.focusState();
 		const languages = this.languages.slice();
-		const labels = this.isLabelable() ? buildSelfLabels(this.labels) : null;
-		const legacyMax = this.compose.legacyImagesMax;
-		const toUploaded = (blobs) => attachments.map((attachment, index) => ({
-			blob: blobs[index], alt: attachment.alt, width: attachment.prepared.width, height: attachment.prepared.height
-		}));
-		// 動画と画像は同時に付かないため、動画があるとき送るのは字幕 (あれば) だけで、blobs[0] がその BlobRef
-		const hasVideo = this.video.isActive();
-		const caption = hasVideo && this.video.state.caption ? this.video.state.caption : null;
-		/** @type {import('./reply-embed.js').UploadedVideo|null} 送った動画 (投稿直後の描画に使う) */
-		let uploadedVideo = null;
-		/** @type {import('./reply-extras.js').SubmitExtras} 送った GIF・カード・引用 (投稿直後の描画に使う) */
-		let resolved = {external: null, quote: null, quoteView: null};
+		const images = post.uploadImages();
+		/** @type {{record: Object, embedView: (did: string) => Object|null}|null} 組んだ record と投稿直後の描画 */
+		let built = null;
 		this.deps.setPosting(true);
 		this.setBusy(true);
 		this.showNotice([]);
+		post.showNotice([]);
 		try {
 			await runSubmit({
-				images: hasVideo
-					? (caption ? [{blob: caption.blob}] : [])
-					: attachments.map((attachment) => attachment.prepared),
+				images,
 				upload: this.deps.uploadBlob,
 				onProgress: (current, total) => this.showProgress(current, total),
 				// 入力欄が外されただけ (描き直し・返信への返信の入力欄を閉じた) なら送信は続ける。
 				// 止めると、作れた返信が一覧に入らない・書きかけが黙って消える
 				isCurrent: () => this.deps.isCurrent(generation),
 				buildRecord: async (blobs) => {
-					// GIF・カードのサムネイルを送るあいだも送信ボタンに進み具合 (1/1) を出す
-					resolved = await this.extras.resolveForSubmit(
-						(done, total) => this.showProgress(done, total), mediaCount);
-					uploadedVideo = hasVideo ? this.video.toUploaded(caption ? blobs[0] || null : null) : null;
-					// 本体と同じく、送る本文の末尾の空白は除く (リンクカードの提案は後ろの空白で始まる)
-					const sendValue = value.replace(TRAILING_SPACE, '');
-					const detected = detectRichText(sendValue);
-					const didByHandle = await this.resolveMentions(detected.mentions);
-					const shortened = shortenLinks(sendValue, buildFacets(detected, didByHandle), this.compose.links);
-					return buildReplyRecord({
-						text: shortened.text,
-						reply: resolveReplyRef(this.target),
-						createdAt: new Date().toISOString(),
-						langs: languages.length > 0 ? languages : null,
-						facets: shortened.facets,
-						embed: buildPostEmbed({
-							images: toUploaded(blobs), video: uploadedVideo, external: resolved.external, quote: resolved.quote
-						}, legacyMax),
-						labels
-					});
+					built = await post.buildRecord(blobs, languages, resolveReplyRef(this.target),
+						(done, total) => this.showProgress(done, total));
+					return built.record;
 				},
 				createReply: (record) => this.deps.actions.createReply(record),
-				onPosted: (result, record, blobs) => {
-					const did = this.deps.getSessionDid();
-					const embedView = buildOwnPostEmbedView({
-						images: toUploaded(blobs), video: uploadedVideo, external: resolved.external, quoteView: resolved.quoteView
-					}, did, this.compose.cdn, legacyMax);
+				onPosted: (result, record) => {
+					const embedView = built ? this.buildEmbedView(built.embedView) : null;
 					if (!this.destroyed) this.resetAfterPost();
 					this.deps.onPosted(result, record, this.target, embedView);
 				},
 				onFailed: (kind, reason) => {
 					ExtDebug.log('返信の投稿が失敗', {段階: kind, 理由: reason});
 					if (this.destroyed) return;
-					const uploadText = hasVideo ? this.compose.text.captionUploadFailed : this.compose.text.uploadFailed;
-					this.showNotice([kind === 'upload' ? uploadText : this.config.text.postFailed]);
+					if (kind === 'upload') post.showUploadFailed();
+					else this.showNotice([this.config.text.postFailed]);
 				}
 			});
 		} catch (error) {
 			console.error('[XViewer] 返信の投稿に失敗しました', error);
 			if (!this.destroyed && this.deps.isCurrent(generation)) this.showNotice([this.config.text.postFailed]);
 		} finally {
-			if (this.deps.isCurrent(generation)) this.deps.setPosting(false);
-			this.setBusy(false);
-			// 送信中に外されていたら、送り終えたここで extras と動画を片付ける
-			if (this.destroyed) {
-				this.extras.destroy();
-				this.video.destroy();
-			}
-			this.sync();
-			if (hadFocus && this.textarea.isConnected) this.textarea.focus({preventScroll: true});
+			this.finishSubmit(generation, focused);
 		}
 	}
 
 	/**
-	 * 送れた後に、本文・添付・GIF・動画・カード・引用・ラベルを空に戻し、言語を覚えたものに戻す。
+	 * 2 件以上の返信を連なりとして送る。投稿ごとに blob を送って record を組み、rkey (TID) と CID で連ねて
+	 * 1 回の applyWrites で書く。どれかの blob の送信が失敗したらその投稿に 1 行を出し、何も作らない。
+	 * @param {ComposerPost[]} posts 送る投稿 (空の投稿を除いた並び)
+	 * @returns {Promise<void>}
+	 */
+	async submitThread(posts) {
+		const generation = this.deps.getGeneration();
+		const focused = this.focusState();
+		const languages = this.languages.slice();
+		// 1 件目の reply だけが使われ、2 件目以降は chainThreadRecords が直前の投稿へ向け直す
+		const reply = resolveReplyRef(this.target);
+		/** @type {Array<((did: string) => Object|null)|null>} 投稿ごとの、投稿直後の描画を作る関数 */
+		const embedViews = posts.map(() => null);
+		/** @type {Array<{uri: string, cid: string}>|null} 最後に組んだ連なりの、手元で計算した uri と CID */
+		let localRefs = null;
+		const progress = createThreadProgress((current, total) => this.showProgress(current, total));
+		const steps = posts.map((post, index) => ({
+			images: post.uploadImages(),
+			buildRecord: async (blobs) => {
+				const built = await post.buildRecord(blobs, languages, reply,
+					(done, total) => progress.thumbnail(index, done, total));
+				embedViews[index] = built.embedView;
+				return built.record;
+			},
+			onUploadFailed: (reason) => {
+				ExtDebug.log('返信の連なりの blob の送信が失敗', {投稿: index + 1, 理由: reason});
+				if (!this.destroyed && !post.destroyed) post.showUploadFailed();
+			}
+		}));
+		this.deps.setPosting(true);
+		this.setBusy(true);
+		this.showNotice([]);
+		for (const post of posts) post.showNotice([]);
+		try {
+			await runThreadSubmit({
+				posts: steps,
+				upload: this.deps.uploadBlob,
+				onProgress: (current, total) => progress.blob(current, total),
+				isCurrent: () => this.deps.isCurrent(generation),
+				// DID が古くて組み直すときも、そのたびに新しい rkey で組む
+				send: (records) => this.deps.actions.createReplyThread(async (did) => {
+					const chained = await chainThreadRecords(records, {
+						repo: did,
+						collection: BRIDGE_PROTOCOL.collections.post,
+						createType: BRIDGE_PROTOCOL.thread.createType,
+						nowMs: Date.now(),
+						rkeys: this.nextRkeys(records.length),
+						computeCid: computeRecordCid
+					});
+					localRefs = chained.refs;
+					return chained.writes;
+				}),
+				onPosted: (results, values) => this.onThreadPosted(results, values, localRefs, embedViews),
+				onFailed: (kind, reason) => this.onThreadFailed(kind, reason)
+			});
+		} catch (error) {
+			console.error('[XViewer] 返信の連なりの投稿に失敗しました', error);
+			if (!this.destroyed && this.deps.isCurrent(generation)) this.showNotice([this.config.text.postFailed]);
+		} finally {
+			this.finishSubmit(generation, focused);
+		}
+	}
+
+	/**
+	 * 連なりが書けた。入力欄を空の 1 件に戻し、送った順に一覧へ入れる (宛先は直前の投稿へ連ねる)。
+	 * 手元で計算した CID が応答と違えば記録だけする (一覧には応答の cid を使う)。
+	 * @param {Array<{uri: string, cid: string}>} results 応答の uri と cid (送った順)
+	 * @param {Object[]} values 送った record (連ねた後のもの)
+	 * @param {Array<{uri: string, cid: string}>|null} localRefs 手元で計算した uri と CID
+	 * @param {Array<((did: string) => Object|null)|null>} embedViews 投稿ごとの、投稿直後の描画を作る関数
+	 * @returns {void}
+	 */
+	onThreadPosted(results, values, localRefs, embedViews) {
+		this.logCidMismatch(localRefs, results);
+		const views = embedViews.map((view) => this.buildEmbedView(view));
+		const profile = this.deps.getSelfProfile();
+		const selfHandle = profile && typeof profile.handle === 'string' ? profile.handle : null;
+		const targets = chainTargets(this.target, results, values, selfHandle);
+		if (!this.destroyed) this.resetAfterPost();
+		results.forEach((result, index) => {
+			try {
+				this.deps.onPosted(result, values[index], targets[index], views[index]);
+			} catch (error) {
+				console.error('[XViewer] 送った返信を一覧へ入れられませんでした', error);
+			}
+		});
+	}
+
+	/**
+	 * 連なりを送れなかった。届いたか確かめられないときは入力欄を空の 1 件に戻して一覧を取り直し、
+	 * それ以外 (何も作られていない) は全投稿を残して「返信できませんでした」を出す。
+	 * @param {'post'|'unconfirmed'} kind
+	 * @param {string} reason
+	 * @returns {void}
+	 */
+	onThreadFailed(kind, reason) {
+		ExtDebug.log('返信の連なりの投稿が失敗', {段階: kind, 理由: reason});
+		if (kind === 'unconfirmed') {
+			if (!this.destroyed) {
+				this.resetAfterPost();
+				this.showNotice([this.compose.text.threadUnconfirmed]);
+			}
+			try {
+				if (typeof this.deps.reload === 'function') this.deps.reload();
+			} catch (error) {
+				console.error('[XViewer] 返信の一覧を取り直せませんでした', error);
+			}
+			return;
+		}
+		if (!this.destroyed) this.showNotice([this.config.text.postFailed]);
+	}
+
+	/**
+	 * 手元で計算した CID と応答の cid が違う投稿をデバッグに記録する。
+	 * @param {Array<{uri: string, cid: string}>|null} localRefs
+	 * @param {Array<{uri: string, cid: string}>} results
+	 * @returns {void}
+	 */
+	logCidMismatch(localRefs, results) {
+		if (!Array.isArray(localRefs) || !Array.isArray(results)) return;
+		results.forEach((result, index) => {
+			const local = localRefs[index];
+			if (local && result && local.cid !== result.cid) {
+				ExtDebug.log('手元で計算した CID が応答と違う', {投稿: index + 1, 手元: local.cid, 応答: result.cid});
+			}
+		});
+	}
+
+	/**
+	 * 投稿直後の描画を作る。作れなければ null (一覧には本文だけで入れる)。
+	 * @param {((did: string) => Object|null)|null} view buildRecord が返した関数
+	 * @returns {Object|null}
+	 */
+	buildEmbedView(view) {
+		if (typeof view !== 'function') return null;
+		try {
+			return view(this.deps.getSessionDid());
+		} catch (error) {
+			console.error('[XViewer] 送った返信の添付を描けませんでした', error);
+			return null;
+		}
+	}
+
+	/**
+	 * 連なりの件数ぶんの rkey (TID) を作る。前に作ったものより必ず大きくする。
+	 * @param {number} count
+	 * @returns {string[]}
+	 */
+	nextRkeys(count) {
+		const nowMicros = Date.now() * MICROS_PER_MS;
+		const rkeys = [];
+		for (let i = 0; i < count; i++) {
+			this.lastTid = nextTid(this.lastTid, nowMicros, this.clockId);
+			rkeys.push(this.lastTid);
+		}
+		return rkeys;
+	}
+
+	/**
+	 * 送り始めたときのフォーカスの位置を控える。
+	 * @returns {SubmitFocus}
+	 */
+	focusState() {
+		const active = document.activeElement;
+		let inside = false;
+		try {
+			inside = !!active && this.el.contains(active);
+		} catch (error) {
+			inside = false;
+		}
+		return {
+			post: this.posts.find((post) => post.textarea === active) || null,
+			inside,
+			resets: this.resetCount
+		};
+	}
+
+	/**
+	 * 送信の後のフォーカス。本文の欄から送ったならその欄 (畳まれて消えていれば残った投稿) へ戻す。
+	 * 送信ボタンなど入力欄の中から送れたときと、送信中にフォーカスを失ったときは、残った投稿の本文の欄へ移す
+	 * (送れた後は共通の行を付け直すため、押したボタンからフォーカスが外れる)。
+	 * @param {SubmitFocus} focused
+	 * @returns {void}
+	 */
+	restoreFocus(focused) {
+		if (this.destroyed || !focused) return;
+		if (focused.post) {
+			const target = focused.post.destroyed ? this.active : focused.post;
+			if (target && !target.destroyed && target.textarea.isConnected) target.focus();
+			return;
+		}
+		if (!focused.inside) return;
+		const active = this.active;
+		if (!active || !this.el.isConnected) return;
+		let lost = true;
+		try {
+			lost = !this.el.contains(document.activeElement);
+		} catch (error) {
+			lost = true;
+		}
+		if (this.resetCount !== focused.resets || lost) active.focus();
+	}
+
+	/**
+	 * 送信の後始末。送信中の印を下ろし、控えを捨て、外されていればメディアを片付け、フォーカスを戻す。
+	 * @param {number} generation 送り始めた世代
+	 * @param {SubmitFocus} focused 送り始めたときのフォーカスの位置
+	 * @returns {void}
+	 */
+	finishSubmit(generation, focused) {
+		if (this.deps.isCurrent(generation)) this.deps.setPosting(false);
+		this.setBusy(false);
+		// record を組む前に終わった (失敗・世代の変化) ときに控えが残らないようにする
+		for (const one of this.posts) one.clearSending();
+		// 送信中に外されていたら、送り終えたここで投稿の GIF・カード・引用・動画を片付ける
+		if (this.destroyed) {
+			for (const one of this.posts) one.disposeMedia();
+		}
+		this.sync();
+		this.restoreFocus(focused);
+	}
+
+	/**
+	 * 送れた後に、投稿を空の 1 件に戻し、言語を覚えたものに戻す。
 	 * 言語の提案を閉じたことはその入力欄のあいだ保つ。
 	 * @returns {void}
 	 */
 	resetAfterPost() {
-		this.textarea.value = '';
-		this.pastedPending = false;
-		for (const attachment of this.attachments) this.revoke(attachment.prepared);
-		this.attachments = [];
-		this.extras.reset();
-		this.video.reset();
-		this.renderVideo();
-		this.clearExclusiveNotice(null);
-		this.labels = {adult: null, graphic: false};
+		this.resetCount += 1;
+		this.collapsePosts();
+		for (const post of this.posts) post.resetAfterPost();
 		this.languagesTouched = false;
-		this.renderAttachments();
 		this.renderLanguages();
 		this.applyStoredLanguages();
 	}
 
 	/**
-	 * 本文中のメンションを DID に引く。引けなかったものは含めない。
-	 * @param {Array<{handle: string}>} mentions
-	 * @returns {Promise<Map<string, string>>}
+	 * 投稿を先頭の 1 件だけにする (残りは片付ける)。送れた後に呼ぶ。
+	 * 送信中に片付けた投稿のメディアは destroy が残すため、ここで片付ける (送った record はもう組み終えている)。
+	 * @returns {void}
 	 */
-	async resolveMentions(mentions) {
-		const map = new Map();
-		const handles = Array.from(new Set(mentions.map((mention) => mention.handle)));
-		await Promise.all(handles.map(async (handle) => {
-			try {
-				const did = await this.deps.resolveHandle(handle);
-				if (typeof did === 'string' && did) map.set(handle, did);
-			} catch (error) {
-				// 引けなかったメンションは facets に含めない
-			}
-		}));
-		return map;
+	collapsePosts() {
+		if (this.posts.length < 2) return;
+		const keep = this.posts[0];
+		const removed = this.posts.slice(1);
+		const active = this.active;
+		if (active && active !== keep) active.mountShared([]);
+		this.addButton.remove();
+		this.posts = [keep];
+		const activeChanged = this.activeIndex !== 0;
+		this.activeIndex = 0;
+		for (const post of removed) {
+			const wasBusy = post.busy;
+			post.mountShared([]);
+			post.destroy();
+			if (wasBusy) post.disposeMedia();
+		}
+		if (activeChanged) this.mountShared(keep);
+		this.sync();
 	}
 
 	/**
-	 * 送信中の見た目にする / 戻す。入力欄・ツールバー・プレビューの操作を止める。
+	 * 送信中の見た目にする / 戻す。投稿の操作と共通の行 (提案・「＋」・言語・送信) を止める。
 	 * @param {boolean} busy
 	 * @returns {void}
 	 */
 	setBusy(busy) {
 		this.busy = busy;
+		for (const post of this.posts) post.setBusy(busy);
 		try {
-			for (const control of this.el.querySelectorAll(this.compose.busyControls)) control.disabled = busy;
+			const controls = [this.addButton, this.languageButton, this.submitButton]
+				.concat(Array.from(this.suggestEl.querySelectorAll(this.compose.busyControls)));
+			for (const control of controls) control.disabled = busy;
 			if (busy) {
 				this.submitButton.setAttribute('aria-busy', 'true');
+				// 「{件数} 件の返信を送信」を外し、見える「送信中 2/5」を読ませる (終われば sync が付け直す)
+				this.submitButton.removeAttribute('aria-label');
 			} else {
 				this.submitButton.removeAttribute('aria-busy');
 				this.submitButton.textContent = this.config.text.submit;
@@ -1158,8 +880,6 @@ export class ReplyComposer {
 		} catch (error) {
 			console.error('[XViewer] 入力欄の送信中の表示に失敗しました', error);
 		}
-		// 動画のプレビューのボタン (ALT・×・再試行) は送信中かどうかで描き分ける
-		if (this.video.isActive()) this.renderVideo();
 	}
 
 	/**
@@ -1174,41 +894,98 @@ export class ReplyComposer {
 	}
 
 	/**
-	 * 入力欄の末尾の 1 行を出す (前のものは消す)。空なら消すだけ。
+	 * 入れ物の末尾の 1 行を出す (前のものと空の投稿の問い合わせは消す)。空なら消すだけ。
 	 * @param {string[]} messages 知らせる文
-	 * @param {ExclusiveCause|null} [exclusive] メディアの排他の知らせなら、その原因
-	 *   (原因のメディアを外したときに消すため覚える)
 	 * @returns {void}
 	 */
-	showNotice(messages, exclusive = null) {
+	showNotice(messages) {
 		try {
 			if (this.noticeEl) this.noticeEl.remove();
 			this.noticeEl = null;
-			this.noticeExclusive = null;
+			this.skipPromptEl = null;
 			if (!Array.isArray(messages) || messages.length === 0 || this.destroyed) return;
 			const notice = createElement(this.el.ownerDocument, 'p', this.config.classes.error,
 				messages.join(this.compose.text.noticeSeparator));
 			notice.setAttribute('role', 'alert');
 			this.el.append(notice);
 			this.noticeEl = notice;
-			this.noticeExclusive = exclusive || null;
+			this.reveal(notice);
 		} catch (error) {
 			console.error('[XViewer] 入力欄の知らせを出せませんでした', error);
 		}
 	}
 
 	/**
-	 * 出ている 1 行がメディアの排他の知らせなら消す。他の知らせは残す。
-	 * @param {ExclusiveCause|null} cause この原因の知らせだけを消す (null は原因を問わない)
+	 * 空でない投稿のあいだに空の投稿があるときの問い合わせを、入れ物の末尾の 1 行の位置に出す。
+	 * 「飛ばして送信」へフォーカスを移す。
 	 * @returns {void}
 	 */
-	clearExclusiveNotice(cause) {
-		if (!this.noticeEl || !this.noticeExclusive) return;
-		if (cause === null || this.noticeExclusive === cause) this.showNotice([]);
+	showSkipPrompt() {
+		const cc = this.compose.classes;
+		const t = this.compose.text;
+		this.showNotice([]);
+		if (this.destroyed) return;
+		try {
+			const doc = this.el.ownerDocument;
+			const prompt = createElement(doc, 'div', cc.skipEmpty);
+			prompt.setAttribute('role', 'alert');
+			const text = createElement(doc, 'span', cc.skipEmptyText, t.skipEmpty);
+			const keep = createButton(doc, cc.skipEmptyKeep, t.skipEmptyKeep);
+			const send = createButton(doc, cc.skipEmptySend, t.skipEmptySend);
+			keep.addEventListener('click', () => {
+				this.hideSkipPrompt();
+				this.focus();
+			});
+			send.addEventListener('click', () => {
+				this.hideSkipPrompt();
+				// 押したボタンが消えるため、送り終えた後の戻り先として本文の欄へフォーカスを移しておく
+				this.focus();
+				this.submit({skipEmpty: true});
+			});
+			prompt.addEventListener('keydown', (event) => {
+				if (event.key !== 'Escape') return;
+				// 問い合わせを引っ込めるだけにする (ライトボックスまで閉じない)
+				event.stopPropagation();
+				this.hideSkipPrompt();
+				this.focus();
+			});
+			prompt.append(text, keep, send);
+			this.el.append(prompt);
+			this.noticeEl = prompt;
+			this.skipPromptEl = prompt;
+			this.reveal(prompt);
+			send.focus({preventScroll: true});
+		} catch (error) {
+			console.error('[XViewer] 空の投稿の問い合わせを出せませんでした', error);
+		}
 	}
 
 	/**
-	 * 後始末。開いている重ねる画面がこの入力欄のものなら閉じ、預かった画像の URL を破棄して外す。
+	 * 投稿が 2 件以上で入れ物が中でスクロールするとき、element を入れ物の中で見える所まで送る
+	 * (アクティブにした・足した投稿、問い合わせ、知らせの 1 行)。1 件のときは今までどおり何もしない。
+	 * 動きを減らす設定なら一気に送る。
+	 * @param {HTMLElement|null} element
+	 * @returns {void}
+	 */
+	reveal(element) {
+		if (!element || this.destroyed || this.posts.length < 2 || typeof element.scrollIntoView !== 'function') return;
+		try {
+			element.scrollIntoView({block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth'});
+		} catch (error) {
+			console.error('[XViewer] 入力欄の中を送れませんでした', error);
+		}
+	}
+
+	/**
+	 * 空の投稿の問い合わせを出していれば引っ込める。
+	 * @returns {void}
+	 */
+	hideSkipPrompt() {
+		if (this.skipPromptEl) this.showNotice([]);
+	}
+
+	/**
+	 * 後始末。開いている重ねる画面がこの入力欄のものなら閉じ、投稿をすべて片付けて外す。
 	 * 動画のアップロードが走っていれば取り消す。
 	 * @returns {void}
 	 */
@@ -1221,13 +998,7 @@ export class ReplyComposer {
 		} catch (error) {
 			console.error('[XViewer] 入力欄の重ねる画面を閉じられませんでした', error);
 		}
-		for (const attachment of this.attachments) this.revoke(attachment.prepared);
-		this.attachments = [];
-		// 送信中は送り終えるまで GIF・カード・引用・動画を残す (送る record がそれを読む)
-		if (!this.busy) {
-			this.extras.destroy();
-			this.video.destroy();
-		}
+		for (const post of this.posts) post.destroy();
 		try {
 			this.el.remove();
 		} catch (error) {

@@ -157,6 +157,27 @@ test('入力欄の部品のクラスはすべて content.css に書いてあり�
 	assert.ok(text.tooManyImages.includes(String(compose.maxImages)), '上限の枚数と文言が食い違う');
 });
 
+test('投稿を追加: 上限は橋渡しの applyWrites と同じで、部品のクラスは content.css にあり、文言が揃っている', async () => {
+	const css = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'content', 'content.css'), 'utf8');
+	const compose = EXT_CONFIG.lightboxReplies.compose;
+	assert.strictEqual(compose.thread.maxPosts, BRIDGE_PROTOCOL.thread.maxPosts);
+	for (const key of ['thread', 'threadMulti', 'post', 'postInactive', 'addPost', 'removePost', 'skipEmpty', 'skipEmptyText',
+		'skipEmptySend', 'skipEmptyKeep']) {
+		const cls = compose.classes[key];
+		assert.ok(typeof cls === 'string' && css.includes(`.${cls}`), `${key} (${cls}) が content.css に無い`);
+	}
+	const text = compose.text;
+	assert.strictEqual(text.addPost, 'スレッドに他の投稿を追加');
+	assert.strictEqual(text.addPlaceholder, '他の投稿を追加');
+	assert.strictEqual(text.removePost, '投稿を削除');
+	assert.ok(text.submitThread.includes('{count}'), 'submitThread に件数の差し込みが無い');
+	for (const key of ['confirmRemovePost', 'skipEmpty', 'skipEmptySend', 'skipEmptyKeep', 'threadUnconfirmed']) {
+		assert.ok(typeof text[key] === 'string' && text[key] !== '', `compose.text.${key} が無い`);
+	}
+	const {ICON_SHAPES} = await import('../src/common/icon-shapes.js');
+	assert.ok(ICON_SHAPES.add, 'アイコン add が無い');
+});
+
 test('添付画像の縮小の上限は橋渡しの upload-blob の上限と同じ', () => {
 	const image = EXT_CONFIG.lightboxReplies.compose.image;
 	assert.strictEqual(image.maxBytes, BRIDGE_PROTOCOL.upload.maxBytes.default);

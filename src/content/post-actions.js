@@ -31,6 +31,9 @@ import {callBridge} from './bridge-client.js';
  */
 const POST_ACTION_RECORD_URI_PATTERN = /^at:\/\/([^/]+)\/([^/]+)\/([^/]+)$/;
 
+/** 橋渡しの応答を待ちきれなかったときの理由 (bridge-client.js の callBridge が返す) */
+const BRIDGE_TIMEOUT = 'timeout';
+
 /**
  * レコードの AT URI を分解する。
  * @param {string} uri at://<did>/<collection>/<rkey>
@@ -169,6 +172,45 @@ export function mergeActionKind(state, kind, source) {
 }
 
 /**
+ * applyWrites の応答を読み、書いた順の {uri, cid} の並びにする。
+ * 件数・uri (自分の repo の collection と書いた rkey) ・cid のどれかが
+ * 合わなければ、書けたと言い切れないため null を返す。
+ * @param {any} json applyWrites の応答
+ * @param {Object[]} writes 送った writes (rkey を持つ)
+ * @param {string} repo 書いた先の DID
+ * @param {string} collection 書いたコレクション
+ * @returns {Array<{uri: string, cid: string}>|null}
+ */
+export function readThreadResults(json, writes, repo, collection) {
+	try {
+		if (!json || !Array.isArray(json.results) || !Array.isArray(writes)) {
+			return null;
+		}
+		if (json.results.length !== writes.length) {
+			return null;
+		}
+		const out = [];
+		for (let i = 0; i < writes.length; i += 1) {
+			const item = json.results[i];
+			const write = writes[i];
+			if (!item || !write || typeof item.uri !== 'string') {
+				return null;
+			}
+			if (item.uri !== 'at://' + repo + '/' + collection + '/' + write.rkey) {
+				return null;
+			}
+			if (typeof item.cid !== 'string' || item.cid === '') {
+				return null;
+			}
+			out.push({uri: item.uri, cid: item.cid});
+		}
+		return out;
+	} catch (error) {
+		return null;
+	}
+}
+
+/**
  * 投稿操作の呼び出し層。橋渡し (call-xrpc / open-composer / get-session) を
  * 意味のある単位に包む。**DOM を知らない。**
  *
@@ -252,16 +294,18 @@ export class PostActions {
 	/**
 	 * 橋渡し経由で XRPC を 1 回呼ぶ。
 	 * @param {string} nsid EXT_CONFIG.postActions.nsid のいずれか
-	 * @param {Object} options {params, body}
+	 * @param {{params?: Object, body?: Object, timeoutMs?: number}} options timeoutMs は橋渡しの応答を待つ上限
+	 *   (省けば橋渡しの既定)
 	 * @returns {Promise<{ok: boolean, json: Object|null, reason: string|null}>}
 	 */
 	async call(nsid, options) {
 		const actions = EXT_CONFIG.mediaGrid.bridge.actions;
+		const timeoutMs = options && options.timeoutMs;
 		const result = await callBridge(actions.callXrpc, {
 			nsid,
 			params: options && options.params,
 			body: options && options.body
-		});
+		}, Number.isFinite(timeoutMs) && timeoutMs > 0 ? {timeoutMs} : {});
 		if (!result || !result.ok) {
 			const reason = (result && result.reason) || 'no-result';
 			ExtDebug.log('投稿操作の呼び出しが失敗', {nsid, 理由: reason});
@@ -370,6 +414,49 @@ export class PostActions {
 			return {ok: false, uri: null, cid: null, reason: 'no-record-uri'};
 		}
 		return {ok: true, uri: json.uri, cid: json.cid, reason: null};
+	}
+
+	/**
+	 * 返信の連なりを applyWrites で 1 回に書く。
+	 * parent の URI が DID を含むため、repo-not-self (覚えていた DID が古い) のときは
+	 * DID を引き直して build() から組み直し、1 回だけやり直す。送り直しはしない
+	 * @param {function(string): Promise<Object[]>} build DID から writes を組む
+	 * @returns {Promise<{ok: boolean, results: Array<{uri: string, cid: string}>|null, writes: Object[]|null, reason: string|null}>}
+	 *   応答が書いた内容と合わなければ reason は 'thread-unconfirmed'
+	 */
+	async createReplyThread(build) {
+		let writes = null;
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const did = await this.getSessionDid();
+			if (!did) {
+				return {ok: false, results: null, writes: null, reason: 'no-session'};
+			}
+			try {
+				writes = await build(did);
+			} catch (error) {
+				ExtDebug.log('返信の連なりを組めなかった', {理由: String((error && error.message) || error)});
+				return {ok: false, results: null, writes: null, reason: 'build-failed'};
+			}
+			const result = await this.call(this.config.nsid.applyWrites, {
+				body: {repo: did, writes},
+				timeoutMs: EXT_CONFIG.mediaGrid.bridge.threadTimeoutMs
+			});
+			if (!result.ok && result.reason === BRIDGE_TIMEOUT) {
+				// 送った後に待ちきれなかった = 書けているかもしれない。失敗として残すと送り直しで二重になる
+				return {ok: false, results: null, writes, reason: 'thread-unconfirmed'};
+			}
+			if (result.ok) {
+				const results = readThreadResults(result.json, writes, did, this.config.collections.post);
+				if (results === null) {
+					return {ok: false, results: null, writes, reason: 'thread-unconfirmed'};
+				}
+				return {ok: true, results, writes, reason: null};
+			}
+			if (result.reason !== this.config.reasons.repoNotSelf) {
+				return {ok: false, results: null, writes, reason: result.reason};
+			}
+		}
+		return {ok: false, results: null, writes, reason: this.config.reasons.repoNotSelf};
 	}
 
 	/**

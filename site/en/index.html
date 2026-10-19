@@ -86,6 +86,7 @@
 				"Attaches up to 10 images to a reply, with alt text, cropping, content warnings, post languages and emoji, just like Bluesky's own reply screen",
 				"Attaches a GIF, a link card or a quote of a post to a reply, and shows GIFs, link cards and quotes in the reply list",
 				"Attaches one video to a reply, with alt text and a caption file, and plays videos in the reply list in place",
+				"Adds follow-up posts with \"＋\" and sends up to 10 replies at once as a thread",
 				"Keeps the lightbox open when you click the image itself",
 				"Adds fixed buttons to move between a profile's tabs",
 				"Removes the NSFW blur from tiles in the media grid (optional)"
@@ -202,7 +203,7 @@
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-like"></use></svg></span>React without closing</h3>
-					<p>Reply, repost, quote, like and bookmark without closing the image. Replies are written and sent from a text box in the panel, with up to 10 images, one video or one GIF. A link pasted into the text becomes a link card, and a post URL becomes a quote. You can add alt text and captions, crop, set content warnings, pick post languages and insert emoji, and you can delete your own replies. A like or other reaction shows up the moment you press it, and if the request fails it goes back and tells you. It uses Bluesky's own sign-in as is and never touches your login credentials.</p>
+					<p>Reply, repost, quote, like and bookmark without closing the image. Replies are written and sent from a text box in the panel, with up to 10 images, one video or one GIF. A link pasted into the text becomes a link card, and a post URL becomes a quote. Add follow-up posts with "＋" to send up to 10 replies at once as a thread. You can add alt text and captions, crop, set content warnings, pick post languages and insert emoji, and you can delete your own replies. A like or other reaction shows up the moment you press it, and if the request fails it goes back and tells you. It uses Bluesky's own sign-in as is and never touches your login credentials.</p>
 				</div>
 				<div class="card">
 					<h3><span class="card-icon"><svg aria-hidden="true"><use href="#i-click"></use></svg></span>Clicking the image keeps it open</h3>
@@ -258,6 +259,7 @@
 						<li>A reply can carry up to 10 images (pick, paste or drop them on the text box). Alt text, cropping, content warnings, post languages and emoji work just like Bluesky's own reply screen</li>
 						<li>GIFs come from the same GIF search Bluesky uses (KLIPY). A link pasted into the text becomes a link card, a Bluesky post URL becomes a quote, and links in the text are sent in the same shortened form as Bluesky's own app</li>
 						<li>A video can be up to 300MB and 10 minutes (mp4, webm, mov or mpeg). It is sent as the original file, not shrunk, and the upload starts as soon as you attach it. Progress is shown, and sending waits until processing finishes. Alt text and one caption file (.vtt, up to 20KB) are added in the "Captions and ALT" sheet. A video cannot be attached together with images or a GIF, but can be sent together with a quote</li>
+						<li>Use "＋" in the reply box to add follow-up posts and send up to 10 at once. Attachments and content warnings are per post; the post languages apply to the whole thread. The toolbar appears under the post you are writing, and with two or more posts "×" removes one. Empty posts in the middle are skipped after asking</li>
 						<li>Videos in the reply list show as a thumbnail card and play in place when clicked. GIF-style videos play muted. If playback fails, "View in post" takes you to the reply</li>
 						<li>GIFs in the reply list play muted. (When your OS is set to reduce motion, they play only when you click them) Link cards open in a new tab, and quotes take you to the quoted post</li>
 						<li>The action buttons are not shown when you are signed out</li>

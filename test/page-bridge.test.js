@@ -12,7 +12,7 @@ import assert from 'node:assert';
 import {EXT_CONFIG} from '../src/common/config.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {
-	EXT_BRIDGE, checkXrpcRequest, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
+	EXT_BRIDGE, checkXrpcRequest, checkThreadWrites, checkPostRecord, checkPostEmbed, checkSelfLabels, isReplyPostResponse, buildQuery,
 	waitForLightboxHistory, toBlobRef, checkUploadBlob, checkUploadVideo, isBlobRef, BlobInbox, readBlobMessage, toProgressDetail, truncateMessage,
 	createVideoDeps, uploadVideoAction, cancelUploadVideo, setBlobInboxForTest
 } from '../src/inject/page-bridge.js';
@@ -1116,4 +1116,83 @@ test('uploadVideoAction: 動画の到着を待つあいだの取り消しを拾�
 	} finally {
 		setBlobInboxForTest(null);
 	}
+});
+
+const ME = 'did:plc:me';
+/** 返信の連なりを n 件作る (1 件目は他人の投稿への返信) */
+function threadWrites(n) {
+	const root = {uri: 'at://did:plc:other/app.bsky.feed.post/3aaaaaaaaaaa2', cid: 'bafyroot'};
+	const rkeys = ['3m2aaaaaaaaa2', '3m2aaaaaaaaa3', '3m2aaaaaaaaa4', '3m2aaaaaaaaa5', '3m2aaaaaaaaa6',
+		'3m2aaaaaaaaa7', '3m2aaaaaaaaaa', '3m2aaaaaaaaab', '3m2aaaaaaaaac', '3m2aaaaaaaaad', '3m2aaaaaaaaae'];
+	return Array.from({length: n}, (unused, i) => ({
+		$type: 'com.atproto.repo.applyWrites#create',
+		collection: 'app.bsky.feed.post',
+		rkey: rkeys[i],
+		value: {
+			$type: 'app.bsky.feed.post', text: `本文${i}`, createdAt: '2026-10-19T00:00:00.000Z',
+			reply: {root, parent: i === 0 ? root : {uri: `at://${ME}/app.bsky.feed.post/${rkeys[i - 1]}`, cid: `bafy${i - 1}`}}
+		}
+	}));
+}
+
+test('checkThreadWrites: 2 件と 10 件の返信の連なりを通し、キーを 4 つだけ写す', () => {
+	for (const n of [2, 10]) {
+		const writes = threadWrites(n);
+		writes[0].extra = 1;
+		const result = checkThreadWrites(writes, ME);
+		assert.strictEqual(result.ok, false); // 余分なキーは拒む
+		delete writes[0].extra;
+		const ok = checkThreadWrites(writes, ME);
+		assert.strictEqual(ok.ok, true);
+		assert.strictEqual(ok.writes.length, n);
+		assert.deepStrictEqual(Object.keys(ok.writes[0]).sort(), ['$type', 'collection', 'rkey', 'value']);
+	}
+});
+test('checkThreadWrites: 件数・種類・コレクション・rkey を拒む', () => {
+	const reason = (writes) => checkThreadWrites(writes, ME).reason;
+	assert.strictEqual(reason(threadWrites(1)), 'thread-not-allowed');
+	assert.strictEqual(reason(threadWrites(11)), 'thread-not-allowed');
+	assert.strictEqual(reason('x'), 'thread-not-allowed');
+	for (const patch of [
+		(w) => { w[1].$type = 'com.atproto.repo.applyWrites#update'; },
+		(w) => { w[1].$type = 'com.atproto.repo.applyWrites#delete'; },
+		(w) => { w[1].collection = 'app.bsky.feed.like'; w[1].value.$type = 'app.bsky.feed.like'; },
+		(w) => { w[1].rkey = 'self'; },
+		(w) => { w[1].rkey = w[0].rkey; },
+		(w) => { w[1].value.$type = 'app.bsky.feed.like'; }
+	]) {
+		const writes = threadWrites(3);
+		patch(writes);
+		assert.strictEqual(checkThreadWrites(writes, ME).ok, false);
+	}
+});
+test('checkThreadWrites: 返信でない・embed の規則違反は今の返信の検査の理由で拒む', () => {
+	const notReply = threadWrites(2);
+	delete notReply[1].value.reply;
+	assert.strictEqual(checkThreadWrites(notReply, ME).reason, 'post-not-reply');
+	const badEmbed = threadWrites(2);
+	badEmbed[1].value.embed = {$type: 'app.bsky.embed.video', video: 'x'};
+	assert.strictEqual(checkThreadWrites(badEmbed, ME).ok, false);
+});
+test('checkThreadWrites: 連なりが切れていたら拒む', () => {
+	for (const patch of [
+		(w) => { w[2].value.reply.parent = w[0].value.reply.root; },
+		(w) => { w[2].value.reply.parent.uri = `at://did:plc:other/app.bsky.feed.post/${w[1].rkey}`; },
+		(w) => { w[1].value.reply.root = {uri: 'at://did:plc:x/app.bsky.feed.post/3zzzzzzzzzzz2', cid: 'c'}; },
+		(w) => { w[1].value.reply.root = {...w[0].value.reply.root, cid: 'other'}; }
+	]) {
+		const writes = threadWrites(3);
+		patch(writes);
+		assert.strictEqual(checkThreadWrites(writes, ME).reason, 'thread-not-allowed');
+	}
+});
+test('checkXrpcRequest: applyWrites は本人の repo だけ、validate は常に true、swapCommit を落とす', () => {
+	const payload = (repo, extra) => ({nsid: 'com.atproto.repo.applyWrites', body: {repo, writes: threadWrites(2), ...extra}});
+	assert.strictEqual(checkXrpcRequest(payload('did:plc:other'), ME).reason, 'repo-not-self');
+	const ok = checkXrpcRequest(payload(ME, {validate: false, swapCommit: 'bafy'}), ME);
+	assert.strictEqual(ok.ok, true);
+	assert.deepStrictEqual(Object.keys(ok.body).sort(), ['repo', 'validate', 'writes']);
+	assert.strictEqual(ok.body.validate, true);
+	assert.strictEqual(ok.needsReplyCheck, false);
+	assert.strictEqual(checkXrpcRequest(payload(ME), null).reason, 'repo-not-self');
 });

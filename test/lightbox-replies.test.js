@@ -4,10 +4,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {EXT_CONFIG} from '../src/common/config.js';
 import {FakeDocument, FakeEvent, click} from './helpers/fake-dom.js';
 import {LightboxReplies} from '../src/content/lightbox-replies.js';
+import {chainTargets} from '../src/content/reply-thread.js';
 
 /** 1 段目の返信の URI */
 const ANCHOR = 'at://did:plc:a/app.bsky.feed.post/A';
@@ -328,5 +331,191 @@ test('動画: 縦横比の無い動画は compose.video.defaultAspect で枠を�
 		assert.strictEqual(card.style.aspectRatio, `${aspect.width} / ${aspect.height}`);
 	} finally {
 		restore();
+	}
+});
+
+/** 返信の連なりを差し込む先の投稿 */
+const THREAD_POST = {uri: 'at://did:plc:op/app.bsky.feed.post/P', cid: 'cP'};
+
+/**
+ * 送った連なり (3 件) の応答と record を作る。1 件目は投稿への返信、以降は直前の投稿への返信。
+ * @returns {{results: Array<{uri: string, cid: string}>, values: Object[]}}
+ */
+function postedThread() {
+	const results = [1, 2, 3].map((n) => ({uri: `at://did:plc:me/app.bsky.feed.post/r${n}`, cid: `c${n}`}));
+	const root = {uri: THREAD_POST.uri, cid: THREAD_POST.cid};
+	const values = results.map((result, i) => ({
+		$type: 'app.bsky.feed.post',
+		text: `本文${i + 1}`,
+		createdAt: `2026-10-19T00:00:00.00${i}Z`,
+		reply: {root, parent: i === 0 ? root : {uri: results[i - 1].uri, cid: results[i - 1].cid}}
+	}));
+	return {results, values};
+}
+
+test('insertOwnReply: 連なりを送った順に入れると、1 件目は 1 段目の先頭、2 件目以降はその中に古い順で入る', async () => {
+	const previous = globalThis.document;
+	const doc = new FakeDocument();
+	globalThis.document = doc;
+	const counts = [];
+	const replies = new LightboxReplies(EXT_CONFIG.lightboxReplies, {
+		actions: {},
+		adjustReplyCount: (delta) => counts.push(delta),
+		toSegments: (text) => [text],
+		buildSegment: (segment) => doc.createTextNode(segment),
+		leaveTo: () => {},
+		safeHref: () => null,
+		formatDate: (iso) => iso
+	});
+	try {
+		replies.sessionDid = 'did:plc:me';
+		replies.selfProfile = {did: 'did:plc:me', handle: 'me.example.com', displayName: '自分', avatarUrl: null};
+		replies.items = [];
+		const list = doc.createElement('ul');
+		// 偽の DOM は prepend を持たないため、先頭への差し込みだけを足す
+		list.prepend = (node) => list.insertBefore(node, list.childNodes[0] ?? null);
+		replies.listEl = list;
+		doc.body.append(list);
+		const first = {uri: THREAD_POST.uri, cid: THREAD_POST.cid, replyRef: null, isPost: true, anchorUri: null, handle: 'op'};
+		const {results, values} = postedThread();
+		const targets = chainTargets(first, results, values, 'me.example.com');
+		results.forEach((result, i) => {
+			replies.insertOwnReply(targets[i], replies.buildOwnItem(result, values[i], targets[i], null), null);
+		});
+		assert.deepStrictEqual(replies.items.map((item) => item.uri), [results[0].uri]);
+		assert.deepStrictEqual(counts, [1]);
+		assert.strictEqual(replies.listEl.children.length, 1);
+		const branch = replies.branches.get(results[0].uri);
+		assert.ok(branch && branch.open, '1 件目の返信の中が開いていない');
+		assert.deepStrictEqual(branch.items.map((item) => item.uri), [results[1].uri, results[2].uri]);
+		// 1 件目への直接の返信だけを数え、3 件目には「返信先 @自分」が付く
+		assert.strictEqual(replies.rows.get(results[0].uri).item.replyCount, 1);
+		assert.strictEqual(branch.items[0].parentHandle, null);
+		assert.strictEqual(branch.items[1].parentHandle, 'me.example.com');
+		assert.strictEqual(replies.rows.get(results[0].uri).area.hidden, false);
+	} finally {
+		globalThis.document = previous;
+	}
+});
+
+/**
+ * 一覧の取り直し (reloadList) を試す返信欄を作る。待ち時間は config の写しで短くする
+ * (待つ時間は呼んだときに this.config から読むため、写しを渡せば本物のタイマーのまま短くできる)。
+ * @param {{delayMs: number, thread: Object|null}} options 待ち時間と、fetchThread が返すスレッド
+ * @returns {Object}
+ */
+function setupReload({delayMs, thread}) {
+	const previous = globalThis.document;
+	const doc = new FakeDocument();
+	globalThis.document = doc;
+	const base = EXT_CONFIG.lightboxReplies;
+	const config = {...base, compose: {...base.compose, thread: {...base.compose.thread, unconfirmedReloadDelayMs: delayMs}}};
+	const fetched = [];
+	const replies = new LightboxReplies(config, {
+		actions: {fetchThread: async (uri, depth) => {
+			fetched.push({uri, depth});
+			return thread;
+		}},
+		adjustReplyCount: () => {},
+		toSegments: (text) => [text],
+		buildSegment: (segment) => doc.createTextNode(segment),
+		leaveTo: () => {},
+		safeHref: () => null,
+		formatDate: (iso) => iso
+	});
+	replies.fetchPublicJson = async () => null;
+	replies.sessionDid = 'did:plc:me';
+	// 返信数 0 の投稿 (load() なら取りに行かない)
+	replies.post = {postUri: 'at://did:plc:op/app.bsky.feed.post/root1', cid: 'c', counts: {reply: 0}, viewer: {}};
+	replies.items = [];
+	replies.loadState = 'loaded';
+	replies.listEl = doc.createElement('ul');
+	replies.statusEl = doc.createElement('div');
+	replies.moreButton = doc.createElement('button');
+	const fake = (el) => ({el, destroyed: false, destroy() {
+		this.destroyed = true;
+		this.el.remove();
+	}});
+	replies.formSlot = doc.createElement('div');
+	const main = fake(doc.createElement('div'));
+	replies.formSlot.append(main.el);
+	replies.mainComposer = main;
+	replies.composers.add(main);
+	const row = fake(doc.createElement('div'));
+	replies.composers.add(row);
+	replies.rowForm = {composer: row, button: doc.createElement('button')};
+	return {replies, fetched, main, row, restore: () => {
+		globalThis.document = previous;
+	}};
+}
+
+/**
+ * ms ミリ秒待つ。
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+test('reloadList: 待った後に返信数によらず取り直し、一覧だけを描き直す (入力欄は作り直さず、返信への返信の入力欄は閉じる)', async () => {
+	const thread = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'get-post-thread-root.json'), 'utf8'));
+	const {replies, fetched, main, row, restore} = setupReload({delayMs: 1, thread});
+	try {
+		await replies.reloadList();
+		assert.deepStrictEqual(fetched, [{uri: replies.post.postUri, depth: EXT_CONFIG.lightboxReplies.depth.root}]);
+		assert.strictEqual(replies.loadState, 'loaded');
+		assert.ok(replies.items.length > 0, '取り直した返信が入っていない');
+		assert.strictEqual(replies.listEl.children.length, Math.min(replies.items.length, EXT_CONFIG.lightboxReplies.pageSize));
+		assert.strictEqual(replies.mainComposer, main);
+		assert.strictEqual(main.destroyed, false);
+		assert.strictEqual(main.el.parentNode, replies.formSlot);
+		assert.strictEqual(row.destroyed, true);
+		assert.strictEqual(replies.rowForm, null);
+	} finally {
+		restore();
+	}
+});
+
+test('reloadList: 待っているあいだに世代が変わったら何もしない', async () => {
+	const {replies, fetched, row, restore} = setupReload({delayMs: 20, thread: {thread: {replies: []}}});
+	try {
+		const reloading = replies.reloadList();
+		replies.generation += 1;
+		await reloading;
+		assert.deepStrictEqual(fetched, []);
+		assert.strictEqual(row.destroyed, false);
+		assert.strictEqual(replies.loadState, 'loaded');
+	} finally {
+		restore();
+	}
+});
+
+test('reloadList: 取り直しに失敗したら一覧を読み込めなかった状態にし、入力欄は残す', async () => {
+	const {replies, main, restore} = setupReload({delayMs: 1, thread: null});
+	try {
+		await replies.reloadList();
+		assert.strictEqual(replies.loadState, 'error');
+		assert.ok(replies.statusEl.textContent.includes(EXT_CONFIG.lightboxReplies.text.error));
+		assert.strictEqual(main.destroyed, false);
+	} finally {
+		restore();
+	}
+});
+
+test('reloadList: 返信への返信の入力欄に書きかけがあるか送信中なら、取り直さずに入力欄を残す', async () => {
+	for (const state of [{draft: true, busy: false}, {draft: false, busy: true}]) {
+		const {replies, fetched, row, main, restore} = setupReload({delayMs: 1, thread: {thread: {replies: []}}});
+		try {
+			row.hasDraft = () => state.draft;
+			row.busy = state.busy;
+			await replies.reloadList();
+			assert.deepStrictEqual(fetched, [], JSON.stringify(state));
+			assert.strictEqual(row.destroyed, false);
+			assert.ok(replies.rowForm && replies.rowForm.composer === row, '返信への返信の入力欄が閉じられた');
+			assert.strictEqual(main.destroyed, false);
+		} finally {
+			restore();
+		}
 	}
 });

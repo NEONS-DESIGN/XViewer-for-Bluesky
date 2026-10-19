@@ -1,0 +1,548 @@
+[
+	{
+		"kind": "record",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3my43eyfzs225",
+		"cid": "bafyreicumqqq5pqzxcimayqcxz3o2gl6dhl7yjjxlnkzkigbsl4gpixppe",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-17T21:55:13.889Z",
+			"embed": {
+				"$type": "app.bsky.embed.record",
+				"record": {
+					"cid": "bafyreibgsjbesw7kf3l6o7r5uixnntoa2em3tmtaisjtl2aa6jfg66x4jq",
+					"uri": "at://did:plc:2eq3273yo4eq7xi7wxz2wqav/app.bsky.feed.post/3my3smgpxik2m"
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"text": "no kings includes billionaires who think they’re kings"
+		}
+	},
+	{
+		"kind": "images",
+		"uri": "at://did:plc:pbvdchux22p3dblf47xgtq3m/app.bsky.feed.post/3mxu23gu4yc2f",
+		"cid": "bafyreiabutis5l2hwhzywb4qhjcaoi36qtmk3lnqddiqelpbuwohnmrrae",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-14T17:10:41.835Z",
+			"embed": {
+				"$type": "app.bsky.embed.images",
+				"images": [
+					{
+						"alt": "",
+						"aspectRatio": {
+							"height": 414,
+							"width": 736
+						},
+						"image": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreidusfmhiek5cgq54pjvhnw7zqqp2mwgxhldnd6o6dylyr2wxzwmrq"
+							},
+							"mimeType": "image/jpeg",
+							"size": 161103
+						}
+					},
+					{
+						"alt": "",
+						"aspectRatio": {
+							"height": 1508,
+							"width": 2731
+						},
+						"image": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreidaiqyssttdpbicn3facfocml4h7qav4yvq5yp3ndmjpks5x23ni4"
+							},
+							"mimeType": "image/jpeg",
+							"size": 1731562
+						}
+					},
+					{
+						"alt": "",
+						"aspectRatio": {
+							"height": 360,
+							"width": 642
+						},
+						"image": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreigxslhhc62pjurjy67n3th2ssa5bp7nn22klzjfff4ebvkqy5i264"
+							},
+							"mimeType": "image/jpeg",
+							"size": 185759
+						}
+					},
+					{
+						"alt": "",
+						"aspectRatio": {
+							"height": 720,
+							"width": 1280
+						},
+						"image": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreigggjubodzks66lxeywuiqim4bpwsvksigap23n72nfegvw6ezoli"
+							},
+							"mimeType": "image/jpeg",
+							"size": 255421
+						}
+					}
+				]
+			},
+			"langs": [
+				"en"
+			],
+			"text": "The Bob's Burgers illustrators love accurate buildings and infrastructure, down to the framing, plumbing, wiring. The boiler has an expansion tank. The power poles have transformers wired up just like they should be. There's a gas meter in the alley. The under-sink plumbing is detailed and correct"
+		}
+	},
+	{
+		"kind": "text+reply",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mxyzdzx2dc2t",
+		"cid": "bafyreic2blhmebx4rwjiqk2hht3cwn7kfuy7ziw5jgdm3pdp7lgmv2i4pe",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-16T16:40:55.242Z",
+			"langs": [
+				"en"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreicmigj36ktefy3lwdrcwcsr7i4khayeiqlhkgfxnfzdzypva7zaju",
+					"uri": "at://did:plc:kbwkbgkz2zssoj22ebartpgy/app.bsky.feed.post/3mxwy7vngcs2z"
+				},
+				"root": {
+					"cid": "bafyreicmigj36ktefy3lwdrcwcsr7i4khayeiqlhkgfxnfzdzypva7zaju",
+					"uri": "at://did:plc:kbwkbgkz2zssoj22ebartpgy/app.bsky.feed.post/3mxwy7vngcs2z"
+				}
+			},
+			"text": "ope! I brought the hotdish"
+		}
+	},
+	{
+		"kind": "video",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mxyyerrxak2m",
+		"cid": "bafyreicvxpmlfzbdsv2hkn34nfxadl6oaih6otkyggl4voijihm74ztyn4",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-16T16:23:26.498Z",
+			"embed": {
+				"$type": "app.bsky.embed.video",
+				"alt": "A video showing the Bluesky interface as a user clicks through to see quotes on an individual posts. Two tabs at the top let them sort between a reverse chronological view (latest), and the quotes with the most engagement (top)",
+				"aspectRatio": {
+					"height": 1000,
+					"width": 1000
+				},
+				"presentation": "default",
+				"video": {
+					"$type": "blob",
+					"ref": {
+						"$link": "bafkreiat76ppqns6bcnxnt6etzlyoar4o75v6wrzwjbh342oxbsebyun5e"
+					},
+					"mimeType": "video/mp4",
+					"size": 3850070
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"text": "v1.135 is live!\n\nYou can now browse quote posts by Top in addition to Latest. And posts keep their thread numbering when quoted.\n\nThese changes are rolling out now. If you don’t see them yet, try refreshing your browser or visiting the app store to make sure you’ve updated to the latest version."
+		}
+	},
+	{
+		"kind": "external",
+		"uri": "at://did:plc:quzcwmqdsnbosevdgj3bmtq2/app.bsky.feed.post/3mxxid5w4kc2p",
+		"cid": "bafyreia7rzzlft5mucil3dsol7ppdzdjjrgb255j7fgrw3c5y5huih642a",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-16T02:03:32.500Z",
+			"embed": {
+				"$type": "app.bsky.embed.external",
+				"external": {
+					"description": "I eagerly await your response.",
+					"thumb": {
+						"$type": "blob",
+						"ref": {
+							"$link": "bafkreifqtnmxqyvc2uu6p6i6noasqz2ldgitscjg44bl3whcgkzl4nyc54"
+						},
+						"mimeType": "image/jpeg",
+						"size": 201067
+					},
+					"title": "This Is Edgar Allan Poe, and I Am Begging Kelly Clarkson to Take My Bird",
+					"uri": "https://www.theatlantic.com/newsletters/2026/10/edgar-allan-poe-kelly-clarkson-bird/689014/?gift=jQN1t1D1nkO2TQodBiz5KOZJNTN9wvJp-JD9t7zSSao&utm_source=copy-link&utm_medium=social&utm_campaign=share"
+				}
+			},
+			"facets": [
+				{
+					"features": [
+						{
+							"$type": "app.bsky.richtext.facet#link",
+							"uri": "https://www.theatlantic.com/newsletters/2026/10/edgar-allan-poe-kelly-clarkson-bird/689014/?gift=jQN1t1D1nkO2TQodBiz5KOZJNTN9wvJp-JD9t7zSSao&utm_source=copy-link&utm_medium=social&utm_campaign=share"
+						}
+					],
+					"index": {
+						"byteEnd": 107,
+						"byteStart": 72
+					}
+				}
+			],
+			"langs": [
+				"en"
+			],
+			"text": "This Is Edgar Allan Poe And I Am Begging Kelly Clarkson To Take My Bird www.theatlantic.com/newsletters/..."
+		}
+	},
+	{
+		"kind": "record+reply",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mxuhakymek23",
+		"cid": "bafyreicknndnopninmxniaisq2tdlxkfm3tcuyyjzjihwh4spnnbudfo3a",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-14T21:06:12.578Z",
+			"embed": {
+				"$type": "app.bsky.embed.record",
+				"record": {
+					"cid": "bafyreib32ctsyvcawbud3xnarenm62e2khd24xb7rbtapothyz2lqf4djm",
+					"uri": "at://did:plc:vva5bw27atiw7itylau5zkmi/app.bsky.feed.post/3mxtpokyhko2x"
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreiguatq2lf3jutlhvubnxk4bvv6drs5lun4hopijrgdn6fjotqw4mi",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mxuhaky3rc23"
+				},
+				"root": {
+					"cid": "bafyreiguatq2lf3jutlhvubnxk4bvv6drs5lun4hopijrgdn6fjotqw4mi",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mxuhaky3rc23"
+				}
+			},
+			"text": "Canadians remember this classic Heritage Minute"
+		}
+	},
+	{
+		"kind": "text",
+		"uri": "at://did:plc:gsbue2dtbtqzw5du5btlh7p2/app.bsky.feed.post/3mxprapc2g22p",
+		"cid": "bafyreihicrmrs4khdsfaqru47f3mirl72iiqv6gpkldobuh6bv5mvonvsq",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-13T00:21:55.823Z",
+			"facets": [
+				{
+					"$type": "app.bsky.richtext.facet",
+					"features": [
+						{
+							"$type": "app.bsky.richtext.facet#mention",
+							"did": "did:plc:sppiplftd2sxt3hbw7htj3b5"
+						}
+					],
+					"index": {
+						"byteEnd": 242,
+						"byteStart": 226
+					}
+				}
+			],
+			"langs": [
+				"en"
+			],
+			"text": "we just pushed an update to search so it favors recency more, which should give better results for topical things, notable people, news, etc. \n\nmight need more tuning, so give it a try and let me know what you think. props to @treethought.xyz for this update"
+		}
+	},
+	{
+		"kind": "recordWithMedia+images",
+		"uri": "at://did:plc:j54ofwzkxbeyjs6m2jwvwuro/app.bsky.feed.post/3mxkb3qz4cs27",
+		"cid": "bafyreifu6vbbbt67erc2dacxzkhzwcxmqqcxrs4bzttsvu347liiwktzdy",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-10T19:49:31.289Z",
+			"embed": {
+				"$type": "app.bsky.embed.recordWithMedia",
+				"media": {
+					"$type": "app.bsky.embed.images",
+					"images": [
+						{
+							"alt": "",
+							"aspectRatio": {
+								"height": 1440,
+								"width": 1080
+							},
+							"image": {
+								"$type": "blob",
+								"ref": {
+									"$link": "bafkreih4c2dmipplscpctkaqwdw5f66dnx7jg4zbvrw2w3livwxgkndx5i"
+								},
+								"mimeType": "image/jpeg",
+								"size": 656371
+							}
+						}
+					]
+				},
+				"record": {
+					"$type": "app.bsky.embed.record",
+					"record": {
+						"cid": "bafyreigfvjyctcxjxhxq2dnfzkhxymto5ldh24euk6raewaeg7ln37n7ei",
+						"uri": "at://did:plc:5dha4eux2jvil7raud3rlbed/app.bsky.feed.post/3mxk4ubvur22l"
+					}
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"text": "i got so many people calling this tweet fakeposting back when i made it but since this is bluesky and things have less reach on here im just going to post the photo"
+		}
+	},
+	{
+		"kind": "external+reply",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mv462yda4k2l",
+		"cid": "bafyreic6pcivx4vber63nllsnnx7duvy4tqrumt25ulsk6fnnmmt6cazma",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-09-09T18:27:44.595Z",
+			"embed": {
+				"$type": "app.bsky.embed.external",
+				"external": {
+					"description": "Join the conversation",
+					"thumb": {
+						"$type": "blob",
+						"ref": {
+							"$link": "bafkreidrdfwri5sc7ojnnkwtkldd7i2rqze7zk3vdw6dchwsv4dvfm3i3i"
+						},
+						"mimeType": "image/jpeg",
+						"size": 641882
+					},
+					"title": "Apple Experts",
+					"uri": "https://go.bsky.app/AjuvkDc"
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreifbh72u625zonuspnykc2zlpl263bwvtkdkhildcfsakno3n6r2jy",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mv45zmynys2l"
+				},
+				"root": {
+					"cid": "bafyreibgeus3sex7ipjitdvijogiwzwvelqooah3bjw72t3vx476anzklm",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mv3zcjaijk22"
+				}
+			},
+			"text": "Thank you for coming to today’s Apple event! You can find these and more Apple products at your nearest grocery store, farmers’ market, or orchard."
+		}
+	},
+	{
+		"kind": "images+reply",
+		"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mupeojdplk2k",
+		"cid": "bafyreia65sgka6ssqv3ez63oaxmiz5xu744og25tif75qdvrowc7xkv7uy",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-09-04T16:21:11.629Z",
+			"embed": {
+				"$type": "app.bsky.embed.images",
+				"images": [
+					{
+						"alt": "A graphic with screenshots of the Bluesky app, including a menu option that says \"Opt out of starter pack.\"\n\nThe text reads: \"Opt out of starter packs. Don't want to be in someone else's starter pack? Now you can remove yourself from it.\"",
+						"aspectRatio": {
+							"height": 1968,
+							"width": 3300
+						},
+						"image": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreib77v32vt6epsvo26phqi3lrx6ch3rgtclbwjpav2lohyd7smzgrq"
+							},
+							"mimeType": "image/jpeg",
+							"size": 1412889
+						}
+					}
+				]
+			},
+			"langs": [
+				"en"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreiascok2wbvkm2yjpb4xxuoo5zadjwvgkgfuytlpvn73b5cmvmgyie",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mupeo3so622k"
+				},
+				"root": {
+					"cid": "bafyreiascok2wbvkm2yjpb4xxuoo5zadjwvgkgfuytlpvn73b5cmvmgyie",
+					"uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mupeo3so622k"
+				}
+			},
+			"text": "We know not everyone wants to be featured in someone else's Starter Pack, so we're making it easier to opt out. Just open the Starter Pack, tap the three-dot icon at the top of the page, and select \"Opt out of Starter Pack.\""
+		}
+	},
+	{
+		"kind": "recordWithMedia+video",
+		"uri": "at://did:plc:7exy3k53z33dvghn6edyayxt/app.bsky.feed.post/3my4nvqmadoka",
+		"cid": "bafyreignkj446gz6jvq37o33jcq6aqttnmw3juy3ajmxzflkvndsi3rvya",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-18T03:26:42.945Z",
+			"embed": {
+				"$type": "app.bsky.embed.recordWithMedia",
+				"media": {
+					"$type": "app.bsky.embed.video",
+					"aspectRatio": {
+						"height": 1080,
+						"width": 1920
+					},
+					"presentation": "default",
+					"video": {
+						"$type": "blob",
+						"ref": {
+							"$link": "bafkreiaispwrssgegxv2ryykr7q6qkvaio6pxssnlgdgxmr7q5nw2guzt4"
+						},
+						"mimeType": "video/mp4",
+						"size": 22549759
+					}
+				},
+				"record": {
+					"$type": "app.bsky.embed.record",
+					"record": {
+						"cid": "bafyreihul3f5sdejcw2pzlnpqcbnblq4papag35te2mcvexkw74aiwouxe",
+						"uri": "at://did:plc:7exy3k53z33dvghn6edyayxt/app.bsky.feed.post/3my4li3madoka"
+					}
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"text": "excuse my bad recording quality but i didn't want to reinstall it to a vm rn",
+			"via": "Witchsky Web App"
+		}
+	},
+	{
+		"kind": "video+reply",
+		"uri": "at://did:plc:ragtjsm2j2vknwkz3zp4oxrd/app.bsky.feed.post/3mxrv7st2232y",
+		"cid": "bafyreiabqd7w5i5aupkc5q7cjlav5lnjyy5pfbnrp4l6vf45p5fnbmvuzu",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-13T20:38:20.416Z",
+			"embed": {
+				"$type": "app.bsky.embed.video",
+				"aspectRatio": {
+					"height": 640,
+					"width": 1920
+				},
+				"presentation": "default",
+				"video": {
+					"$type": "blob",
+					"ref": {
+						"$link": "bafkreic4bdvxy65wg2cv6g6pb26sdpqwjtrhso2l3d4yemljjqwugijoei"
+					},
+					"mimeType": "video/mp4",
+					"size": 31647544
+				}
+			},
+			"langs": [
+				"en"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreiacttfmnt5oml4i44tbtfduyj3oi7ps4vpyllw5fsrbx3a3muhfii",
+					"uri": "at://did:plc:ragtjsm2j2vknwkz3zp4oxrd/app.bsky.feed.post/3mxruga6up32y"
+				},
+				"root": {
+					"cid": "bafyreibkarhvytnbaiv6bkkxg5dhtg4wcbwoycawhj6noeg7vzpufth43u",
+					"uri": "at://did:plc:ragtjsm2j2vknwkz3zp4oxrd/app.bsky.feed.post/3mxrqucq3l22y"
+				}
+			},
+			"text": "Sadly I can't quite coax suno into giving me multiple different voices for an ensemble piece. (Lyrics mine.)"
+		}
+	},
+	{
+		"kind": "recordWithMedia+external",
+		"uri": "at://did:plc:kotkwo6pzqa4uoie3atjj2sn/app.bsky.feed.post/3mxwsrbliic2f",
+		"cid": "bafyreibrbzwagpd6w5yd2gifgxf2fjqhzi7j2ve3pyczizgrec7dui4jh4",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2026-10-15T19:37:43.788Z",
+			"embed": {
+				"$type": "app.bsky.embed.recordWithMedia",
+				"media": {
+					"$type": "app.bsky.embed.external",
+					"external": {
+						"creator": "did:plc:kotkwo6pzqa4uoie3atjj2sn",
+						"description": "Play Anthony Ha's Tetris Test — clear lines, chase the high score, and don't be late to the Disrupt stage.",
+						"thumb": {
+							"$type": "blob",
+							"ref": {
+								"$link": "bafkreigoaexrsla6sfem4532e4g5br4r3iuidwbusishfnhmw44af3k2yy"
+							},
+							"mimeType": "image/jpeg",
+							"size": 166937
+						},
+						"title": "The Face of TechCrunch: Tetris",
+						"uri": "https://bubbling-gleeful-dell.attie.site"
+					}
+				},
+				"record": {
+					"$type": "app.bsky.embed.record",
+					"record": {
+						"cid": "bafyreiane7klqxrsrpquiky3c7wk3cpr2cp5rd4y56mitpu3bkp62mg73a",
+						"uri": "at://did:plc:kotkwo6pzqa4uoie3atjj2sn/app.bsky.feed.post/3mxuf2znhjs26"
+					}
+				}
+			},
+			"facets": [
+				{
+					"$type": "app.bsky.richtext.facet",
+					"features": [
+						{
+							"$type": "app.bsky.richtext.facet#mention",
+							"did": "did:plc:tui2e2i7qre574w36qpqilxd"
+						}
+					],
+					"index": {
+						"byteEnd": 59,
+						"byteStart": 37
+					}
+				},
+				{
+					"features": [
+						{
+							"$type": "app.bsky.richtext.facet#link",
+							"uri": "https://bubbling-gleeful-dell.attie.site"
+						}
+					],
+					"index": {
+						"byteEnd": 125,
+						"byteStart": 93
+					}
+				}
+			],
+			"langs": [
+				"en"
+			],
+			"text": "wanted to test this out so i made my @anthonyha.bsky.social fever dream into a game, idk man bubbling-gleeful-dell.attie.site"
+		}
+	},
+	{
+		"kind": "text+reply+ja-emoji",
+		"uri": "at://did:plc:vjug55kidv6sye7ykr5faxxn/app.bsky.feed.post/3lqgvty5gts2h",
+		"cid": "bafyreigwanvwj6mqywkivt6otvx6dl4pxfsaizjlblpqzhzvdaa3o6gm3y",
+		"record": {
+			"$type": "app.bsky.feed.post",
+			"createdAt": "2025-05-31T04:27:46.484Z",
+			"langs": [
+				"ja"
+			],
+			"reply": {
+				"parent": {
+					"cid": "bafyreicrm2s4fadqabvyfy72alrbxeb625r6p5efw2jd4gmg4e7d5rh6xu",
+					"uri": "at://did:plc:mou6t7mhh4ddhcake2a4d53r/app.bsky.feed.post/3lqgtjk5oos2b"
+				},
+				"root": {
+					"cid": "bafyreicrm2s4fadqabvyfy72alrbxeb625r6p5efw2jd4gmg4e7d5rh6xu",
+					"uri": "at://did:plc:mou6t7mhh4ddhcake2a4d53r/app.bsky.feed.post/3lqgtjk5oos2b"
+				}
+			},
+			"text": "どうもありがとう💕"
+		}
+	}
+]

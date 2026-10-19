@@ -810,6 +810,96 @@
 	margin: 8px 0;
 }
 
+/*
+ * 投稿を並べる入れ物。上下の余白は入れ物が持ち、中の投稿は余白なしで並べる。
+ * 末尾の 1 行 (返信の作成の失敗) は投稿の中の 1 行と同じ間隔 (隙間 4px + 上の余白 4px) で出す
+ */
+.ext-lb-composer-thread {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin: 8px 0;
+}
+
+.ext-lb-composer-thread > .ext-lb-reply-form {
+	margin: 0;
+}
+
+/*
+ * 投稿が 2 件以上のとき (入れ物が is-multi を付ける)。入力欄は見出しごと上端に貼り付くため、
+ * 投稿が増えるとパネルを埋めて一覧が隠れ、アクティブな投稿の送信ボタンにも届かなくなる。
+ * 高さをビューポートの 60% までにして中でスクロールさせ、一覧の頭が見える分を残す
+ * (パネルはビューポートの高さいっぱいで、見出しの行と一覧の数行が下に入る)。
+ * 中の余白は、端の投稿のボタンのフォーカスの輪郭 (2px + 隙間 2px) が切れないための分。
+ * 投稿が 1 件のときは今までどおり上限を付けない
+ */
+.ext-lb-composer-thread.is-multi {
+	max-height: 60vh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 4px;
+	margin: 4px -4px;
+}
+
+/*
+ * アクティブでない投稿 (投稿が 2 件以上あるとき、フォーカスの外の投稿)。本体と同じく薄く描く。
+ * ツールバーは JS が hidden で隠す。押せばその投稿にフォーカスが移ってアクティブになる。
+ * 投稿の知らせの 1 行 (画像を送れなかったなど) は読めるよう薄くしない
+ */
+.ext-lb-composer-post.is-inactive > :not(.ext-lb-reply-error) {
+	opacity: 0.5;
+}
+
+/*
+ * 途中の空の投稿を飛ばすかの問い合わせ。入れ物の末尾の 1 行と同じ位置に出し、本文の字下げに揃える。
+ * 入れ物は .ext-lb-composer の外なので、ボタンのフォーカスの見え方もここで持つ
+ */
+.ext-lb-composer-skip-empty {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin: 4px 0 0 var(--ext-lb-composer-indent);
+	padding: 6px 6px 6px 10px;
+	border: 1px solid var(--ext-lb-border);
+	border-radius: 6px;
+	font-size: 12px;
+}
+
+.ext-lb-composer-skip-empty-text {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.ext-lb-composer-skip-empty-keep,
+.ext-lb-composer-skip-empty-send {
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 12px;
+	cursor: pointer;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 700;
+}
+
+.ext-lb-composer-skip-empty-keep {
+	color: var(--ext-lb-text);
+	background: transparent;
+	border: 1px solid var(--ext-lb-border);
+}
+
+.ext-lb-composer-skip-empty-send {
+	color: #ffffff;
+	background: var(--ext-lb-primary);
+	border: none;
+}
+
+.ext-lb-composer-skip-empty button:focus-visible {
+	outline: 2px solid var(--ext-lb-accent);
+	outline-offset: 2px;
+}
+
 .ext-lb-reply-form-row {
 	display: flex;
 	align-items: flex-start;
@@ -913,8 +1003,10 @@
 
 /*
  * 返信の入力欄の部品 (添付のプレビュー・ラベル・言語の提案・ツールバー)。
- * 本文の欄の左にアバター (32px + 隙間 8px) があるため、下に積む部品はその分だけ字下げする
+ * 本文の欄の左にアバター (32px + 隙間 8px) があるため、下に積む部品はその分だけ字下げする。
+ * 投稿を並べる入れ物 (空の投稿の問い合わせを持つ) にも同じ値を渡す
  */
+.ext-lb-composer-thread,
 .ext-lb-composer {
 	--ext-lb-composer-indent: 40px;
 	--ext-lb-composer-overlay: color-mix(in srgb, #000000 65%, transparent);
@@ -1189,6 +1281,68 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/*
+ * 「＋」(スレッドに投稿を足す)。見た目はツールのボタンと同じで、言語の左に置く。
+ * 出ているあいだは右寄せの起点 (margin-left: auto) を言語からこちらへ移す (足せないときは要素ごと外す)
+ */
+.ext-lb-composer-add-post {
+	margin-left: auto;
+}
+
+.ext-lb-composer-add-post + .ext-lb-composer-lang {
+	margin-left: 0;
+}
+
+/*
+ * 投稿を消す「×」。本文の枠の右上に置く。押せる大きさ (30px) を保ったまま 1 行の枠の高さを変えないよう、
+ * 枠の余白 (上下 6px・右 8px) に食い込ませる。聞き返しのあいだは「本当に削除？」の文字を赤で出す
+ */
+.ext-lb-composer-remove-post {
+	flex: 0 0 auto;
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 30px;
+	height: 30px;
+	margin: -5px -6px -5px 4px;
+	padding: 0;
+	cursor: pointer;
+	color: var(--ext-lb-muted);
+	background: transparent;
+	border: none;
+	border-radius: 999px;
+	font: inherit;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.ext-lb-composer-remove-post svg {
+	width: 18px;
+	height: 18px;
+}
+
+.ext-lb-composer-remove-post:hover:not(:disabled) {
+	color: var(--ext-lb-text);
+	background: color-mix(in srgb, var(--ext-lb-text) 10%, transparent);
+}
+
+.ext-lb-composer-remove-post.is-confirming {
+	padding: 0 10px;
+	color: var(--ext-lb-danger);
+	font-weight: 700;
+}
+
+.ext-lb-composer-remove-post.is-confirming:hover:not(:disabled) {
+	color: var(--ext-lb-danger);
+	background: color-mix(in srgb, var(--ext-lb-danger) 12%, transparent);
+}
+
+.ext-lb-composer-remove-post:disabled {
+	cursor: default;
+	opacity: 0.6;
 }
 
 /*

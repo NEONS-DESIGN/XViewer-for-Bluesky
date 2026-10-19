@@ -48,7 +48,8 @@ export const EXT_BRIDGE = {
 		/**
 		 * recordWrite: true は checkXrpcRequest() が collection / repo の
 		 * 検査を課す目印。**文字列リテラルで別置きしない。**
-		 * ここに新しく repo 書き込み系の NSID を足すときは必ず付けること。
+		 * ここに新しく repo 書き込み系の NSID を足すときは必ず recordWrite か threadWrite
+		 * (返信の連なりの applyWrites) のどちらかを付けること。
 		 * bodyKeys は POST の body に通すキーの白名簿。ここに無いキー
 		 * (validate / swapCommit など) は落として送る。record を持つものは
 		 * record.$type が collection と一致することも要求する
@@ -56,6 +57,17 @@ export const EXT_BRIDGE = {
 		[NSID.createRecord]: {
 			target: 'pds', method: 'POST', recordWrite: true,
 			bodyKeys: ['repo', 'collection', 'record']
+		},
+		/**
+		 * threadWrite: true は自分の返信の連なり (create の 2〜10 件) だけを通す目印。
+		 * checkXrpcRequest() が repo と checkThreadWrites() の検査を課す。
+		 * recordWrite と同じく文字列リテラルで別置きしない。
+		 * bodyKeys は白名簿の形を揃えるために書いてあるだけで、threadWrite の分岐は使わない
+		 * (body はその分岐が {repo, writes, validate: true} に組み直す)
+		 */
+		[NSID.applyWrites]: {
+			target: 'pds', method: 'POST', threadWrite: true,
+			bodyKeys: ['repo', 'writes']
 		},
 		[NSID.deleteRecord]: {
 			target: 'pds', method: 'POST', recordWrite: true,
@@ -76,6 +88,7 @@ export const EXT_BRIDGE = {
 	recordCollections: Object.freeze(Object.values(BRIDGE_PROTOCOL.collections)),
 	postCollection: BRIDGE_PROTOCOL.collections.post,
 	postRecord: BRIDGE_PROTOCOL.postRecord,
+	thread: BRIDGE_PROTOCOL.thread,
 	/** 返信の root / parent に置ける投稿の AT URI */
 	postUriPattern: /^at:\/\/[^/]+\/app\.bsky\.feed\.post\/[^/]+$/,
 	/** open-composer が受け付けるモード */
@@ -810,10 +823,74 @@ export function isReplyPostResponse(json, uri) {
 }
 
 /**
+ * applyWrites の writes (返信の連なり) を検査する。
+ * 通すのは app.bsky.feed.post の create だけで、各 value は checkPostRecord() を通り、
+ * 1 件目の root を全員が共有し、2 件目以降の parent は直前の件 (自分の repo) を指す。
+ * @param {*} writes body.writes
+ * @param {string} repo 本人の DID
+ * @returns {{ok: true, writes: Object[]}|{ok: false, reason: string}} writes は
+ *   4 つのキーだけを写したもの
+ */
+export function checkThreadWrites(writes, repo) {
+	const fail = {ok: false, reason: BRIDGE_PROTOCOL.reasons.threadNotAllowed};
+	const rule = EXT_BRIDGE.thread;
+	try {
+		if (!Array.isArray(writes) || writes.length < rule.minPosts || writes.length > rule.maxPosts) {
+			return fail;
+		}
+		const tid = new RegExp(rule.tidPattern);
+		const seen = new Set();
+		const checked = [];
+		for (let i = 0; i < writes.length; i += 1) {
+			const write = writes[i];
+			if (!write || typeof write !== 'object' || Array.isArray(write)) {
+				return fail;
+			}
+			const keys = Object.keys(write);
+			if (keys.length !== rule.writeKeys.length
+				|| keys.some((key) => rule.writeKeys.indexOf(key) === -1)) {
+				return fail;
+			}
+			if (write.$type !== rule.createType || write.collection !== EXT_BRIDGE.postCollection
+				|| typeof write.rkey !== 'string' || !tid.test(write.rkey) || seen.has(write.rkey)) {
+				return fail;
+			}
+			seen.add(write.rkey);
+			const value = write.value;
+			if (!value || typeof value !== 'object' || value.$type !== write.collection) {
+				return fail;
+			}
+			const postCheck = checkPostRecord(value);
+			if (!postCheck.ok) {
+				return postCheck;
+			}
+			checked.push({
+				$type: write.$type, collection: write.collection, rkey: write.rkey, value
+			});
+		}
+		const root = checked[0].value.reply.root;
+		for (let i = 1; i < checked.length; i += 1) {
+			const reply = checked[i].value.reply;
+			const previousUri = `at://${repo}/${EXT_BRIDGE.postCollection}/${checked[i - 1].rkey}`;
+			if (reply.parent.uri !== previousUri
+				|| reply.root.uri !== root.uri || reply.root.cid !== root.cid) {
+				return fail;
+			}
+		}
+		return {ok: true, writes: checked};
+	} catch (error) {
+		return fail;
+	}
+}
+
+/**
  * call-xrpc の要求を検査する。**通らないものはここで落とす。**
  * NSID の白名簿、レコード書き込みの collection、repo が本人かの 3 段。
  * 投稿の作成は返信の record だけを通し、投稿の削除には needsReplyCheck を
- * 付けて返す (消す相手が返信であることの確認は通信を伴うため callXrpc() が行う)
+ * 付けて返す (消す相手が返信であることの確認は通信を伴うため callXrpc() が行う)。
+ * applyWrites (threadWrite) は repo が本人かを確かめ、writes を checkThreadWrites() で
+ * 検査し (#create の app.bsky.feed.post の返信の連なり 2〜10 件だけ)、body を
+ * {repo, writes: 検査で写した writes, validate: true} に組み直して返す (bodyKeys は使わない)
  * @param {Object} payload {nsid, params, body}
  * @param {string|null} sessionDid ログイン中の DID
  * @returns {{ok: true, rule: {target: string, method: string}, body: Object|null,
@@ -840,12 +917,29 @@ export function checkXrpcRequest(payload, sessionDid) {
 	// 白名簿 (rule.recordWrite) から導く。文字列リテラルを別置きすると
 	// 白名簿に NSID を足しても検査が追随しない事故が起きる
 	const isRecordWrite = rule.recordWrite === true;
+	const isThreadWrite = rule.threadWrite === true;
 	if (rule.method !== 'POST') {
 		return {ok: true, rule, body: null, needsReplyCheck: false};
 	}
 	const body = payload.body;
 	if (!body || typeof body !== 'object') {
 		return {ok: false, reason: 'invalid-body'};
+	}
+	if (isThreadWrite) {
+		if (!sessionDid || body.repo !== sessionDid) {
+			return {ok: false, reason: BRIDGE_PROTOCOL.reasons.repoNotSelf};
+		}
+		const thread = checkThreadWrites(body.writes, body.repo);
+		if (!thread.ok) {
+			return thread;
+		}
+		// validate は常に true で送る。swapCommit などの余分な指定は落とす
+		return {
+			ok: true,
+			rule,
+			body: {repo: body.repo, writes: thread.writes, validate: true},
+			needsReplyCheck: false
+		};
 	}
 	if (isRecordWrite) {
 		if (EXT_BRIDGE.recordCollections.indexOf(body.collection) === -1) {

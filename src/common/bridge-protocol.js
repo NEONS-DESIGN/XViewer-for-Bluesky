@@ -120,6 +120,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** 画像の Blob を PDS へ置く (upload-blob 専用。call-xrpc には通さない) */
 		uploadBlob: 'com.atproto.repo.uploadBlob',
 		createRecord: 'com.atproto.repo.createRecord',
+		/** 返信の連なり (2〜10 件) を 1 回のコミットで作る。通すのは自分の返信の create だけ */
+		applyWrites: 'com.atproto.repo.applyWrites',
 		deleteRecord: 'com.atproto.repo.deleteRecord',
 		createBookmark: 'app.bsky.bookmark.createBookmark',
 		deleteBookmark: 'app.bsky.bookmark.deleteBookmark'
@@ -182,6 +184,17 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		/** 自己ラベルの個数の上限 */
 		maxLabels: 2
 	},
+	/**
+	 * applyWrites で送る返信の連なりの条件。検査は受け手の page-bridge.js が持つ。
+	 * tidPattern は rkey (TID, 13 文字) の形の正規表現の文字列
+	 */
+	thread: {
+		minPosts: 2,
+		maxPosts: 10,
+		createType: 'com.atproto.repo.applyWrites#create',
+		writeKeys: ['$type', 'collection', 'rkey', 'value'],
+		tidPattern: '^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$'
+	},
 	/** open-composer が受け付けるモード */
 	composerModes: {reply: 'reply', quote: 'quote'},
 	/** 橋渡しが返す失敗理由のうち、呼び出し側が分岐に使うもの */
@@ -190,6 +203,8 @@ export const BRIDGE_PROTOCOL = deepFreeze({
 		repoNotSelf: 'repo-not-self',
 		/** 返信でない投稿を作ろうとした / 返信でない投稿を消そうとした */
 		postNotReply: 'post-not-reply',
+		/** applyWrites の連なりが条件を満たさない (件数・種類・rkey・つながり) */
+		threadNotAllowed: 'thread-not-allowed',
 		/** 返信の record に許していないキー・形が含まれていた */
 		postRecordNotAllowed: 'post-record-not-allowed',
 		/** 預けたはずの Blob が箱に無い (期限切れ・取り違え) */

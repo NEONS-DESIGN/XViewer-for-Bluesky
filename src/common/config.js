@@ -301,6 +301,11 @@ export const EXT_CONFIG = {
 			 * 待つため、ほかの操作の timeoutMs より長くとる
 			 */
 			uploadTimeoutMs: 60000,
+			/**
+			 * 返信の連なり (applyWrites、最大 10 件) の応答を待つ上限。待ちきれなかったときは書けている
+			 * かもしれないものとして扱うため、ほかの操作の timeoutMs より長くとる
+			 */
+			threadTimeoutMs: 60000,
 			/** 動画の進み具合のイベント名。page-bridge.js と共有する (BRIDGE_PROTOCOL) */
 			progressEvent: BRIDGE_PROTOCOL.progressEvent,
 			/**
@@ -536,6 +541,15 @@ export const EXT_CONFIG = {
 			maxAltGraphemes: BRIDGE_PROTOCOL.postRecord.maxAltGraphemes,
 			/** 選べる言語の上限 */
 			maxLanguages: BRIDGE_PROTOCOL.postRecord.maxLangs,
+			/** 「投稿を追加」で 1 回に送れる投稿の上限 (橋渡しの applyWrites の上限と同じ) */
+			thread: {
+				maxPosts: BRIDGE_PROTOCOL.thread.maxPosts,
+				/**
+				 * 連なりが届いたか確かめられなかったときに一覧を取り直すまで待つ時間 (ms)。
+				 * 書いた投稿が一覧の取得に出るまで数秒かかる (2〜8 秒)
+				 */
+				unconfirmedReloadDelayMs: 5000
+			},
 			/** 受け付ける画像の MIME タイプ */
 			acceptImageTypes: ['image/gif', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/avif'],
 			/** 画像の縮小の条件 (長辺の上限・バイト数の上限・品質の下限と刻み) */
@@ -749,6 +763,21 @@ export const EXT_CONFIG = {
 				captionName: 'ext-lb-caption-name',
 				/** 以下は入力欄 (reply-composer.js) の部品 */
 				composer: 'ext-lb-composer',
+				/** 投稿を並べる入れ物 (reply-composer.js。投稿は reply-post.js) */
+				thread: 'ext-lb-composer-thread',
+				/** 投稿が 2 件以上のとき入れ物に付ける (高さに上限を付けて中でスクロールする) */
+				threadMulti: 'is-multi',
+				/** 投稿 1 件分と、アクティブでない (薄く描いてツールバーを隠す) 投稿の印 */
+				post: 'ext-lb-composer-post',
+				postInactive: 'is-inactive',
+				/** 「＋」(投稿を足す) と、投稿の本文の右上の「×」(投稿を消す) */
+				addPost: 'ext-lb-composer-add-post',
+				removePost: 'ext-lb-composer-remove-post',
+				/** 途中の空の投稿を飛ばすかの問い合わせ (文・飛ばして送る・編集を続ける) */
+				skipEmpty: 'ext-lb-composer-skip-empty',
+				skipEmptyText: 'ext-lb-composer-skip-empty-text',
+				skipEmptySend: 'ext-lb-composer-skip-empty-send',
+				skipEmptyKeep: 'ext-lb-composer-skip-empty-keep',
 				dragOver: 'is-dragover',
 				fileInput: 'ext-lb-composer-file',
 				attachments: 'ext-lb-composer-attachments',
@@ -779,6 +808,8 @@ export const EXT_CONFIG = {
 			},
 			/** 送信中に押せなくする入力欄の中の要素 */
 			busyControls: 'button, textarea',
+			/** 薄く描いた投稿を押したとき、本文の欄へフォーカスを移さない (それ自体が押せる) 要素 */
+			activateIgnore: 'button, textarea, input, a, video, [tabindex]',
 			/** 画像のドラッグ&ドロップで見せる操作の種類 (dataTransfer.dropEffect) */
 			dropEffect: 'copy',
 			/** 送信中に画像を重ねたときの dropEffect (受けないことを見せる) */
@@ -882,6 +913,19 @@ export const EXT_CONFIG = {
 				removeCard: 'リンクカードを外す',
 				removeQuote: '引用を外す',
 				quoteDisabled: 'この投稿は引用できません',
+				/**
+				 * 投稿を追加 (スレッドの返信)。「＋」・足した投稿の placeholder・「×」の読み上げは
+				 * Bluesky 本体と同じ文言 (2026-10-19 実測)
+				 */
+				addPost: 'スレッドに他の投稿を追加',
+				addPlaceholder: '他の投稿を追加',
+				removePost: '投稿を削除',
+				confirmRemovePost: '本当に削除？',
+				skipEmpty: '空の投稿は飛ばして送ります',
+				skipEmptySend: '飛ばして送信',
+				skipEmptyKeep: '編集を続ける',
+				submitThread: '{count} 件の返信を送信',
+				threadUnconfirmed: '返信を確かめられませんでした',
 				/** 複数の知らせを 1 行にまとめるときの区切り */
 				noticeSeparator: '。',
 				/** 複数の言語・ラベルの名前をボタンに並べるときの区切り */

@@ -170,6 +170,23 @@ class FakeElement {
 		return node;
 	}
 
+	/**
+	 * 子 ref の前に node を入れる。ref が null なら末尾へ足す。node は前の親から外してから入れる。
+	 * @param {FakeElement|FakeText} node 入れるもの
+	 * @param {FakeElement|FakeText|null} ref この子の前に入れる
+	 * @returns {FakeElement|FakeText} 入れたもの
+	 */
+	insertBefore(node, ref) {
+		if (ref === null || ref === undefined) return this.appendChild(node);
+		if (node === ref) return node;
+		if (node.parentNode) node.parentNode.removeChild(node);
+		const index = this.childNodes.indexOf(ref);
+		if (index === -1) throw new Error('NotFoundError: ref はこの要素の子ではありません');
+		node.parentNode = this;
+		this.childNodes.splice(index, 0, node);
+		return node;
+	}
+
 	/** @param {FakeElement|FakeText} node 外すもの */
 	removeChild(node) {
 		const index = this.childNodes.indexOf(node);

@@ -38,6 +38,7 @@ const ICON_SOURCES = {
 	gifBox: { file: 'gif_box-fill', label: '返信に GIF を添付' },
 	playArrow: { file: 'play_arrow-fill', label: 'GIF を再生' },
 	closedCaption: { file: 'closed_caption-fill', label: '字幕' },
+	add: { file: 'add-fill', label: 'スレッドに投稿を追加 (プラス)' },
 };
 
 /** 原本の置き場。 */

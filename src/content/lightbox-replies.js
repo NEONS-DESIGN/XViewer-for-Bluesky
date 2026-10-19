@@ -31,6 +31,17 @@ import {classifyEmbedView, buildLinkCard, buildQuoteCard, buildGifPlayer, buildV
 import {gifPlayerFromUri, stripAltPrefix} from './klipy.js';
 
 /**
+ * ms ミリ秒待つ。
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function waitMs(ms) {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
+}
+
+/**
  * パネルが返信欄に渡す口。
  * @typedef {Object} RepliesHost
  * @property {(text: string, facets: Array<Object>) => Array<Object>} toSegments
@@ -542,6 +553,74 @@ export class LightboxReplies {
 	}
 
 	/**
+	 * 返信への返信の入力欄が使われているか (書きかけがある・送信中)。そのあいだは一覧を描き直さない
+	 * (描き直すとその入力欄を閉じることになり、書きかけや送信中の返信を失う)。
+	 * @returns {boolean}
+	 */
+	isRowFormInUse() {
+		if (!this.rowForm) {
+			return false;
+		}
+		const composer = this.rowForm.composer;
+		try {
+			if (composer.busy === true) {
+				return true;
+			}
+			return typeof composer.hasDraft === 'function' && composer.hasDraft() === true;
+		} catch (error) {
+			// 読めなければ使っているものとして扱い、閉じない
+			return true;
+		}
+	}
+
+	/**
+	 * 一覧だけを取り直す (返信の連なりが届いたか確かめられなかったとき)。書いた投稿が取得に出るまで待ってから、
+	 * 返信数によらず 1 段目を引き直す。見出しの下の入力欄 (と、そこに出した知らせ) は作り直さない。
+	 * 返信への返信の入力欄は描き直しで消えるため閉じる (動画のアップロードも取り消す)。
+	 * ただしその入力欄に書きかけがあるか送信中なら、取り直し自体をやめる。
+	 * @returns {Promise<void>}
+	 */
+	async reloadList() {
+		const generation = this.generation;
+		try {
+			await waitMs(this.config.compose.thread.unconfirmedReloadDelayMs);
+			const post = this.post;
+			if (generation !== this.generation || !post || this.isRowFormInUse()) {
+				return;
+			}
+			this.closeRowForm(false);
+			this.destroyPlayers(null);
+			// 開いていた返信の中と行の記録は、取り直した一覧で作り直す
+			this.branches = new Map();
+			this.rows = new Map();
+			this.confirmingButton = null;
+			this.loadState = 'loading';
+			this.renderBody();
+			const result = await this.fetchThread(post.postUri, this.config.depth.root);
+			if (generation !== this.generation) {
+				return;
+			}
+			if (!result.json) {
+				this.loadState = 'error';
+				this.renderBody();
+				return;
+			}
+			this.fromPublic = result.fromPublic;
+			this.items = sortNewestFirst(parseThreadReplies(result.json));
+			this.loadState = 'loaded';
+			this.shown = Math.min(this.config.pageSize, this.items.length);
+			ExtDebug.log('返信の一覧を取り直した', {件数: this.items.length, 公開API: this.fromPublic});
+			this.renderBody();
+		} catch (error) {
+			console.error('[XViewer] 返信の一覧の取り直しに失敗しました', error);
+			if (generation === this.generation) {
+				this.loadState = 'error';
+				this.renderBody();
+			}
+		}
+	}
+
+	/**
 	 * 区画の外枠 (見出し・入力欄の置き場・一覧) を作る。
 	 * @param {HTMLElement} container
 	 * @returns {void}
@@ -704,6 +783,9 @@ export class LightboxReplies {
 			},
 			onPosted: (result, record, posted, embedView) => {
 				this.insertOwnReply(posted, this.buildOwnItem(result, record, posted, embedView), composer);
+			},
+			reload: () => {
+				this.reloadList();
 			},
 			resolveHandle: (handle) => this.resolveHandle(handle),
 			parentLangs: Array.isArray(parentLangs) ? parentLangs : null,

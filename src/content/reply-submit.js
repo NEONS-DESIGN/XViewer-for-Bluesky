@@ -17,10 +17,24 @@
  * @property {(kind: 'upload'|'post', reason: string) => void} onFailed
  */
 
+/**
+ * 2 件以上の送信の段。runThreadSubmit が順に呼ぶ。
+ * @typedef {Object} ThreadSubmitSteps
+ * @property {Array<{images: Array<{blob: Blob}>, buildRecord: (blobs: Object[]) => Promise<Object>, onUploadFailed: (reason: string) => void}>} posts 送る投稿 (並びのまま)
+ * @property {(blob: Blob) => Promise<{ok: boolean, blob: Object|null, reason: string|null}>} upload
+ * @property {(current: number, total: number) => void} onProgress 全投稿を通した画像の番号 (1 始まり)
+ * @property {() => boolean} isCurrent 応答を使ってよいか (世代が変わっていないか)
+ * @property {(records: Object[]) => Promise<{ok: boolean, results: Array<{uri: string, cid: string}>|null, writes: Object[]|null, reason: string|null}>} send
+ * @property {(results: Array<{uri: string, cid: string}>, records: Object[], blobsByPost: Object[][]) => void} onPosted
+ * @property {(kind: 'post'|'unconfirmed', reason: string) => void} onFailed
+ */
+
 /** アップロードが例外で止まったときの理由 */
 const UPLOAD_EXCEPTION = 'upload-exception';
 /** 返信の作成が例外で止まったときの理由 */
 const POST_EXCEPTION = 'post-exception';
+/** 連なりの送信が通ったか確かめられなかった (届いたかもしれない) ときの理由 */
+export const THREAD_UNCONFIRMED = 'thread-unconfirmed';
 /** 取り込む候補にするファイルの MIME タイプの接頭辞 (画像と動画) */
 const MEDIA_TYPE_PREFIXES = ['image/', 'video/'];
 /** DataTransferItem のファイルの種類 */
@@ -141,5 +155,57 @@ export async function runSubmit(steps) {
 		return 'post-failed';
 	}
 	steps.onPosted(result, record, uploaded.blobs);
+	return 'posted';
+}
+
+/**
+ * 2 件以上の返信を連なりとして送る手順。投稿ごとに順にアップロードし (進み具合は全投稿を通した番号)、
+ * 1 件でも失敗したらその投稿だけに知らせて止める。世代が変わったら以後の何も呼ばずに抜ける。
+ * @param {ThreadSubmitSteps} steps 段
+ * @returns {Promise<'posted'|'stale'|'upload-failed'|'post-failed'|'unconfirmed'>}
+ */
+export async function runThreadSubmit(steps) {
+	const posts = steps.posts;
+	const total = posts.reduce((sum, post) => sum + post.images.length, 0);
+	const blobsByPost = [];
+	let offset = 0;
+	for (const post of posts) {
+		const base = offset;
+		const uploaded = await uploadAll(post.images, steps.upload, (current) => steps.onProgress(base + current, total));
+		if (!steps.isCurrent()) return 'stale';
+		if (!uploaded.ok) {
+			post.onUploadFailed(uploaded.reason);
+			return 'upload-failed';
+		}
+		blobsByPost.push(uploaded.blobs);
+		offset += post.images.length;
+	}
+	let records = null;
+	let sent = null;
+	try {
+		records = [];
+		for (let i = 0; i < posts.length; i++) {
+			records.push(await posts[i].buildRecord(blobsByPost[i]));
+			if (!steps.isCurrent()) return 'stale';
+		}
+		sent = await steps.send(records);
+	} catch (error) {
+		console.error('[XViewer] 返信の連なりの投稿に失敗しました', error);
+		if (!steps.isCurrent()) return 'stale';
+		steps.onFailed('post', POST_EXCEPTION);
+		return 'post-failed';
+	}
+	if (!steps.isCurrent()) return 'stale';
+	if (!sent || !sent.ok) {
+		const reason = (sent && sent.reason) || POST_EXCEPTION;
+		if (reason === THREAD_UNCONFIRMED) {
+			steps.onFailed('unconfirmed', reason);
+			return 'unconfirmed';
+		}
+		steps.onFailed('post', reason);
+		return 'post-failed';
+	}
+	const sentRecords = Array.isArray(sent.writes) ? sent.writes.map((write) => write.value) : records;
+	steps.onPosted(sent.results, sentRecords, blobsByPost);
 	return 'posted';
 }

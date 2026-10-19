@@ -12,8 +12,16 @@ import {SheetHost} from '../src/content/reply-sheets.js';
 import {BRIDGE_PROTOCOL} from '../src/common/bridge-protocol.js';
 import {GIF_ALT_PREFIX} from '../src/content/klipy.js';
 import {
-	ReplyComposer, pickPastedMedia, hasMediaItems, uploadAll, runSubmit, defaultLanguages
+	ReplyComposer, pickPastedMedia, hasMediaItems, uploadAll, runSubmit, runThreadSubmit, defaultLanguages,
+	createThreadProgress
 } from '../src/content/reply-composer.js';
+import {computeRecordCid} from '../src/content/record-cid.js';
+import {checkThreadWrites} from '../src/inject/page-bridge.js';
+import {installPanelFocusGuard} from '../src/content/panel-focus-guard.js';
+import {ExtDebug} from '../src/common/debug.js';
+
+/** ログイン中の自分の DID */
+const SELF_DID = 'did:plc:me';
 
 /**
  * 偽の DataTransferItem。
@@ -297,9 +305,9 @@ function gifItem() {
 function pasteText(composer, value) {
 	const paste = new FakeEvent('paste');
 	paste.clipboardData = {items: itemList([item('string', 'text/plain', null)])};
-	composer.textarea.dispatchEvent(paste);
-	composer.textarea.value = value;
-	composer.textarea.dispatchEvent(new FakeEvent('input'));
+	composer.active.textarea.dispatchEvent(paste);
+	composer.active.textarea.value = value;
+	composer.active.textarea.dispatchEvent(new FakeEvent('input'));
 }
 
 /**
@@ -322,13 +330,28 @@ function makeComposer(overrides) {
 	const state = {generation: 1, posting: false};
 	const calls = {
 		posted: [], created: [], uploads: 0, fetchJson: [], fetchBlob: [], fetchPost: [],
-		videoUploads: [], videoCancels: [], videoJobs: []
+		videoUploads: [], videoCancels: [], videoJobs: [], threads: [], reloads: 0
 	};
 	const deps = {
-		actions: {createReply: async (record) => {
-			calls.created.push(record);
-			return {ok: true, uri: 'at://did:plc:me/app.bsky.feed.post/r1', cid: 'cid-r1', reason: null};
-		}},
+		actions: {
+			createReply: async (record) => {
+				calls.created.push(record);
+				return {ok: true, uri: 'at://did:plc:me/app.bsky.feed.post/r1', cid: 'cid-r1', reason: null};
+			},
+			// PostActions と同じく DID を渡して writes を組ませ、組んだ writes を記録して書けたことにする
+			createReplyThread: async (build) => {
+				const writes = await build(SELF_DID);
+				calls.threads.push(writes);
+				const results = [];
+				for (const write of writes) {
+					results.push({uri: `at://${SELF_DID}/${write.collection}/${write.rkey}`, cid: await computeRecordCid(write.value)});
+				}
+				return {ok: true, results, writes, reason: null};
+			}
+		},
+		reload: () => {
+			calls.reloads += 1;
+		},
 		sheets: null,
 		uploadBlob: async () => {
 			calls.uploads += 1;
@@ -339,7 +362,7 @@ function makeComposer(overrides) {
 			natural: {width: 400, height: 300}
 		}),
 		getSelfProfile: () => null,
-		getSessionDid: () => 'did:plc:me',
+		getSessionDid: () => SELF_DID,
 		isCurrent: (generation) => generation === state.generation,
 		getGeneration: () => state.generation,
 		isPosting: () => state.posting,
@@ -393,7 +416,7 @@ test('ReplyComposer: 添付だけでも書きかけになり、画像付きで�
 	const {composer, calls, state, restore} = makeComposer({});
 	try {
 		assert.strictEqual(composer.hasDraft(), false);
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
 		assert.strictEqual(composer.hasDraft(), true);
 		await composer.submit();
 		assert.strictEqual(calls.created.length, 1);
@@ -401,7 +424,7 @@ test('ReplyComposer: 添付だけでも書きかけになり、画像付きで�
 		assert.deepStrictEqual(calls.created[0].langs, ['ja']);
 		assert.strictEqual(calls.posted.length, 1);
 		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.images#view');
-		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.active.attachments.length, 0);
 		assert.strictEqual(composer.hasDraft(), false);
 		assert.strictEqual(state.posting, false);
 	} finally {
@@ -420,8 +443,8 @@ test('ReplyComposer: 送信中に世代が変わると onPosted を呼ばない'
 	});
 	const {composer, calls, restore} = made;
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		composer.textarea.value = '本文';
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		composer.active.textarea.value = '本文';
 		await composer.submit();
 		assert.deepStrictEqual(calls.created, []);
 		assert.deepStrictEqual(calls.posted, []);
@@ -435,12 +458,12 @@ test('ReplyComposer: createReply が repo-not-self で失敗したら本文と�
 		actions: {createReply: async () => ({ok: false, uri: null, cid: null, reason: 'repo-not-self'})}
 	});
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}, {name: 'b.png', type: 'image/png'}]);
-		composer.textarea.value = '本文';
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}, {name: 'b.png', type: 'image/png'}]);
+		composer.active.textarea.value = '本文';
 		await composer.submit();
 		assert.deepStrictEqual(calls.posted, []);
-		assert.strictEqual(composer.textarea.value, '本文');
-		assert.strictEqual(composer.attachments.length, 2);
+		assert.strictEqual(composer.active.textarea.value, '本文');
+		assert.strictEqual(composer.active.attachments.length, 2);
 		assert.ok(composer.noticeEl, '失敗の 1 行が出ていない');
 		assert.strictEqual(composer.noticeEl.textContent, EXT_CONFIG.lightboxReplies.text.postFailed);
 		assert.strictEqual(composer.submitButton.disabled, false);
@@ -454,14 +477,14 @@ test('ReplyComposer: 文字だけの貼り付けは止めず、画像の貼り�
 	try {
 		const textPaste = new FakeEvent('paste');
 		textPaste.clipboardData = {items: itemList([item('string', 'text/plain', null)])};
-		composer.onPaste(textPaste);
+		composer.active.onPaste(textPaste);
 		assert.strictEqual(textPaste.defaultPrevented, false);
 		const imagePaste = new FakeEvent('paste');
 		imagePaste.clipboardData = {items: itemList([item('file', 'image/png', {name: 'p.png', type: 'image/png'})])};
-		composer.onPaste(imagePaste);
+		composer.active.onPaste(imagePaste);
 		assert.strictEqual(imagePaste.defaultPrevented, true);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(composer.attachments.length, 1);
+		assert.strictEqual(composer.active.attachments.length, 1);
 	} finally {
 		restore();
 	}
@@ -471,11 +494,11 @@ test('ReplyComposer: 11 枚目と対応しない形式は取り込まず 1 行�
 	const {composer, restore} = makeComposer({});
 	try {
 		const files = Array.from({length: 11}, (unused, i) => ({name: `${i}.png`, type: 'image/png'}));
-		await composer.addFiles(files.concat({name: 'd.pdf', type: 'application/pdf'}));
-		assert.strictEqual(composer.attachments.length, EXT_CONFIG.lightboxReplies.compose.maxImages);
+		await composer.active.addFiles(files.concat({name: 'd.pdf', type: 'application/pdf'}));
+		assert.strictEqual(composer.active.attachments.length, EXT_CONFIG.lightboxReplies.compose.maxImages);
 		const text = EXT_CONFIG.lightboxReplies.compose.text;
-		assert.ok(composer.noticeEl.textContent.includes(text.tooManyImages));
-		assert.ok(composer.noticeEl.textContent.includes(text.unsupportedImage));
+		assert.ok(composer.active.noticeEl.textContent.includes(text.tooManyImages));
+		assert.ok(composer.active.noticeEl.textContent.includes(text.unsupportedImage));
 	} finally {
 		restore();
 	}
@@ -493,7 +516,7 @@ test('ReplyComposer: 送信中に入力欄が外されても、同じ世代な�
 	});
 	const {composer, calls, state, restore} = made;
 	try {
-		composer.textarea.value = '本文';
+		composer.active.textarea.value = '本文';
 		await composer.submit();
 		assert.strictEqual(calls.created.length, 1);
 		assert.strictEqual(calls.posted.length, 1);
@@ -514,7 +537,7 @@ test('ReplyComposer: アップロード中に外されても、同じ世代な�
 	});
 	const {composer, calls, restore} = made;
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
 		await composer.submit();
 		assert.strictEqual(calls.created.length, 1);
 		assert.strictEqual(calls.posted.length, 1);
@@ -526,8 +549,8 @@ test('ReplyComposer: アップロード中に外されても、同じ世代な�
 test('ReplyComposer: 本文だけの返信は embed も labels も付けず、facets を付け、embed view は null', async () => {
 	const {composer, calls, restore} = makeComposer({});
 	try {
-		composer.labels = {adult: 'porn', graphic: true};
-		composer.textarea.value = 'テスト https://bsky.app #test';
+		composer.active.labels = {adult: 'porn', graphic: true};
+		composer.active.textarea.value = 'テスト https://bsky.app #test';
 		await composer.submit();
 		const record = calls.created[0];
 		assert.strictEqual('embed' in record, false);
@@ -553,7 +576,7 @@ test('ReplyComposer: 送信ボタンにいま送っている枚目を出す (1 �
 	});
 	const {composer, restore} = made;
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}, {name: 'b.png', type: 'image/png'}]);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}, {name: 'b.png', type: 'image/png'}]);
 		await composer.submit();
 		assert.deepStrictEqual(seen, ['送信中 1/2', '送信中 2/2']);
 		assert.strictEqual(composer.submitButton.textContent, EXT_CONFIG.lightboxReplies.text.submit);
@@ -569,7 +592,7 @@ test('ReplyComposer: 言語の提案を閉じたら、送った後も出さな�
 		assert.strictEqual(composer.suggestEl.hidden, false);
 		composer.suggestDismissed = true;
 		composer.renderSuggest();
-		composer.textarea.value = '本文';
+		composer.active.textarea.value = '本文';
 		await composer.submit();
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.strictEqual(composer.suggestEl.hidden, true);
@@ -584,7 +607,7 @@ test('ReplyComposer: 提案で切り替えた言語は、覚えた言語が空�
 		await new Promise((resolve) => setImmediate(resolve));
 		composer.acceptSuggestion();
 		assert.deepStrictEqual(composer.languages, ['en']);
-		composer.textarea.value = '本文';
+		composer.active.textarea.value = '本文';
 		await composer.submit();
 		assert.deepStrictEqual(calls.created[0].langs, ['en']);
 		await new Promise((resolve) => setImmediate(resolve));
@@ -601,19 +624,19 @@ test('ReplyComposer: 切り抜き直しの最中でも 10 枚目を取り込め�
 	const {composer, restore} = made;
 	try {
 		const files = Array.from({length: 9}, (unused, i) => ({name: `${i}.png`, type: 'image/png'}));
-		await composer.addFiles(files);
-		assert.strictEqual(composer.attachments.length, 9);
+		await composer.active.addFiles(files);
+		assert.strictEqual(composer.active.attachments.length, 9);
 		const original = composer.deps.prepareImage;
 		composer.deps.prepareImage = (file, crop, rules) => (crop
 			? new Promise((resolve) => {
 				release = () => resolve(original(file, crop, rules));
 			})
 			: original(file, crop, rules));
-		const recropping = composer.recrop(composer.attachments[0], {x: 0, y: 0, width: 10, height: 10});
+		const recropping = composer.active.recrop(composer.active.attachments[0], {x: 0, y: 0, width: 10, height: 10});
 		assert.strictEqual(composer.submitButton.disabled, true);
-		await composer.addFiles([{name: '9.png', type: 'image/png'}]);
-		assert.strictEqual(composer.attachments.length, 10);
-		assert.strictEqual(composer.noticeEl, null);
+		await composer.active.addFiles([{name: '9.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.attachments.length, 10);
+		assert.strictEqual(composer.active.noticeEl, null);
 		release();
 		await recropping;
 	} finally {
@@ -628,19 +651,78 @@ test('ReplyComposer: 送信中も画像のドラッグの既定の動作を止�
 		const transfer = {items: itemList([item('file', 'image/png', null)]), files: [{name: 'x.png', type: 'image/png'}]};
 		const over = new FakeEvent('dragover');
 		over.dataTransfer = transfer;
-		composer.onDragOver(over);
+		composer.active.onDragOver(over);
 		assert.strictEqual(over.defaultPrevented, true);
 		assert.strictEqual(transfer.dropEffect, EXT_CONFIG.lightboxReplies.compose.noDropEffect);
 		const drop = new FakeEvent('drop');
 		drop.dataTransfer = transfer;
-		composer.onDrop(drop);
+		composer.active.onDrop(drop);
 		assert.strictEqual(drop.defaultPrevented, true);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.active.attachments.length, 0);
 		const text = new FakeEvent('dragover');
 		text.dataTransfer = {items: itemList([item('string', 'text/plain', null)])};
-		composer.onDragOver(text);
+		composer.active.onDragOver(text);
 		assert.strictEqual(text.defaultPrevented, false);
+	} finally {
+		restore();
+	}
+});
+
+test('ComposerPost: 共通の行を外して付け直しても投稿の要素は外れず、並びは画像・GIF・絵文字・言語・残り・送信', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		const post = composer.active;
+		const textareaParent = post.textarea.parentNode;
+		const imageParent = post.imageTool.parentNode;
+		const own = [post.textarea, textareaParent, textareaParent.parentNode, post.fileInput, post.imageTool,
+			post.gifTool, post.emojiTool, post.toolbarEl];
+		const removed = [];
+		for (const parent of [post.el, post.toolbarEl, textareaParent, textareaParent.parentNode]) {
+			const original = parent.removeChild.bind(parent);
+			parent.removeChild = (node) => {
+				removed.push(node);
+				original(node);
+			};
+		}
+		const shared = [composer.languageButton, composer.remaining, composer.submitButton];
+		const expectToolbar = [post.fileInput, post.imageTool, post.gifTool, post.emojiTool].concat(shared);
+		// 要素どうしを deepStrictEqual で比べると、失敗の差分が偽の DOM の木全体を辿るため同一性で比べる
+		const sameNodes = (actual, expected) => actual.length === expected.length && actual.every((node, i) => node === expected[i]);
+		const assertMounted = () => {
+			assert.ok(sameNodes(post.toolbarEl.children, expectToolbar), 'ツールバーの並びが違う');
+			const children = post.el.children;
+			assert.strictEqual(children.indexOf(composer.suggestEl), children.indexOf(post.toolbarEl) - 1);
+		};
+		assertMounted();
+		post.mountShared([]);
+		assert.ok(sameNodes(post.toolbarEl.children, [post.fileInput, post.imageTool, post.gifTool, post.emojiTool]),
+			'外した後のツールバーが投稿の要素だけでない');
+		assert.strictEqual(post.el.contains(composer.suggestEl), false);
+		composer.mountShared(post);
+		assertMounted();
+		// 付けたままもう一度付けても並びは変わらない
+		composer.mountShared(post);
+		assertMounted();
+		assert.ok(post.textarea.parentNode === textareaParent, '本文の欄の親が変わった');
+		assert.ok(post.imageTool.parentNode === imageParent, '画像ボタンの親が変わった');
+		assert.strictEqual(removed.filter((node) => own.includes(node)).length, 0, '投稿の要素が外された');
+	} finally {
+		restore();
+	}
+});
+
+test('ComposerPost: 画像の送信が失敗したら送る中身の控えを残さない', async () => {
+	const {composer, calls, restore} = makeComposer({
+		uploadBlob: async () => ({ok: false, blob: null, reason: 'upload-failed'})
+	});
+	try {
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await composer.submit();
+		assert.deepStrictEqual(calls.created, []);
+		assert.strictEqual(composer.active.noticeEl.textContent, EXT_CONFIG.lightboxReplies.compose.text.uploadFailed);
+		assert.ok(composer.active.sending === null, '送る中身の控えが残っている');
+		assert.strictEqual(composer.active.attachments.length, 1);
 	} finally {
 		restore();
 	}
@@ -664,11 +746,11 @@ function makeComposerWithSheets() {
 test('ReplyComposer: ALT の画面を開いた後に添付を描き直しても、入力欄を外せば画面も閉じる', async () => {
 	const {composer, host, restore} = makeComposerWithSheets();
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		const attachment = composer.attachments[0];
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		const attachment = composer.active.attachments[0];
 		click(attachment.cell.altButton);
 		assert.strictEqual(host.isOpen(), true);
-		composer.renderAttachments();
+		composer.active.renderAttachments();
 		assert.strictEqual(host.isOpenedFrom(composer.el), true);
 		composer.destroy();
 		assert.strictEqual(host.isOpen(), false);
@@ -680,11 +762,11 @@ test('ReplyComposer: ALT の画面を開いた後に添付を描き直しても�
 test('ReplyComposer: ALT の画面を閉じたとき、描き直したマスの ALT ボタンへフォーカスを戻す', async () => {
 	const {composer, host, panel, restore} = makeComposerWithSheets();
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		const attachment = composer.attachments[0];
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		const attachment = composer.active.attachments[0];
 		const before = attachment.cell.altButton;
 		click(before);
-		composer.renderAttachments();
+		composer.active.renderAttachments();
 		const after = attachment.cell.altButton;
 		assert.ok(after !== before, '描き直してもボタンが同じ');
 		click(panel.querySelector(`[data-role="${EXT_CONFIG.lightboxReplies.compose.sheetRoles.done}"]`));
@@ -699,8 +781,8 @@ test('ReplyComposer: 長いリンクは短い形で送り、facet の uri は元
 	const {composer, calls, restore} = makeComposer({});
 	try {
 		const url = `https://example.com/${'a'.repeat(400)}`;
-		composer.textarea.value = `見て ${url} です`;
-		composer.textarea.dispatchEvent(new FakeEvent('input'));
+		composer.active.textarea.value = `見て ${url} です`;
+		composer.active.textarea.dispatchEvent(new FakeEvent('input'));
 		// 元の本文は 300 字を超えるが、短くした本文で数えるので送れる
 		assert.strictEqual(composer.submitButton.disabled, false);
 		const short = 'example.com/aaaaaaaaaaaa...';
@@ -723,21 +805,21 @@ test('ReplyComposer: GIF と画像の排他の 1 行は GIF を外すと消え�
 	const {composer, restore} = makeComposer({});
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
-		composer.extras.setGif(gifItem());
-		click(composer.imageTool);
-		assert.strictEqual(composer.noticeEl.textContent, text.gifExclusive);
-		composer.extras.removeGif();
-		assert.strictEqual(composer.noticeEl, null);
+		composer.active.extras.setGif(gifItem());
+		click(composer.active.imageTool);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.gifExclusive);
+		composer.active.extras.removeGif();
+		assert.strictEqual(composer.active.noticeEl, null);
 		// 別の知らせは GIF を外しても消さない
-		composer.extras.setGif(gifItem());
-		composer.showNotice([text.imageLoadFailed]);
-		composer.extras.removeGif();
-		assert.strictEqual(composer.noticeEl.textContent, text.imageLoadFailed);
+		composer.active.extras.setGif(gifItem());
+		composer.active.showNotice([text.imageLoadFailed]);
+		composer.active.extras.removeGif();
+		assert.strictEqual(composer.active.noticeEl.textContent, text.imageLoadFailed);
 		// 送った後の初期化でも排他の 1 行は残らない
-		composer.extras.setGif(gifItem());
-		click(composer.imageTool);
+		composer.active.extras.setGif(gifItem());
+		click(composer.active.imageTool);
 		composer.resetAfterPost();
-		assert.strictEqual(composer.noticeEl, null);
+		assert.strictEqual(composer.active.noticeEl, null);
 	} finally {
 		restore();
 	}
@@ -746,8 +828,8 @@ test('ReplyComposer: GIF と画像の排他の 1 行は GIF を外すと消え�
 test('ReplyComposer: 本文の末尾の空白は送らず、link facet は正しい範囲を指す', async () => {
 	const {composer, calls, restore} = makeComposer({});
 	try {
-		composer.textarea.value = 'テスト https://example.com ';
-		composer.textarea.dispatchEvent(new FakeEvent('input'));
+		composer.active.textarea.value = 'テスト https://example.com ';
+		composer.active.textarea.dispatchEvent(new FakeEvent('input'));
 		await composer.submit();
 		assert.strictEqual(calls.created.length, 1);
 		const record = calls.created[0];
@@ -774,23 +856,23 @@ test('ReplyComposer: GIF を付けると画像ボタンが止まり、送ると 
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
 		// 画像があるあいだは GIF のボタンを止める
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		assert.strictEqual(composer.gifTool.disabled, true);
-		composer.removeAttachment(composer.attachments[0]);
-		assert.strictEqual(composer.gifTool.disabled, false);
-		composer.extras.setGif(gifItem());
-		assert.strictEqual(composer.embedEl.hidden, false);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.gifTool.disabled, true);
+		composer.active.removeAttachment(composer.active.attachments[0]);
+		assert.strictEqual(composer.active.gifTool.disabled, false);
+		composer.active.extras.setGif(gifItem());
+		assert.strictEqual(composer.active.embedEl.hidden, false);
 		// GIF があるあいだは画像のボタン・取り込み・貼り付けで画像を足さない
-		click(composer.imageTool);
-		assert.strictEqual(composer.noticeEl.textContent, text.gifExclusive);
-		await composer.addFiles([{name: 'b.png', type: 'image/png'}]);
+		click(composer.active.imageTool);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.gifExclusive);
+		await composer.active.addFiles([{name: 'b.png', type: 'image/png'}]);
 		const imagePaste = new FakeEvent('paste');
 		imagePaste.clipboardData = {items: itemList([item('file', 'image/png', {name: 'p.png', type: 'image/png'})])};
-		composer.onPaste(imagePaste);
+		composer.active.onPaste(imagePaste);
 		assert.strictEqual(imagePaste.defaultPrevented, true);
 		await flush();
-		assert.strictEqual(composer.attachments.length, 0);
-		assert.strictEqual(composer.importing, 0);
+		assert.strictEqual(composer.active.attachments.length, 0);
+		assert.strictEqual(composer.active.importing, 0);
 		assert.strictEqual(composer.submitButton.disabled, false);
 		await composer.submit();
 		const embed = calls.created[0].embed;
@@ -803,7 +885,7 @@ test('ReplyComposer: GIF を付けると画像ボタンが止まり、送ると 
 		assert.deepStrictEqual(calls.fetchBlob, [gifItem().previewUrl]);
 		assert.deepStrictEqual(seen, ['送信中 1/1']);
 		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.external#view');
-		assert.strictEqual(composer.extras.gif, null);
+		assert.strictEqual(composer.active.extras.gif, null);
 		assert.strictEqual(composer.hasDraft(), false);
 	} finally {
 		restore();
@@ -816,9 +898,9 @@ test('ReplyComposer: 引用だけなら record、引用 + 画像なら recordWit
 	try {
 		pasteText(only.composer, `これ ${postUrl}`);
 		await flush();
-		assert.strictEqual(only.composer.extras.quote.status, 'ready');
+		assert.strictEqual(only.composer.active.extras.quote.status, 'ready');
 		assert.deepStrictEqual(only.calls.fetchPost, [QUOTED_URI]);
-		assert.strictEqual(only.composer.labelsButton.hidden, true);
+		assert.strictEqual(only.composer.active.labelsButton.hidden, true);
 		await only.composer.submit();
 		assert.deepStrictEqual(only.calls.created[0].embed, {
 			$type: 'app.bsky.embed.record', record: {uri: QUOTED_URI, cid: 'cid-q1'}
@@ -831,8 +913,8 @@ test('ReplyComposer: 引用だけなら record、引用 + 画像なら recordWit
 	try {
 		pasteText(withImage.composer, postUrl);
 		await flush();
-		await withImage.composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		assert.strictEqual(withImage.composer.labelsButton.hidden, false);
+		await withImage.composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(withImage.composer.active.labelsButton.hidden, false);
 		await withImage.composer.submit();
 		const embed = withImage.calls.created[0].embed;
 		assert.strictEqual(embed.$type, 'app.bsky.embed.recordWithMedia');
@@ -851,12 +933,12 @@ test('ReplyComposer: カードを出した後に画像を足すとカードを�
 		pasteText(composer, 'https://example.com/article');
 		await flush();
 		assert.strictEqual(calls.fetchJson.length, 1);
-		assert.ok(composer.embedEl.querySelector(cardSelector), 'カードが出ていない');
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		assert.strictEqual(composer.embedEl.querySelector(cardSelector), null);
-		composer.removeAttachment(composer.attachments[0]);
-		assert.ok(composer.embedEl.querySelector(cardSelector), '画像を外してもカードが戻らない');
-		await composer.addFiles([{name: 'b.png', type: 'image/png'}]);
+		assert.ok(composer.active.embedEl.querySelector(cardSelector), 'カードが出ていない');
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.embedEl.querySelector(cardSelector), null);
+		composer.active.removeAttachment(composer.active.attachments[0]);
+		assert.ok(composer.active.embedEl.querySelector(cardSelector), '画像を外してもカードが戻らない');
+		await composer.active.addFiles([{name: 'b.png', type: 'image/png'}]);
 		await composer.submit();
 		const embed = calls.created[0].embed;
 		assert.strictEqual(embed.$type, 'app.bsky.embed.images');
@@ -871,12 +953,12 @@ test('ReplyComposer: カードを外してメディアも無くなったらラ�
 	try {
 		pasteText(composer, 'https://example.com/article');
 		await flush();
-		assert.strictEqual(composer.labelsButton.hidden, false);
-		composer.labels = {adult: 'porn', graphic: true};
-		composer.renderLabels();
-		composer.extras.removeCard();
-		assert.strictEqual(composer.labelsButton.hidden, true);
-		assert.deepStrictEqual(composer.labels, {adult: null, graphic: false});
+		assert.strictEqual(composer.active.labelsButton.hidden, false);
+		composer.active.labels = {adult: 'porn', graphic: true};
+		composer.active.renderLabels();
+		composer.active.extras.removeCard();
+		assert.strictEqual(composer.active.labelsButton.hidden, true);
+		assert.deepStrictEqual(composer.active.labels, {adult: null, graphic: false});
 		await composer.submit();
 		assert.strictEqual('labels' in calls.created[0], false);
 	} finally {
@@ -888,9 +970,9 @@ test('ReplyComposer: GIF だけでも書きかけになり Escape で閉じな�
 	const {composer, restore} = makeComposer({});
 	try {
 		assert.strictEqual(composer.hasDraft(), false);
-		composer.extras.setGif(gifItem());
+		composer.active.extras.setGif(gifItem());
 		assert.strictEqual(composer.hasDraft(), true);
-		composer.extras.removeGif();
+		composer.active.extras.removeGif();
 		assert.strictEqual(composer.hasDraft(), false);
 	} finally {
 		restore();
@@ -899,15 +981,15 @@ test('ReplyComposer: GIF だけでも書きかけになり Escape で閉じな�
 
 test('ReplyComposer: GIF・カード・引用の × で外した後は本文の欄にフォーカスがある', async () => {
 	const classes = EXT_CONFIG.lightboxReplies.cards.classes;
-	const removeButton = (composer) => composer.embedEl.querySelector(`.${classes.remove}`);
+	const removeButton = (composer) => composer.active.embedEl.querySelector(`.${classes.remove}`);
 	const gif = makeComposer({});
 	try {
-		gif.composer.extras.setGif(gifItem());
+		gif.composer.active.extras.setGif(gifItem());
 		const button = removeButton(gif.composer);
 		button.focus();
 		click(button);
-		assert.strictEqual(gif.composer.extras.gif, null);
-		assert.ok(globalThis.document.activeElement === gif.composer.textarea, 'GIF の × の後に本文の欄へ移らない');
+		assert.strictEqual(gif.composer.active.extras.gif, null);
+		assert.ok(globalThis.document.activeElement === gif.composer.active.textarea, 'GIF の × の後に本文の欄へ移らない');
 	} finally {
 		gif.restore();
 	}
@@ -918,8 +1000,8 @@ test('ReplyComposer: GIF・カード・引用の × で外した後は本文の�
 		const button = removeButton(card.composer);
 		button.focus();
 		click(button);
-		assert.strictEqual(card.composer.extras.card, null);
-		assert.ok(globalThis.document.activeElement === card.composer.textarea, 'カードの × の後に本文の欄へ移らない');
+		assert.strictEqual(card.composer.active.extras.card, null);
+		assert.ok(globalThis.document.activeElement === card.composer.active.textarea, 'カードの × の後に本文の欄へ移らない');
 	} finally {
 		card.restore();
 	}
@@ -931,8 +1013,8 @@ test('ReplyComposer: GIF・カード・引用の × で外した後は本文の�
 		const button = removeButton(quote.composer);
 		button.focus();
 		click(button);
-		assert.strictEqual(quote.composer.extras.quote, null);
-		assert.ok(globalThis.document.activeElement === quote.composer.textarea, '引用の × の後に本文の欄へ移らない');
+		assert.strictEqual(quote.composer.active.extras.quote, null);
+		assert.ok(globalThis.document.activeElement === quote.composer.active.textarea, '引用の × の後に本文の欄へ移らない');
 	} finally {
 		quote.restore();
 	}
@@ -942,11 +1024,11 @@ test('ReplyComposer: GIF の ALT を保存した後は、描き直した ALT ボ
 	const {composer, panel, restore} = makeComposerWithSheets();
 	const altSelector = `.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`;
 	try {
-		composer.extras.setGif(gifItem());
-		const before = composer.embedEl.querySelector(altSelector);
+		composer.active.extras.setGif(gifItem());
+		const before = composer.active.embedEl.querySelector(altSelector);
 		click(before);
 		click(panel.querySelector(`[data-role="${EXT_CONFIG.lightboxReplies.compose.sheetRoles.done}"]`));
-		const after = composer.embedEl.querySelector(altSelector);
+		const after = composer.active.embedEl.querySelector(altSelector);
 		assert.ok(after && after !== before, 'ALT ボタンが描き直されていない');
 		assert.ok(globalThis.document.activeElement === after, '描き直した ALT ボタンへ移らない');
 	} finally {
@@ -960,8 +1042,8 @@ test('ReplyComposer: GIF の ALT の画面は題名から始まり、external �
 	const maxDescription = BRIDGE_PROTOCOL.postRecord.external.maxDescriptionGraphemes;
 	const maxAlt = maxDescription - GIF_ALT_PREFIX.length;
 	try {
-		composer.extras.setGif(gifItem());
-		click(composer.embedEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`));
+		composer.active.extras.setGif(gifItem());
+		click(composer.active.embedEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`));
 		const field = panel.querySelector(`.${compose.classes.altInput}`);
 		const done = panel.querySelector(`[data-role="${compose.sheetRoles.done}"]`);
 		assert.strictEqual(field.value, gifItem().title);
@@ -974,7 +1056,7 @@ test('ReplyComposer: GIF の ALT の画面は題名から始まり、external �
 		field.dispatchEvent(new FakeEvent('input'));
 		assert.strictEqual(done.disabled, false);
 		click(done);
-		assert.strictEqual(composer.extras.gif.alt, 'a'.repeat(maxAlt));
+		assert.strictEqual(composer.active.extras.gif.alt, 'a'.repeat(maxAlt));
 		await composer.submit();
 		const description = calls.created[0].embed.external.description;
 		assert.strictEqual(description, GIF_ALT_PREFIX + 'a'.repeat(maxAlt));
@@ -1002,7 +1084,7 @@ function videoFile(name = 'v.mp4') {
  * @returns {Promise<void>}
  */
 async function addReadyVideo(made) {
-	await made.composer.addFiles([videoFile()]);
+	await made.composer.active.addFiles([videoFile()]);
 	await flush();
 	const job = made.calls.videoJobs[made.calls.videoJobs.length - 1];
 	job.finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
@@ -1013,17 +1095,17 @@ test('ReplyComposer: 動画を付けると処理が終わるまで送信でき�
 	const made = makeComposer({});
 	const {composer, calls, restore} = made;
 	try {
-		await composer.addFiles([videoFile()]);
+		await composer.active.addFiles([videoFile()]);
 		await flush();
 		assert.strictEqual(calls.videoUploads.length, 1);
-		assert.strictEqual(composer.video.isPending(), true);
+		assert.strictEqual(composer.active.video.isPending(), true);
 		assert.strictEqual(composer.submitButton.disabled, true);
-		assert.strictEqual(composer.videoEl.hidden, false);
+		assert.strictEqual(composer.active.videoEl.hidden, false);
 		await composer.submit();
 		assert.deepStrictEqual(calls.created, []);
 		calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
 		await flush();
-		assert.strictEqual(composer.video.isReady(), true);
+		assert.strictEqual(composer.active.video.isReady(), true);
 		// 本文が空でも動画だけで送れる
 		assert.strictEqual(composer.submitButton.disabled, false);
 		await composer.submit();
@@ -1036,8 +1118,8 @@ test('ReplyComposer: 動画を付けると処理が終わるまで送信でき�
 		// 字幕が無ければ upload-blob は呼ばない
 		assert.strictEqual(calls.uploads, 0);
 		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.video#view');
-		assert.strictEqual(composer.video.isActive(), false);
-		assert.strictEqual(composer.videoEl.hidden, true);
+		assert.strictEqual(composer.active.video.isActive(), false);
+		assert.strictEqual(composer.active.videoEl.hidden, true);
 		assert.strictEqual(composer.hasDraft(), false);
 	} finally {
 		restore();
@@ -1057,8 +1139,8 @@ test('ReplyComposer: 字幕付きで送ると字幕を upload-blob で先に送�
 	try {
 		await addReadyVideo(made);
 		const captionBlob = {size: 10, type: 'text/vtt'};
-		composer.video.setAlt('動画の説明');
-		composer.video.setCaption({blob: captionBlob, name: 'c.vtt', lang: 'ja'});
+		composer.active.video.setAlt('動画の説明');
+		composer.active.video.setCaption({blob: captionBlob, name: 'c.vtt', lang: 'ja'});
 		await composer.submit();
 		assert.strictEqual(seen.length, 1);
 		assert.ok(seen[0].blob === captionBlob, '字幕の Blob を送っていない');
@@ -1082,14 +1164,14 @@ test('ReplyComposer: 字幕の送信が失敗すると返信を作らず、字�
 	const {composer, calls, restore} = made;
 	try {
 		await addReadyVideo(made);
-		composer.textarea.value = '本文';
-		composer.video.setCaption({blob: {size: 10}, name: 'c.vtt', lang: 'ja'});
+		composer.active.textarea.value = '本文';
+		composer.active.video.setCaption({blob: {size: 10}, name: 'c.vtt', lang: 'ja'});
 		await composer.submit();
 		assert.deepStrictEqual(calls.created, []);
-		assert.strictEqual(composer.noticeEl.textContent, EXT_CONFIG.lightboxReplies.compose.text.captionUploadFailed);
-		assert.strictEqual(composer.video.isReady(), true);
-		assert.ok(composer.video.state.caption, '字幕が消えた');
-		assert.strictEqual(composer.textarea.value, '本文');
+		assert.strictEqual(composer.active.noticeEl.textContent, EXT_CONFIG.lightboxReplies.compose.text.captionUploadFailed);
+		assert.strictEqual(composer.active.video.isReady(), true);
+		assert.ok(composer.active.video.state.caption, '字幕が消えた');
+		assert.strictEqual(composer.active.textarea.value, '本文');
 		assert.strictEqual(composer.submitButton.disabled, false);
 	} finally {
 		restore();
@@ -1100,25 +1182,25 @@ test('ReplyComposer: 動画と画像を同じ回に渡すと動画は取り込�
 	const {composer, calls, restore} = makeComposer({});
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}, videoFile()]);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}, videoFile()]);
 		await flush();
-		assert.strictEqual(composer.attachments.length, 1);
-		assert.strictEqual(composer.video.isActive(), false);
+		assert.strictEqual(composer.active.attachments.length, 1);
+		assert.strictEqual(composer.active.video.isActive(), false);
 		assert.deepStrictEqual(calls.videoUploads, []);
-		assert.ok(composer.noticeEl.textContent.includes(text.videoExclusive));
+		assert.ok(composer.active.noticeEl.textContent.includes(text.videoExclusive));
 		// 画像があるあいだに動画だけを渡しても取り込まない
-		await composer.addFiles([videoFile()]);
-		assert.strictEqual(composer.video.isActive(), false);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
-		composer.removeAttachment(composer.attachments[0]);
+		await composer.active.addFiles([videoFile()]);
+		assert.strictEqual(composer.active.video.isActive(), false);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
+		composer.active.removeAttachment(composer.active.attachments[0]);
 		// 2 本は取り込まない
-		await composer.addFiles([videoFile('a.mp4'), videoFile('b.mp4')]);
-		assert.strictEqual(composer.video.isActive(), false);
-		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
-		await composer.addFiles([videoFile('a.mp4')]);
-		assert.strictEqual(composer.video.isActive(), true);
-		await composer.addFiles([videoFile('b.mp4')]);
-		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+		await composer.active.addFiles([videoFile('a.mp4'), videoFile('b.mp4')]);
+		assert.strictEqual(composer.active.video.isActive(), false);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.tooManyVideos);
+		await composer.active.addFiles([videoFile('a.mp4')]);
+		assert.strictEqual(composer.active.video.isActive(), true);
+		await composer.active.addFiles([videoFile('b.mp4')]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.tooManyVideos);
 		assert.strictEqual(calls.videoUploads.length, 1);
 	} finally {
 		restore();
@@ -1130,28 +1212,28 @@ test('ReplyComposer: 受け付けない形式の動画は画像として扱わ�
 	const {composer, calls, restore} = made;
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
-		await composer.addFiles([{name: 'a.mkv', type: 'video/x-matroska', size: 1000}]);
+		await composer.active.addFiles([{name: 'a.mkv', type: 'video/x-matroska', size: 1000}]);
 		await flush();
-		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
-		assert.strictEqual(composer.attachments.length, 0);
-		assert.strictEqual(composer.video.isActive(), false);
-		assert.ok(!composer.noticeEl.textContent.includes(text.unsupportedImage));
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoUnsupported);
+		assert.strictEqual(composer.active.attachments.length, 0);
+		assert.strictEqual(composer.active.video.isActive(), false);
+		assert.ok(!composer.active.noticeEl.textContent.includes(text.unsupportedImage));
 		// 画像の知らせは今までどおり
-		await composer.addFiles([{name: 'a.bmp', type: 'image/bmp', size: 1000}]);
+		await composer.active.addFiles([{name: 'a.bmp', type: 'image/bmp', size: 1000}]);
 		await flush();
-		assert.strictEqual(composer.noticeEl.textContent, text.unsupportedImage);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.unsupportedImage);
 		// 受け付ける画像と一緒なら、画像は取り込んで動画の形式だけを知らせる
-		await composer.addFiles([{name: 'a.avi', type: 'video/x-msvideo', size: 1000}, {name: 'a.png', type: 'image/png'}]);
+		await composer.active.addFiles([{name: 'a.avi', type: 'video/x-msvideo', size: 1000}, {name: 'a.png', type: 'image/png'}]);
 		await flush();
-		assert.strictEqual(composer.attachments.length, 1);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
-		composer.removeAttachment(composer.attachments[0]);
+		assert.strictEqual(composer.active.attachments.length, 1);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoUnsupported);
+		composer.active.removeAttachment(composer.active.attachments[0]);
 		// 受け付ける動画と一緒なら、動画は取り込み、形式の知らせを残す
-		await composer.addFiles([{name: 'a.m4v', type: 'video/x-m4v', size: 1000}, videoFile()]);
+		await composer.active.addFiles([{name: 'a.m4v', type: 'video/x-m4v', size: 1000}, videoFile()]);
 		await flush();
-		assert.strictEqual(composer.video.isActive(), true);
+		assert.strictEqual(composer.active.video.isActive(), true);
 		assert.strictEqual(calls.videoUploads.length, 1);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoUnsupported);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoUnsupported);
 	} finally {
 		restore();
 	}
@@ -1162,29 +1244,29 @@ test('ReplyComposer: 動画があるあいだ GIF ボタンが止まり、画像
 	const {composer, restore} = made;
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
-		assert.strictEqual(composer.gifTool.disabled, false);
+		assert.strictEqual(composer.active.gifTool.disabled, false);
 		await addReadyVideo(made);
-		assert.strictEqual(composer.mediaCount(), 1);
-		assert.strictEqual(composer.gifTool.disabled, true);
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.mediaCount(), 1);
+		assert.strictEqual(composer.active.gifTool.disabled, true);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
 		await flush();
-		assert.strictEqual(composer.attachments.length, 0);
-		assert.strictEqual(composer.importing, 0);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		assert.strictEqual(composer.active.attachments.length, 0);
+		assert.strictEqual(composer.active.importing, 0);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
 		// 画像の貼り付けも取り込まない
 		const imagePaste = new FakeEvent('paste');
 		imagePaste.clipboardData = {items: itemList([item('file', 'image/png', {name: 'p.png', type: 'image/png'})])};
-		composer.onPaste(imagePaste);
+		composer.active.onPaste(imagePaste);
 		await flush();
-		assert.strictEqual(composer.attachments.length, 0);
+		assert.strictEqual(composer.active.attachments.length, 0);
 		// 動画を外すと GIF ボタンが戻る
-		composer.video.remove();
-		assert.strictEqual(composer.gifTool.disabled, false);
+		composer.active.video.remove();
+		assert.strictEqual(composer.active.gifTool.disabled, false);
 		// GIF があるあいだは動画を取り込まない
-		composer.extras.setGif(gifItem());
-		await composer.addFiles([videoFile()]);
-		assert.strictEqual(composer.video.isActive(), false);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.active.extras.setGif(gifItem());
+		await composer.active.addFiles([videoFile()]);
+		assert.strictEqual(composer.active.video.isActive(), false);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
 	} finally {
 		restore();
 	}
@@ -1197,11 +1279,11 @@ test('ReplyComposer: 動画があるあいだリンクカードを送らない',
 	try {
 		pasteText(composer, 'https://example.com/article');
 		await flush();
-		assert.ok(composer.embedEl.querySelector(cardSelector), 'カードが出ていない');
+		assert.ok(composer.active.embedEl.querySelector(cardSelector), 'カードが出ていない');
 		await addReadyVideo(made);
-		assert.strictEqual(composer.embedEl.querySelector(cardSelector), null);
+		assert.strictEqual(composer.active.embedEl.querySelector(cardSelector), null);
 		// 動画もラベルの対象
-		assert.strictEqual(composer.labelsButton.hidden, false);
+		assert.strictEqual(composer.active.labelsButton.hidden, false);
 		await composer.submit();
 		const embed = calls.created[0].embed;
 		assert.strictEqual(embed.$type, 'app.bsky.embed.video');
@@ -1216,13 +1298,13 @@ test('ReplyComposer: 動画だけでも書きかけになる (hasDraft)', async 
 	const {composer, restore} = made;
 	try {
 		assert.strictEqual(composer.hasDraft(), false);
-		await composer.addFiles([videoFile()]);
+		await composer.active.addFiles([videoFile()]);
 		assert.strictEqual(composer.hasDraft(), true);
 		made.calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
 		await flush();
-		assert.strictEqual(composer.video.isReady(), true);
+		assert.strictEqual(composer.active.video.isReady(), true);
 		assert.strictEqual(composer.hasDraft(), true);
-		composer.video.remove();
+		composer.active.video.remove();
 		assert.strictEqual(composer.hasDraft(), false);
 	} finally {
 		restore();
@@ -1232,7 +1314,7 @@ test('ReplyComposer: 動画だけでも書きかけになる (hasDraft)', async 
 test('ReplyComposer: 処理中に destroy すると cancelVideoUpload を送る', async () => {
 	const {composer, calls, restore} = makeComposer({});
 	try {
-		await composer.addFiles([videoFile()]);
+		await composer.active.addFiles([videoFile()]);
 		await flush();
 		assert.strictEqual(calls.videoJobs.length, 1);
 		calls.videoJobs[0].onProgress({phase: 'processing', progress: 0.5});
@@ -1249,18 +1331,18 @@ test('ReplyComposer: 動画の ALT ボタンで字幕と ALT の画面が開き�
 	const compose = EXT_CONFIG.lightboxReplies.compose;
 	try {
 		// プレビューを描くにはオブジェクト URL が要るため、本物の File を渡す
-		await composer.addFiles([new File(['x'], 'v.mp4', {type: 'video/mp4'})]);
+		await composer.active.addFiles([new File(['x'], 'v.mp4', {type: 'video/mp4'})]);
 		await flush();
 		made.calls.videoJobs[0].finish({ok: true, blob: VIDEO_BLOB, reason: null, message: null});
 		await flush();
-		const altButton = composer.videoEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`);
+		const altButton = composer.active.videoEl.querySelector(`.${EXT_CONFIG.lightboxReplies.cards.classes.gifAlt}`);
 		assert.ok(altButton, '動画の ALT ボタンが無い');
 		click(altButton);
 		const field = panel.querySelector(`.${compose.classes.altInput}`);
 		assert.ok(field, '字幕と ALT の画面が開かない');
 		field.value = '動画の説明';
 		click(panel.querySelector(`[data-role="${compose.sheetRoles.done}"]`));
-		assert.strictEqual(composer.video.state.alt, '動画の説明');
+		assert.strictEqual(composer.active.video.state.alt, '動画の説明');
 	} finally {
 		composer.destroy();
 		restore();
@@ -1273,22 +1355,22 @@ test('ReplyComposer: 動画が原因の排他の 1 行は動画を外すと消�
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
 		await addReadyVideo(made);
-		click(composer.imageTool);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
-		composer.video.remove();
-		assert.strictEqual(composer.noticeEl, null);
+		click(composer.active.imageTool);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
+		composer.active.video.remove();
+		assert.strictEqual(composer.active.noticeEl, null);
 		// 画像を渡して断られた場合も同じ
 		await addReadyVideo(made);
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
-		composer.video.remove();
-		assert.strictEqual(composer.noticeEl, null);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
+		composer.active.video.remove();
+		assert.strictEqual(composer.active.noticeEl, null);
 		// 排他でない知らせは動画を外しても消さない
 		await addReadyVideo(made);
-		await composer.addFiles([videoFile('b.mp4')]);
-		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
-		composer.video.remove();
-		assert.strictEqual(composer.noticeEl.textContent, text.tooManyVideos);
+		await composer.active.addFiles([videoFile('b.mp4')]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.tooManyVideos);
+		composer.active.video.remove();
+		assert.strictEqual(composer.active.noticeEl.textContent, text.tooManyVideos);
 	} finally {
 		restore();
 	}
@@ -1298,20 +1380,805 @@ test('ReplyComposer: GIF・画像が原因で動画を断った 1 行は、そ�
 	const {composer, restore} = makeComposer({});
 	const text = EXT_CONFIG.lightboxReplies.compose.text;
 	try {
-		composer.extras.setGif(gifItem());
-		await composer.addFiles([videoFile()]);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
-		composer.extras.removeGif();
-		assert.strictEqual(composer.noticeEl, null);
-		await composer.addFiles([{name: 'a.png', type: 'image/png'}]);
-		await composer.addFiles([videoFile()]);
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
+		composer.active.extras.setGif(gifItem());
+		await composer.active.addFiles([videoFile()]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
+		composer.active.extras.removeGif();
+		assert.strictEqual(composer.active.noticeEl, null);
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		await composer.active.addFiles([videoFile()]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
 		// 画像が原因の知らせは、本文の入力などで extras が変わっても消えない
 		pasteText(composer, 'https://example.com/article');
 		await flush();
-		assert.strictEqual(composer.noticeEl.textContent, text.videoExclusive);
-		composer.removeAttachment(composer.attachments[0]);
+		assert.strictEqual(composer.active.noticeEl.textContent, text.videoExclusive);
+		composer.active.removeAttachment(composer.active.attachments[0]);
+		assert.strictEqual(composer.active.noticeEl, null);
+	} finally {
+		restore();
+	}
+});
+
+/**
+ * 2 件以上の送信の偽の段取りを作る。
+ * @param {Object} overrides 差し替える段
+ * @returns {{steps: Object, calls: Object}}
+ */
+function makeThreadSteps(overrides) {
+	const calls = {uploads: [], progress: [], built: [], sent: [], posted: [], failed: [], uploadFailed: []};
+	const posts = [2, 1].map((count, index) => ({
+		images: preparedImages(count).map((image, n) => ({blob: {name: `p${index}-${n}`}})),
+		buildRecord: async (blobs) => {
+			calls.built.push(index);
+			return {text: `post${index}`, blobs};
+		},
+		onUploadFailed: (reason) => calls.uploadFailed.push({index, reason})
+	}));
+	const steps = {
+		posts,
+		upload: async (blob) => {
+			calls.uploads.push(blob.name);
+			return {ok: true, blob: {ref: {$link: `cid-${blob.name}`}}, reason: null};
+		},
+		onProgress: (current, total) => calls.progress.push([current, total]),
+		isCurrent: () => true,
+		send: async (records) => {
+			calls.sent.push(records);
+			return {
+				ok: true,
+				results: records.map((r, i) => ({uri: `at://x/${i}`, cid: `c${i}`})),
+				writes: records.map((r) => ({value: {...r, chained: true}})),
+				reason: null
+			};
+		},
+		onPosted: (results, records, blobsByPost) => calls.posted.push({results, records, blobsByPost}),
+		onFailed: (kind, reason) => calls.failed.push({kind, reason}),
+		...overrides
+	};
+	return {steps, calls};
+}
+
+test('runThreadSubmit: 全体で通した進み具合で送り、送った value と BlobRef を onPosted に渡す', async () => {
+	const {steps, calls} = makeThreadSteps({});
+	assert.strictEqual(await runThreadSubmit(steps), 'posted');
+	assert.deepStrictEqual(calls.progress, [[1, 3], [2, 3], [3, 3]]);
+	assert.strictEqual(calls.sent.length, 1);
+	assert.strictEqual(calls.sent[0].length, 2);
+	assert.strictEqual(calls.posted.length, 1);
+	assert.strictEqual(calls.posted[0].results.length, 2);
+	assert.strictEqual(calls.posted[0].records[0].chained, true);
+	assert.strictEqual(calls.posted[0].blobsByPost.length, 2);
+	assert.strictEqual(calls.posted[0].blobsByPost[0].length, 2);
+	assert.strictEqual(calls.posted[0].blobsByPost[1].length, 1);
+	assert.deepStrictEqual(calls.failed, []);
+});
+
+test('runThreadSubmit: 2 件目の画像が失敗したらその投稿だけに知らせ、record も送信も作らない', async () => {
+	const {steps, calls} = makeThreadSteps({
+		upload: async (blob) => blob.name === 'p1-0'
+			? {ok: false, blob: null, reason: 'boom'}
+			: {ok: true, blob: {ref: {$link: blob.name}}, reason: null}
+	});
+	assert.strictEqual(await runThreadSubmit(steps), 'upload-failed');
+	assert.deepStrictEqual(calls.uploadFailed, [{index: 1, reason: 'boom'}]);
+	assert.deepStrictEqual(calls.built, []);
+	assert.deepStrictEqual(calls.sent, []);
+	assert.deepStrictEqual(calls.failed, []);
+});
+
+test('runThreadSubmit: send の応答を待つあいだに世代が変わると何も呼ばない', async () => {
+	let current = true;
+	const {steps, calls} = makeThreadSteps({
+		isCurrent: () => current,
+		send: async () => {
+			current = false;
+			return {ok: true, results: [], writes: [], reason: null};
+		}
+	});
+	assert.strictEqual(await runThreadSubmit(steps), 'stale');
+	assert.deepStrictEqual(calls.posted, []);
+	assert.deepStrictEqual(calls.failed, []);
+});
+
+test('runThreadSubmit: thread-unconfirmed は unconfirmed、ほかの理由は post', async () => {
+	const unconfirmed = makeThreadSteps({
+		send: async () => ({ok: false, results: null, writes: null, reason: 'thread-unconfirmed'})
+	});
+	assert.strictEqual(await runThreadSubmit(unconfirmed.steps), 'unconfirmed');
+	assert.deepStrictEqual(unconfirmed.calls.failed, [{kind: 'unconfirmed', reason: 'thread-unconfirmed'}]);
+	const other = makeThreadSteps({
+		send: async () => ({ok: false, results: null, writes: null, reason: 'x'})
+	});
+	assert.strictEqual(await runThreadSubmit(other.steps), 'post-failed');
+	assert.deepStrictEqual(other.calls.failed, [{kind: 'post', reason: 'x'}]);
+	assert.deepStrictEqual(other.calls.posted, []);
+});
+
+test('runThreadSubmit: buildRecord が例外を投げたら post の失敗にし、送信しない', async () => {
+	const {steps, calls} = makeThreadSteps({});
+	steps.posts[1].buildRecord = async () => {
+		throw new Error('bad');
+	};
+	assert.strictEqual(await runThreadSubmit(steps), 'post-failed');
+	assert.strictEqual(calls.failed.length, 1);
+	assert.strictEqual(calls.failed[0].kind, 'post');
+	assert.deepStrictEqual(calls.sent, []);
+});
+
+/** スレッドの入力欄の文言とクラス */
+const COMPOSE = EXT_CONFIG.lightboxReplies.compose;
+
+/**
+ * 投稿の本文を打ったことにする (値を入れて input を送る)。
+ * @param {Object} post ComposerPost
+ * @param {string} value 本文
+ * @returns {void}
+ */
+function typeInto(post, value) {
+	post.textarea.value = value;
+	post.textarea.dispatchEvent(new FakeEvent('input'));
+}
+
+/**
+ * 条件が満たされるまで待つ (上限を過ぎたら失敗にする)。
+ * @param {() => boolean} condition
+ * @returns {Promise<void>}
+ */
+async function waitUntil(condition) {
+	const limitMs = 2000;
+	const started = Date.now();
+	while (!condition()) {
+		if (Date.now() - started > limitMs) assert.fail('待っている条件が満たされない');
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	}
+}
+
+/**
+ * 本文を入れた投稿を n 件並べる (1 件目は最初からある投稿)。
+ * @param {ReplyComposer} composer
+ * @param {string[]} texts 各投稿の本文
+ * @returns {void}
+ */
+function fillPosts(composer, texts) {
+	texts.forEach((text, index) => {
+		if (index > 0) click(composer.addButton);
+		typeInto(composer.posts[index], text);
+	});
+}
+
+/**
+ * 1 件目と同じ形の、検算できる BlobRef を返すアップロードの偽物を作る。
+ * @returns {Promise<(blob: Object) => Promise<Object>>}
+ */
+async function cidUpload() {
+	const link = await computeRecordCid({image: 1});
+	return async () => ({ok: true, blob: {$type: 'blob', ref: {$link: link}, mimeType: 'image/jpeg', size: 1}, reason: null});
+}
+
+test('スレッド: 本文を入れると「＋」が出て、押すとアクティブの後ろに空の投稿が入り本文の欄にフォーカスが移る', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		assert.strictEqual(composer.addButton.hidden, true);
+		assert.strictEqual(composer.addButton.getAttribute('aria-label'), COMPOSE.text.addPost);
+		assert.strictEqual(composer.addButton.title, COMPOSE.text.addPost);
+		typeInto(composer.active, '1 件目');
+		assert.strictEqual(composer.addButton.hidden, false);
+		click(composer.addButton);
+		assert.strictEqual(composer.posts.length, 2);
+		assert.strictEqual(composer.activeIndex, 1);
+		assert.ok(document.activeElement === composer.posts[1].textarea, '2 件目の本文の欄にフォーカスが無い');
+		assert.strictEqual(composer.posts[1].textarea.placeholder, COMPOSE.text.addPlaceholder);
+		assert.strictEqual(composer.posts[1].textarea.getAttribute('aria-label'), COMPOSE.text.addPlaceholder);
+		// 2 件目が空のあいだは足せない
+		assert.strictEqual(composer.addButton.hidden, true);
+		typeInto(composer.posts[1], '2 件目');
+		assert.strictEqual(composer.addButton.hidden, false);
+		// 1 件目に戻って足すと、1 件目のすぐ後ろに入る
+		composer.posts[0].textarea.dispatchEvent(new FakeEvent('focusin'));
+		click(composer.addButton);
+		assert.strictEqual(composer.posts.length, 3);
+		assert.strictEqual(composer.activeIndex, 1);
+		assert.strictEqual(composer.posts[2].textarea.value, '2 件目');
+		const order = composer.el.children.filter((child) => composer.posts.some((post) => post.el === child));
+		assert.ok(order.every((child, i) => child === composer.posts[i].el), '投稿の要素の並びが投稿の並びと違う');
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 投稿が上限の 10 件になると「＋」が隠れる', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		const max = COMPOSE.thread.maxPosts;
+		fillPosts(composer, Array.from({length: max}, (unused, i) => `本文${i}`));
+		assert.strictEqual(composer.posts.length, max);
+		assert.strictEqual(composer.addButton.hidden, true);
+		composer.addPost();
+		assert.strictEqual(composer.posts.length, max);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: フォーカスの入った投稿がアクティブになり、ほかは薄くツールバーを隠し、共通の行はアクティブに付く', () => {
+	const {composer, restore} = makeComposer({});
+	const inactive = COMPOSE.classes.postInactive;
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		const [first, second] = composer.posts;
+		assert.ok(first.el.classList.contains(COMPOSE.classes.post), '投稿のクラスが無い');
+		first.textarea.dispatchEvent(new FakeEvent('focusin'));
+		assert.strictEqual(composer.activeIndex, 0);
+		assert.strictEqual(second.el.classList.contains(inactive), true);
+		assert.strictEqual(second.toolbarEl.hidden, true);
+		assert.strictEqual(first.el.classList.contains(inactive), false);
+		second.textarea.dispatchEvent(new FakeEvent('focusin'));
+		assert.strictEqual(composer.activeIndex, 1);
+		assert.strictEqual(first.el.classList.contains(inactive), true);
+		assert.strictEqual(first.toolbarEl.hidden, true);
+		assert.strictEqual(second.el.classList.contains(inactive), false);
+		assert.strictEqual(second.toolbarEl.hidden, false);
+		for (const node of [composer.addButton, composer.languageButton, composer.remaining, composer.submitButton]) {
+			assert.ok(second.toolbarEl.contains(node), '共通の行が 2 件目のツールバーに無い');
+			assert.strictEqual(first.toolbarEl.contains(node), false);
+		}
+		// 残りの文字数はアクティブな投稿のもの
+		assert.ok(composer.remaining.textContent.endsWith(String(second.check().remaining)));
+		// 「×」はアクティブな投稿にだけ出す
+		assert.strictEqual(second.removeButton.hidden, false);
+		assert.strictEqual(first.removeButton.hidden, true);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 投稿が 1 件のあいだは薄くせず「×」も出さない (今までどおり)', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		typeInto(composer.active, '本文');
+		assert.strictEqual(composer.active.el.classList.contains(COMPOSE.classes.postInactive), false);
+		assert.strictEqual(composer.active.removeButton.hidden, true);
+		assert.strictEqual(composer.submitButton.hasAttribute('aria-label'), false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 空の投稿は「×」1 回で消え、フォーカスは前の投稿へ移る', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		typeInto(composer.active, '1 件目');
+		click(composer.addButton);
+		const second = composer.posts[1];
+		click(second.removeButton);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.activeIndex, 0);
+		assert.strictEqual(second.el.parentNode, null);
+		assert.ok(document.activeElement === composer.posts[0].textarea, '前の投稿にフォーカスが無い');
+		assert.ok(composer.posts[0].toolbarEl.contains(composer.submitButton), '共通の行が残りの投稿に戻らない');
+		assert.strictEqual(composer.posts[0].removeButton.hidden, true);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 中身のある投稿は「×」1 回目で「本当に削除？」、フォーカスが外れる (blur) と戻り、2 回目で消える', () => {
+	const {composer, restore} = makeComposer({});
+	const confirming = EXT_CONFIG.lightboxReplies.classes.confirming;
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		// 先頭の投稿を消すと、フォーカスは次の投稿へ移る
+		composer.posts[0].textarea.dispatchEvent(new FakeEvent('focusin'));
+		const first = composer.posts[0];
+		click(first.removeButton);
+		assert.strictEqual(composer.posts.length, 2);
+		assert.strictEqual(first.removeButton.textContent, COMPOSE.text.confirmRemovePost);
+		assert.strictEqual(first.removeButton.classList.contains(confirming), true);
+		first.removeButton.dispatchEvent(new FakeEvent('blur', {bubbles: false}));
+		assert.strictEqual(first.removeButton.classList.contains(confirming), false);
+		assert.strictEqual(first.removeButton.getAttribute('aria-label'), COMPOSE.text.removePost);
+		click(first.removeButton);
+		click(first.removeButton);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.posts[0].textarea.value, '2 件目');
+		assert.ok(document.activeElement === composer.posts[0].textarea, '次の投稿にフォーカスが無い');
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 動画のアップロード中の投稿を消すと、その動画のアップロードを取り消す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		typeInto(composer.active, '1 件目');
+		click(composer.addButton);
+		const second = composer.posts[1];
+		await second.addFiles([videoFile()]);
+		await flush();
+		assert.strictEqual(calls.videoJobs.length, 1);
+		click(second.removeButton);
+		click(second.removeButton);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.deepStrictEqual(calls.videoCancels, [calls.videoJobs[0].id]);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 2 件を 1 回の createReplyThread で送り、連なりは橋渡しの検査を通り、一覧へ順に入れて 1 件に戻す', async () => {
+	const {composer, calls, restore} = makeComposer({getSelfProfile: () => ({handle: 'me.example.com', avatarUrl: null})});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		assert.strictEqual(composer.submitButton.getAttribute('aria-label'),
+			COMPOSE.text.submitThread.replace('{count}', '2'));
+		await composer.submit();
+		assert.deepStrictEqual(calls.created, []);
+		assert.strictEqual(calls.threads.length, 1);
+		const writes = calls.threads[0];
+		assert.strictEqual(writes.length, 2);
+		assert.deepStrictEqual(writes.map((write) => write.value.text), ['1 件目', '2 件目']);
+		const parent = writes[1].value.reply.parent;
+		assert.strictEqual(parent.uri, `at://${SELF_DID}/app.bsky.feed.post/${writes[0].rkey}`);
+		assert.strictEqual(parent.cid, await computeRecordCid(writes[0].value));
+		assert.deepStrictEqual(writes[0].value.reply, {
+			root: {uri: TARGET.uri, cid: TARGET.cid}, parent: {uri: TARGET.uri, cid: TARGET.cid}
+		});
+		assert.ok(writes[0].rkey < writes[1].rkey, 'rkey が増えていない');
+		assert.deepStrictEqual(writes.map((write) => write.value.langs), [['ja'], ['ja']]);
+		assert.strictEqual(checkThreadWrites(writes, SELF_DID).ok, true);
+		// 一覧へは送った順に、2 件目の宛先は 1 件目
+		assert.strictEqual(calls.posted.length, 2);
+		assert.strictEqual(calls.posted[0][2], TARGET);
+		assert.strictEqual(calls.posted[1][2].anchorUri, calls.posted[0][0].uri);
+		assert.strictEqual(calls.posted[1][2].uri, calls.posted[0][0].uri);
+		assert.strictEqual(calls.posted[1][2].handle, 'me.example.com');
+		assert.strictEqual(calls.posted[1][1], writes[1].value);
+		// 送った後は空の 1 件に戻す
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.activeIndex, 0);
+		assert.strictEqual(composer.active.textarea.value, '');
+		assert.strictEqual(composer.hasDraft(), false);
+		assert.ok(composer.active.toolbarEl.contains(composer.submitButton), '共通の行が残りの投稿に無い');
+		assert.strictEqual(composer.el.children.filter((child) => child.classList.contains(COMPOSE.classes.post)).length, 1);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 1 件目に画像、2 件目に本文だけなら、1 件目の value にだけ embed と BlobRef が入る', async () => {
+	const {composer, calls, restore} = makeComposer({uploadBlob: await cidUpload()});
+	try {
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		click(composer.addButton);
+		typeInto(composer.posts[1], '2 件目');
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 1);
+		const [first, second] = calls.threads[0].map((write) => write.value);
+		assert.strictEqual(first.embed.$type, 'app.bsky.embed.images');
+		assert.strictEqual(first.embed.images[0].image.$type, 'blob');
+		assert.strictEqual('embed' in second, false);
+		assert.strictEqual(checkThreadWrites(calls.threads[0], SELF_DID).ok, true);
+		assert.strictEqual(calls.posted[0][3].$type, 'app.bsky.embed.images#view');
+		assert.strictEqual(calls.posted[1][3], null);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 途中に空の投稿があると 1 回目は送らずに聞き、「飛ばして送信」で空を除いて送る', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目', '3 件目']);
+		typeInto(composer.posts[1], '');
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 0);
+		const prompt = composer.noticeEl;
+		assert.ok(prompt && prompt.classList.contains(COMPOSE.classes.skipEmpty), '空の投稿の問い合わせが出ていない');
+		assert.strictEqual(prompt.getAttribute('role'), 'alert');
+		assert.ok(prompt.textContent.includes(COMPOSE.text.skipEmpty));
+		const send = prompt.querySelector(`.${COMPOSE.classes.skipEmptySend}`);
+		assert.strictEqual(send.textContent, COMPOSE.text.skipEmptySend);
+		assert.ok(document.activeElement === send, '「飛ばして送信」にフォーカスが無い');
+		click(send);
+		// CID の計算 (WebCrypto) は別のスレッドで進むため、送り終えるまで待つ
+		await waitUntil(() => !composer.busy && calls.threads.length > 0);
+		assert.strictEqual(calls.threads.length, 1);
+		assert.deepStrictEqual(calls.threads[0].map((write) => write.value.text), ['1 件目', '3 件目']);
+		assert.strictEqual(composer.posts.length, 1);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 「編集を続ける」・本文の変更で問い合わせを引っ込め、末尾だけが空なら聞かずに送る', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目', '3 件目']);
+		typeInto(composer.posts[1], '');
+		await composer.submit();
+		click(composer.noticeEl.querySelector(`.${COMPOSE.classes.skipEmptyKeep}`));
 		assert.strictEqual(composer.noticeEl, null);
+		await composer.submit();
+		assert.ok(composer.noticeEl, '2 回目の送信で問い合わせが出ない');
+		typeInto(composer.posts[1], '2 件目');
+		assert.strictEqual(composer.noticeEl, null);
+		// 末尾に空の投稿を足しても聞かずに送る
+		composer.posts[2].textarea.dispatchEvent(new FakeEvent('focusin'));
+		click(composer.addButton);
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 1);
+		assert.deepStrictEqual(calls.threads[0].map((write) => write.value.text), ['1 件目', '2 件目', '3 件目']);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 本文があるのが 1 件だけなら今までどおり createReply で送り、空の投稿を落として 1 件に戻す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		typeInto(composer.active, '1 件目');
+		click(composer.addButton);
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 0);
+		assert.strictEqual(calls.created.length, 1);
+		assert.strictEqual(calls.created[0].text, '1 件目');
+		assert.strictEqual(calls.posted.length, 1);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 2 件目の画像を送れなければ返信を作らず、2 件目に 1 行を出して中身を残す', async () => {
+	let count = 0;
+	const good = await cidUpload();
+	const {composer, calls, restore} = makeComposer({
+		uploadBlob: async (blob) => {
+			count += 1;
+			return count === 1 ? good(blob) : {ok: false, blob: null, reason: 'upload-failed'};
+		}
+	});
+	try {
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		click(composer.addButton);
+		await composer.posts[1].addFiles([{name: 'b.png', type: 'image/png'}]);
+		typeInto(composer.posts[1], '2 件目');
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 0);
+		assert.strictEqual(calls.posted.length, 0);
+		assert.strictEqual(composer.posts.length, 2);
+		assert.strictEqual(composer.posts[1].noticeEl.textContent, COMPOSE.text.uploadFailed);
+		assert.strictEqual(composer.posts[0].noticeEl, null);
+		assert.strictEqual(composer.posts[1].textarea.value, '2 件目');
+		assert.strictEqual(composer.posts[0].attachments.length, 1);
+		assert.strictEqual(composer.posts[1].attachments.length, 1);
+		assert.strictEqual(composer.submitButton.disabled, false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 作成が失敗したら全投稿を残して「返信できませんでした」', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	composer.deps.actions = {
+		createReplyThread: async () => ({ok: false, results: null, writes: null, reason: 'thread-not-allowed'})
+	};
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		await composer.submit();
+		assert.strictEqual(calls.posted.length, 0);
+		assert.strictEqual(composer.posts.length, 2);
+		assert.strictEqual(composer.noticeEl.textContent, EXT_CONFIG.lightboxReplies.text.postFailed);
+		assert.strictEqual(calls.reloads, 0);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 応答を確かめられなければ「返信を確かめられませんでした」を出し、空の 1 件に戻して一覧を取り直す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	composer.deps.actions = {
+		createReplyThread: async () => ({ok: false, results: null, writes: [], reason: 'thread-unconfirmed'})
+	};
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		await composer.submit();
+		assert.strictEqual(calls.posted.length, 0);
+		assert.strictEqual(composer.noticeEl.textContent, COMPOSE.text.threadUnconfirmed);
+		assert.strictEqual(calls.reloads, 1);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.hasDraft(), false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 2 件目だけに本文があっても書きかけ、送信中は「＋」「×」と全投稿の欄を止める', async () => {
+	let release = null;
+	const {composer, restore} = makeComposer({});
+	composer.deps.actions = {
+		createReplyThread: () => new Promise((resolve) => {
+			release = resolve;
+		})
+	};
+	try {
+		typeInto(composer.active, '1 件目');
+		click(composer.addButton);
+		typeInto(composer.posts[1], '2 件目');
+		typeInto(composer.posts[0], '');
+		assert.strictEqual(composer.hasDraft(), true);
+		typeInto(composer.posts[0], '1 件目');
+		const sending = composer.submit();
+		await flush();
+		assert.strictEqual(composer.addButton.disabled, true);
+		assert.strictEqual(composer.posts[1].removeButton.disabled, true);
+		assert.ok(composer.posts.every((post) => post.textarea.disabled), '送信中に本文の欄が止まっていない');
+		const count = composer.posts.length;
+		composer.addPost();
+		composer.removePost(composer.posts[1]);
+		assert.strictEqual(composer.posts.length, count);
+		release({ok: false, results: null, writes: null, reason: 'x'});
+		await sending;
+		assert.strictEqual(composer.addButton.disabled, false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 薄く描いた投稿の欄の外を押すと、その投稿の本文の欄へフォーカスを移す', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		const first = composer.posts[0];
+		assert.strictEqual(first.el.classList.contains(COMPOSE.classes.postInactive), true);
+		click(first.avatar);
+		assert.ok(document.activeElement === first.textarea, '薄い投稿を押しても本文の欄にフォーカスが移らない');
+		// アクティブな投稿の欄の外を押してもフォーカスは動かさない
+		document.activeElement = document.body;
+		click(composer.posts[1].avatar);
+		assert.ok(document.activeElement === document.body, 'アクティブな投稿でフォーカスが動いた');
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: パネルのフォーカスの扱いが focusout を止めても、「×」の聞き返しはフォーカスが外れると戻る', () => {
+	const made = makeComposerWithSheets();
+	const {composer, panel, restore} = made;
+	// パネルのフォーカスの扱いは window の capture で focusout を止める。偽の DOM では根 (html) がその位置
+	const uninstall = installPanelFocusGuard(panel, () => ({hasDraft: composer.hasDraft(), confirming: false}),
+		document.documentElement);
+	const confirming = EXT_CONFIG.lightboxReplies.classes.confirming;
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		const second = composer.posts[1];
+		click(second.removeButton);
+		assert.strictEqual(second.removeButton.classList.contains(confirming), true);
+		second.removeButton.dispatchEvent(new FakeEvent('focusout'));
+		second.removeButton.dispatchEvent(new FakeEvent('blur', {bubbles: false}));
+		assert.strictEqual(second.removeButton.classList.contains(confirming), false);
+		assert.strictEqual(second.removeButton.getAttribute('aria-label'), COMPOSE.text.removePost);
+		// 戻った後の 1 回目の押下では消さない
+		typeInto(second, '2 件目の続き');
+		click(second.removeButton);
+		assert.strictEqual(composer.posts.length, 2);
+	} finally {
+		uninstall();
+		composer.destroy();
+		restore();
+	}
+});
+
+test('スレッド: 送信ボタンで送った後は、残った投稿の本文の欄へフォーカスを移す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		composer.submitButton.focus();
+		click(composer.submitButton);
+		await waitUntil(() => calls.threads.length > 0 && !composer.busy);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.ok(document.activeElement === composer.posts[0].textarea, '残った投稿の本文の欄にフォーカスが無い');
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 手元で計算した CID が応答と違えばデバッグに記録し、一覧には応答の cid を渡す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	const logged = [];
+	const originalLog = ExtDebug.log;
+	ExtDebug.log = (message, data) => logged.push({message, data});
+	composer.deps.actions = {
+		createReplyThread: async (build) => {
+			const writes = await build(SELF_DID);
+			calls.threads.push(writes);
+			const results = writes.map((write, i) => ({
+				uri: `at://${SELF_DID}/${write.collection}/${write.rkey}`, cid: `bafyserver${i}`
+			}));
+			return {ok: true, results, writes, reason: null};
+		}
+	};
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		await composer.submit();
+		const mismatches = logged.filter((entry) => entry.data && '手元' in entry.data);
+		assert.strictEqual(mismatches.length, 2);
+		assert.strictEqual(mismatches[0].data.応答, 'bafyserver0');
+		assert.strictEqual(mismatches[0].data.手元, await computeRecordCid(calls.threads[0][0].value));
+		assert.deepStrictEqual(calls.posted.map((args) => args[0].cid), ['bafyserver0', 'bafyserver1']);
+	} finally {
+		ExtDebug.log = originalLog;
+		restore();
+	}
+});
+
+test('スレッド: 送信ボタンの進み具合は画像とサムネイルを全投稿で通した 1 つの番号', async () => {
+	const good = await cidUpload();
+	let made = null;
+	const labels = [];
+	made = makeComposer({
+		uploadBlob: async (blob) => {
+			labels.push(made.composer.submitButton.textContent);
+			return good(blob);
+		}
+	});
+	const {composer, calls, restore} = made;
+	try {
+		await composer.active.addFiles([{name: 'a.png', type: 'image/png'}]);
+		click(composer.addButton);
+		composer.posts[1].extras.setGif(gifItem());
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 1);
+		// 1 件目の画像が 1/1、2 件目の GIF のサムネイルは分かった時点で全体に足して 2/2
+		const sending = COMPOSE.text.sending;
+		assert.deepStrictEqual(labels, [
+			sending.replace('{done}', '1').replace('{total}', '1'),
+			sending.replace('{done}', '2').replace('{total}', '2')
+		]);
+	} finally {
+		restore();
+	}
+});
+
+test('createThreadProgress: 画像の番号の後にサムネイルを足し、分かった時点で全体を増やす', () => {
+	const shown = [];
+	const progress = createThreadProgress((current, total) => shown.push(`${current}/${total}`));
+	progress.blob(1, 2);
+	progress.blob(2, 2);
+	// 2 件目のサムネイル (送る前・送った後)、続いて 3 件目のサムネイル
+	progress.thumbnail(1, 0, 1);
+	progress.thumbnail(1, 1, 1);
+	progress.thumbnail(2, 0, 1);
+	assert.deepStrictEqual(shown, ['1/2', '2/2', '3/3', '3/3', '4/4']);
+	// 画像が無ければサムネイルだけで数える
+	const only = [];
+	const thumbs = createThreadProgress((current, total) => only.push(`${current}/${total}`));
+	thumbs.thumbnail(0, 0, 1);
+	assert.deepStrictEqual(only, ['1/1']);
+});
+
+test('スレッド: 送信中は送信ボタンの「{件数} 件の返信を送信」の読み上げを外し、終わったら戻す', async () => {
+	let release = null;
+	const {composer, restore} = makeComposer({});
+	composer.deps.actions = {
+		createReplyThread: () => new Promise((resolve) => {
+			release = resolve;
+		})
+	};
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		const label = COMPOSE.text.submitThread.replace('{count}', '2');
+		assert.strictEqual(composer.submitButton.getAttribute('aria-label'), label);
+		const sending = composer.submit();
+		await waitUntil(() => release !== null);
+		assert.strictEqual(composer.submitButton.hasAttribute('aria-label'), false);
+		// 送信中に中身が変わって sync が走っても付け直さない
+		composer.sync();
+		assert.strictEqual(composer.submitButton.hasAttribute('aria-label'), false);
+		release({ok: false, results: null, writes: null, reason: 'x'});
+		await sending;
+		assert.strictEqual(composer.submitButton.getAttribute('aria-label'), label);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 投稿が 2 件以上のあいだだけ入れ物を高さの上限付きにし、動いた先を入れ物の中で見せる', async () => {
+	const {composer, restore} = makeComposer({});
+	const multi = COMPOSE.classes.threadMulti;
+	const proto = Object.getPrototypeOf(composer.el);
+	const revealed = [];
+	proto.scrollIntoView = function scrollIntoView(options) {
+		revealed.push({el: this, options});
+	};
+	composer.deps.actions = {
+		createReplyThread: async () => ({ok: false, results: null, writes: null, reason: 'x'})
+	};
+	try {
+		typeInto(composer.active, '1 件目');
+		assert.strictEqual(composer.el.classList.contains(multi), false);
+		click(composer.addButton);
+		assert.strictEqual(composer.el.classList.contains(multi), true);
+		// 足した投稿
+		assert.ok(revealed.some((entry) => entry.el === composer.posts[1].el), '足した投稿を見せていない');
+		assert.deepStrictEqual(revealed[0].options, {block: 'nearest', behavior: 'smooth'});
+		typeInto(composer.posts[1], '2 件目');
+		// アクティブになった投稿
+		revealed.length = 0;
+		composer.posts[0].textarea.dispatchEvent(new FakeEvent('focusin'));
+		assert.ok(revealed.some((entry) => entry.el === composer.posts[0].el), 'アクティブにした投稿を見せていない');
+		// 空の投稿の問い合わせ
+		composer.posts[1].textarea.dispatchEvent(new FakeEvent('focusin'));
+		click(composer.addButton);
+		typeInto(composer.posts[2], '3 件目');
+		typeInto(composer.posts[1], '');
+		revealed.length = 0;
+		await composer.submit();
+		assert.ok(revealed.some((entry) => entry.el === composer.noticeEl), '問い合わせを見せていない');
+		// 入れ物の知らせ
+		click(composer.noticeEl.querySelector(`.${COMPOSE.classes.skipEmptySend}`));
+		await waitUntil(() => !composer.busy && composer.noticeEl !== null && !composer.skipPromptEl);
+		assert.strictEqual(composer.noticeEl.textContent, EXT_CONFIG.lightboxReplies.text.postFailed);
+		assert.ok(revealed.some((entry) => entry.el === composer.noticeEl), '失敗の 1 行を見せていない');
+		// 1 件に戻すと上限を外す
+		composer.removePost(composer.posts[2]);
+		composer.posts[1].textarea.dispatchEvent(new FakeEvent('focusin'));
+		composer.removePost(composer.posts[1]);
+		assert.strictEqual(composer.posts.length, 1);
+		assert.strictEqual(composer.el.classList.contains(multi), false);
+		// 1 件のときの知らせでは動かさない (今までどおり)
+		revealed.length = 0;
+		composer.showNotice(['x']);
+		assert.deepStrictEqual(revealed, []);
+	} finally {
+		delete proto.scrollIntoView;
+		restore();
+	}
+});
+
+test('スレッド: 2 件以上の送信中に入れ物が外されても同じ世代なら送り続けて全件を一覧へ入れ、送り終えてからメディアを片付ける', async () => {
+	let made = null;
+	made = makeComposer({uploadBlob: await cidUpload()});
+	const {composer, calls, restore} = made;
+	const original = composer.deps.actions.createReplyThread;
+	composer.deps.actions = {
+		createReplyThread: async (build) => {
+			// 応答を待つあいだに描き直しで入れ物が外された
+			composer.destroy();
+			return original(build);
+		}
+	};
+	try {
+		typeInto(composer.active, '1 件目');
+		click(composer.addButton);
+		composer.posts[1].extras.setGif(gifItem());
+		const second = composer.posts[1];
+		await composer.submit();
+		assert.strictEqual(calls.threads.length, 1);
+		assert.strictEqual(calls.posted.length, 2);
+		assert.deepStrictEqual(calls.posted.map((args) => args[1].text), ['1 件目', '']);
+		assert.strictEqual(calls.posted[1][1].embed.$type, 'app.bsky.embed.external');
+		// 外された入れ物の投稿のメディアは送り終えた後に片付けた
+		assert.strictEqual(second.extras.destroyed, true);
+		assert.strictEqual(made.state.posting, false);
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 投稿が 2 件以上ある入れ物を外すと、各投稿の動画のアップロードを取り消す', async () => {
+	const {composer, calls, restore} = makeComposer({});
+	try {
+		await composer.active.addFiles([videoFile('a.mp4')]);
+		await flush();
+		click(composer.addButton);
+		await composer.posts[1].addFiles([videoFile('b.mp4')]);
+		await flush();
+		assert.strictEqual(composer.posts.length, 2);
+		assert.strictEqual(calls.videoJobs.length, 2);
+		composer.destroy();
+		assert.deepStrictEqual(calls.videoCancels.slice().sort(), calls.videoJobs.map((job) => job.id).sort());
 	} finally {
 		restore();
 	}

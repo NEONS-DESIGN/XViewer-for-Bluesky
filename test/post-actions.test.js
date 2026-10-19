@@ -6,12 +6,15 @@
 import test from 'node:test';
 import assert from 'node:assert';
 
+import {EXT_CONFIG} from '../src/common/config.js';
 import {
 	parseRecordUri,
 	readViewerState,
 	toggleActionState,
 	mergeActionKind,
-	isActionApplied
+	isActionApplied,
+	readThreadResults,
+	PostActions
 } from '../src/content/post-actions.js';
 
 /** 反応数の初期値。テストごとに作り直す */
@@ -220,4 +223,143 @@ test('isActionApplied: 引き直した状態が意図どおりなら true、違�
 	const wantedBookmark = toggleActionState(readViewerState(null, makeCounts()), 'bookmark');
 	assert.strictEqual(isActionApplied(readViewerState({bookmarked: true}, makeCounts()), 'bookmark', wantedBookmark), true);
 	assert.strictEqual(isActionApplied(serverLiked, 'unknown', wanted), false);
+});
+
+const REPO = 'did:plc:me';
+const COLL = 'app.bsky.feed.post';
+const WRITES = [{rkey: 'a'}, {rkey: 'b'}];
+function okJson(repo = REPO) {
+	return {results: [
+		{uri: 'at://' + repo + '/' + COLL + '/a', cid: 'c1'},
+		{uri: 'at://' + repo + '/' + COLL + '/b', cid: 'c2'}
+	]};
+}
+
+test('readThreadResults: 正しい応答は書いた順の {uri, cid} になる', () => {
+	assert.deepStrictEqual(readThreadResults(okJson(), WRITES, REPO, COLL), [
+		{uri: 'at://did:plc:me/app.bsky.feed.post/a', cid: 'c1'},
+		{uri: 'at://did:plc:me/app.bsky.feed.post/b', cid: 'c2'}
+	]);
+});
+
+test('readThreadResults: 件数違い・uri 違い・cid 無し・null は null', () => {
+	assert.strictEqual(readThreadResults({results: okJson().results.slice(0, 1)}, WRITES, REPO, COLL), null);
+	assert.strictEqual(readThreadResults(okJson('did:plc:other'), WRITES, REPO, COLL), null);
+	const noCid = okJson();
+	delete noCid.results[1].cid;
+	assert.strictEqual(readThreadResults(noCid, WRITES, REPO, COLL), null);
+	const emptyCid = okJson();
+	emptyCid.results[0].cid = '';
+	assert.strictEqual(readThreadResults(emptyCid, WRITES, REPO, COLL), null);
+	assert.strictEqual(readThreadResults(null, WRITES, REPO, COLL), null);
+	assert.strictEqual(readThreadResults({}, WRITES, REPO, COLL), null);
+});
+
+/** 橋渡しと DID の取得を差し替えた PostActions */
+function makeActions(dids, replies) {
+	const actions = new PostActions({
+		nsid: {applyWrites: 'com.atproto.repo.applyWrites'},
+		collections: {post: COLL},
+		reasons: {repoNotSelf: 'repo-not-self'}
+	});
+	const calls = [];
+	actions.getSessionDid = async () => dids.shift() || null;
+	actions.call = async (nsid, options) => {
+		calls.push({nsid, body: options.body, timeoutMs: options.timeoutMs});
+		return replies.shift();
+	};
+	return {actions, calls};
+}
+
+test('createReplyThread: repo-not-self なら新しい DID で組み直して 1 回やり直す', async () => {
+	const built = [];
+	const {actions, calls} = makeActions(['did:plc:old', 'did:plc:new'], [
+		{ok: false, json: null, reason: 'repo-not-self'},
+		{ok: true, json: okJson('did:plc:new'), reason: null}
+	]);
+	const result = await actions.createReplyThread(async (did) => {
+		built.push(did);
+		return WRITES;
+	});
+	assert.deepStrictEqual(built, ['did:plc:old', 'did:plc:new']);
+	assert.strictEqual(calls[0].body.repo, 'did:plc:old');
+	assert.strictEqual(calls[1].body.repo, 'did:plc:new');
+	assert.strictEqual(calls[1].nsid, 'com.atproto.repo.applyWrites');
+	assert.strictEqual(result.ok, true);
+	assert.strictEqual(result.results.length, 2);
+});
+
+test('createReplyThread: 2 回とも repo-not-self なら失敗で build は 2 回だけ', async () => {
+	let count = 0;
+	const {actions} = makeActions(['did:plc:a', 'did:plc:b'], [
+		{ok: false, json: null, reason: 'repo-not-self'},
+		{ok: false, json: null, reason: 'repo-not-self'}
+	]);
+	const result = await actions.createReplyThread(async () => {
+		count += 1;
+		return WRITES;
+	});
+	assert.strictEqual(result.ok, false);
+	assert.strictEqual(result.reason, 'repo-not-self');
+	assert.strictEqual(count, 2);
+});
+
+test('createReplyThread: 応答の uri が合わなければ thread-unconfirmed', async () => {
+	const {actions} = makeActions([REPO], [{ok: true, json: okJson('did:plc:other'), reason: null}]);
+	const result = await actions.createReplyThread(async () => WRITES);
+	assert.deepStrictEqual(
+		{ok: result.ok, reason: result.reason, writes: result.writes},
+		{ok: false, reason: 'thread-unconfirmed', writes: WRITES}
+	);
+});
+
+test('createReplyThread: DID が無ければ no-session、build が投げれば失敗を返す', async () => {
+	const none = makeActions([], []);
+	assert.strictEqual((await none.actions.createReplyThread(async () => WRITES)).reason, 'no-session');
+	const bad = makeActions([REPO], []);
+	const result = await bad.actions.createReplyThread(async () => {
+		throw new Error('x');
+	});
+	assert.deepStrictEqual({ok: result.ok, reason: result.reason}, {ok: false, reason: 'build-failed'});
+});
+
+test('createReplyThread: applyWrites は長い待ち時間で呼び、待ちきれなければ thread-unconfirmed (書けているかもしれない)', async () => {
+	const {actions, calls} = makeActions([REPO], [{ok: false, json: null, reason: 'timeout'}]);
+	const result = await actions.createReplyThread(async () => WRITES);
+	assert.strictEqual(calls.length, 1);
+	assert.strictEqual(calls[0].timeoutMs, EXT_CONFIG.mediaGrid.bridge.threadTimeoutMs);
+	assert.ok(EXT_CONFIG.mediaGrid.bridge.threadTimeoutMs > EXT_CONFIG.mediaGrid.bridge.timeoutMs);
+	assert.deepStrictEqual(
+		{ok: result.ok, reason: result.reason, writes: result.writes},
+		{ok: false, reason: 'thread-unconfirmed', writes: WRITES}
+	);
+	// 待ちきれなかったのではない失敗はそのまま返す (送り直してよい)
+	const other = makeActions([REPO], [{ok: false, json: null, reason: 'thread-not-allowed'}]);
+	assert.strictEqual((await other.actions.createReplyThread(async () => WRITES)).reason, 'thread-not-allowed');
+});
+
+test('PostActions#call: timeoutMs を橋渡しの待ち時間に渡し、省けば既定の待ち時間のまま', async () => {
+	const saved = globalThis.document;
+	const requests = [];
+	globalThis.document = {
+		addEventListener: () => {},
+		removeEventListener: () => {},
+		dispatchEvent: (event) => {
+			requests.push(JSON.parse(event.detail));
+			return true;
+		}
+	};
+	const actions = new PostActions({nsid: {}, collections: {}, reasons: {repoNotSelf: 'repo-not-self'}});
+	try {
+		const started = Date.now();
+		const result = await actions.call('com.atproto.repo.applyWrites', {body: {repo: REPO}, timeoutMs: 5});
+		assert.deepStrictEqual(result, {ok: false, json: null, reason: 'timeout'});
+		// 既定 (EXT_CONFIG.mediaGrid.bridge.timeoutMs) より十分短い時間で打ち切られた
+		assert.ok(Date.now() - started < EXT_CONFIG.mediaGrid.bridge.timeoutMs / 2, '渡した待ち時間が効いていない');
+		assert.strictEqual(requests.length, 1);
+		assert.deepStrictEqual(requests[0].payload.body, {repo: REPO});
+		assert.strictEqual('timeoutMs' in requests[0].payload, false);
+	} finally {
+		globalThis.document = saved;
+	}
 });
