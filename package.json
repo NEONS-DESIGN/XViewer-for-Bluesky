@@ -1,6 +1,6 @@
 {
 	"name": "xviewer_for_bluesky",
-	"version": "3.9.1",
+	"version": "3.9.2",
 	"private": true,
 	"type": "module",
 	"description": "Bluesky (bsky.app) 向けのブラウザ拡張機能 (Chrome 系 / Firefox)",

@@ -49,6 +49,7 @@ const GIF_ALT_MAX_GRAPHEMES = BRIDGE_PROTOCOL.postRecord.external.maxDescription
  * @typedef {Object} PostHooks
  * @property {(post: ComposerPost) => void} onChange 残りの文字数・送信ボタンに関わる中身が変わった
  * @property {(post: ComposerPost) => void} onActivate 投稿の中にフォーカスが入った
+ * @property {(post: ComposerPost) => void} onTextGrow 本文の入力で本文の欄が高くなった (真下のツールバーが下へずれた)
  * @property {() => void} onSubmit Ctrl+Enter / Cmd+Enter で送れと言われた
  * @property {(post: ComposerPost) => void} onRemove 「×」でこの投稿を消せと言われた (中身があれば聞き返した後)
  * @property {() => string[]} getLanguages 選んでいる投稿言語
@@ -250,7 +251,10 @@ export class ComposerPost {
 			const pasted = this.pastedPending;
 			this.pastedPending = false;
 			this.notifyTextChange(pasted);
+			// 高さは changed() の中の fitHeight が当てる。インラインの値を比べるだけで、レイアウトを読み直さない
+			const before = this.textHeight();
 			this.changed();
+			if (this.textHeight() > before) this.notifyTextGrow();
 		});
 		this.textarea.addEventListener('keydown', (event) => {
 			// 打鍵は貼り付けより前に届く。何も貼られなかった貼り付けの印を次の入力へ持ち越さない
@@ -397,6 +401,18 @@ export class ComposerPost {
 			this.hooks.onChange(this);
 		} catch (error) {
 			console.error('[XViewer] 入力欄の変化を知らせられませんでした', error);
+		}
+	}
+
+	/**
+	 * 本文の欄が高くなったことを入れ物へ知らせる (入れ物がツールバーを見える所まで送る)。
+	 * @returns {void}
+	 */
+	notifyTextGrow() {
+		try {
+			this.hooks.onTextGrow(this);
+		} catch (error) {
+			console.error('[XViewer] 入力欄の高さの変化を知らせられませんでした', error);
 		}
 	}
 
@@ -604,6 +620,15 @@ export class ComposerPost {
 	sync() {
 		this.gifTool.disabled = this.busy || this.mediaCount() > 0 || this.isPreparing();
 		this.fitHeight();
+	}
+
+	/**
+	 * fitHeight が本文の欄に当てた高さ (px)。当てていなければ 0。
+	 * @returns {number}
+	 */
+	textHeight() {
+		const style = this.textarea.style;
+		return (style && parseFloat(style.height)) || 0;
 	}
 
 	/**

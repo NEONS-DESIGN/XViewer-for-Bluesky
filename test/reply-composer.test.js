@@ -1632,6 +1632,70 @@ test('スレッド: フォーカスの入った投稿がアクティブになり
 	}
 });
 
+/**
+ * 投稿の本文の欄の高さを、次の fitHeight で heights.value にする (偽の DOM は高さを測れないため)。
+ * ツールバーの scrollIntoView に渡された引数を返り値の配列へ積む。
+ * @param {Object} post ComposerPost
+ * @returns {{heights: {value: number}, scrolls: Object[]}}
+ */
+function watchGrowth(post) {
+	const heights = {value: 0};
+	const scrolls = [];
+	post.textarea.style = {height: ''};
+	post.fitHeight = () => {
+		post.textarea.style.height = heights.value > 0 ? `${heights.value}px` : '';
+	};
+	post.toolbarEl.scrollIntoView = (options) => scrolls.push(options);
+	return {heights, scrolls};
+}
+
+test('スレッド: アクティブな投稿の本文の欄が高くなったときだけ、ツールバーを見える所まで送る', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		fillPosts(composer, ['1 件目', '2 件目']);
+		const second = composer.posts[1];
+		const {heights, scrolls} = watchGrowth(second);
+		heights.value = 35;
+		typeInto(second, '2 件目\n');
+		assert.deepStrictEqual(scrolls, [{block: 'nearest', behavior: 'smooth'}]);
+		// 高さが変わらない打鍵・縮んだときは送らない
+		typeInto(second, '2 件目\nあ');
+		heights.value = 20;
+		typeInto(second, '2');
+		assert.strictEqual(scrolls.length, 1);
+		heights.value = 57;
+		typeInto(second, '2\n\n');
+		assert.strictEqual(scrolls.length, 2);
+		assert.ok(second.toolbarEl.contains(composer.submitButton), '送ったツールバーに送信ボタンが無い');
+	} finally {
+		restore();
+	}
+});
+
+test('スレッド: 本文が伸びても、アクティブでない投稿・投稿が 1 件のときは送らず、動きを減らす設定なら一気に送る', () => {
+	const {composer, restore} = makeComposer({});
+	try {
+		const first = composer.posts[0];
+		const single = watchGrowth(first);
+		single.heights.value = 35;
+		typeInto(first, '1 件目\n');
+		assert.strictEqual(single.scrolls.length, 0, '投稿が 1 件なのに送った');
+		click(composer.addButton);
+		// 2 件目がアクティブなあいだに 1 件目が伸びても送らない
+		single.heights.value = 57;
+		typeInto(first, '1 件目\n\n');
+		assert.strictEqual(single.scrolls.length, 0, 'アクティブでない投稿で送った');
+		const second = composer.posts[1];
+		const {heights, scrolls} = watchGrowth(second);
+		document.defaultView.matchMedia = (query) => ({matches: query === '(prefers-reduced-motion: reduce)'});
+		heights.value = 35;
+		typeInto(second, '2 件目\n');
+		assert.deepStrictEqual(scrolls, [{block: 'nearest', behavior: 'auto'}]);
+	} finally {
+		restore();
+	}
+});
+
 test('スレッド: 投稿が 1 件のあいだは薄くせず「×」も出さない (今までどおり)', () => {
 	const {composer, restore} = makeComposer({});
 	try {

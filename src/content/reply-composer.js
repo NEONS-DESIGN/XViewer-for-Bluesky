@@ -230,6 +230,7 @@ export class ReplyComposer {
 		const post = new ComposerPost(this.config, this.deps, {
 			onChange: () => this.sync(),
 			onActivate: (one) => this.onActivate(one),
+			onTextGrow: (one) => this.onTextGrow(one),
 			onSubmit: () => this.submit(),
 			onRemove: (one) => this.removePost(one),
 			getLanguages: () => this.languages,
@@ -285,6 +286,17 @@ export class ReplyComposer {
 		const index = this.posts.indexOf(post);
 		if (index === -1 || index === this.activeIndex) return;
 		this.setActive(index);
+	}
+
+	/**
+	 * 本文の入力で投稿の本文の欄が高くなった。アクティブな投稿なら、真下のツールバー (共通の行と送信を含む) を
+	 * 入れ物の中で見える所まで送る。高くなったときだけ呼ばれるため、打鍵ごとには送らない。
+	 * @param {ComposerPost} post
+	 * @returns {void}
+	 */
+	onTextGrow(post) {
+		if (this.destroyed || post !== this.active) return;
+		this.reveal(post.toolbarEl);
 	}
 
 	/**
@@ -962,7 +974,8 @@ export class ReplyComposer {
 
 	/**
 	 * 投稿が 2 件以上で入れ物が中でスクロールするとき、element を入れ物の中で見える所まで送る
-	 * (アクティブにした・足した投稿、問い合わせ、知らせの 1 行)。1 件のときは今までどおり何もしない。
+	 * (アクティブにした・足した投稿、本文が伸びた投稿のツールバー、問い合わせ、知らせの 1 行)。
+	 * 1 件のときは今までどおり何もしない。
 	 * 動きを減らす設定なら一気に送る。
 	 * @param {HTMLElement|null} element
 	 * @returns {void}
